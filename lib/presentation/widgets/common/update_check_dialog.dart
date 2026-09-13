@@ -480,7 +480,7 @@ class UpdateCheckDialog extends ConsumerWidget {
         ? versionInfo.displayVersion
         : 'v${versionInfo.displayVersion}';
     final rawContentBase = Uri.parse(
-      'https://raw.githubusercontent.com/Aaalice233/'
+      'https://raw.githubusercontent.com/ZipZipPipe/'
       'Aaalice_NAI_Launcher/$versionTag/',
     );
     final codeBackground = colorScheme.surfaceContainerHighest;
@@ -608,7 +608,7 @@ class UpdateCheckDialog extends ConsumerWidget {
           : null;
     }
     return Uri.parse(
-      'https://github.com/Aaalice233/Aaalice_NAI_Launcher/blob/'
+      'https://github.com/ZipZipPipe/Aaalice_NAI_Launcher/blob/'
       '$versionTag/',
     ).resolveUri(uri);
   }

@@ -1,8 +1,13 @@
-# NAI Launcher
+# NAI Launcher (ZipZipPipe fork)
 
 <p align="center">
   简体中文 · <a href="README.zh-TW.md">繁體中文</a> · <a href="README.en-US.md">English</a>
 </p>
+
+> [!NOTE]
+> **这是 [Aaalice233/Aaalice_NAI_Launcher](https://github.com/Aaalice233/Aaalice_NAI_Launcher) 的自维护 fork**，上游暂停更新后由本人继续维护。
+> 本 fork 的更新检测指向本仓库；主要差异：新增 DeepSeek V4.1 Flash（`deepseek-flash`）支持。
+> 感谢原作者 [Aaalice233](https://github.com/Aaalice233) 的开源贡献。
 
 > [!WARNING]
 > **项目暂停更新（2026-09-08）**

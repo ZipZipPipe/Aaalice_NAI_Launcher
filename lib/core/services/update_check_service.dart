@@ -215,7 +215,7 @@ class UpdateCheckService {
   final DateTime Function() _now;
 
   /// 默认仓库所有者
-  static const String defaultOwner = 'Aaalice233';
+  static const String defaultOwner = 'ZipZipPipe';
 
   /// 默认仓库名称
   static const String defaultRepo = 'Aaalice_NAI_Launcher';

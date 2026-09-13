@@ -369,7 +369,7 @@ extension ProviderPresetDefaults on ProviderPreset {
       case ProviderPreset.gemini:
         return const ['gemini-3.1-pro-preview'];
       case ProviderPreset.deepseek:
-        return const ['deepseek-v4-pro'];
+        return const ['deepseek-flash', 'deepseek-v4-pro'];
       case ProviderPreset.openRouter:
         return const ['moonshotai/kimi-k2.6'];
       case ProviderPreset.xai:
@@ -451,8 +451,8 @@ extension ProviderPresetDefaults on ProviderPreset {
       case ProviderPreset.qwenTokenPlanIndividual:
       case ProviderPreset.lmStudioChat:
       case ProviderPreset.lmStudioResponses:
-        return true;
       case ProviderPreset.deepseek:
+        return true;
       case ProviderPreset.mistral:
       case ProviderPreset.groq:
       case ProviderPreset.cerebras:

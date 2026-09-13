@@ -83,7 +83,7 @@ void main() {
         expect(entry.key.defaultProtocol, entry.value.$2);
         expect(entry.key.defaultModelNames, [entry.value.$3]);
       }
-      expect(ProviderPreset.deepseek.defaultModelNames, ['deepseek-v4-pro']);
+      expect(ProviderPreset.deepseek.defaultModelNames, ['deepseek-flash', 'deepseek-v4-pro']);
       expect(ProviderPreset.openaiResponses.defaultModelNames, ['gpt-5.5']);
       expect(ProviderPreset.anthropic.defaultModelNames, ['claude-opus-4-8']);
       expect(ProviderPreset.gemini.defaultModelNames, [

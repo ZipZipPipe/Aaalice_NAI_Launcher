@@ -1416,6 +1416,33 @@ const piReasoningModelCatalog = <String, Map<String, AgentReasoningModelRule>>{
     ),
   },
   'deepseek': {
+    // DeepSeek-V4.1-Flash：官方模型 ID 为 deepseek-flash，原生多模态。
+    // 旧 ID deepseek-v4-flash / deepseek-v4-flash-vision-exp 已由官方
+    // 兼容路由指向 V4.1-Flash，保留条目以兼容既有用户配置。
+    'deepseek-flash': AgentReasoningModelRule(
+      api: AgentReasoningApi.deepSeek,
+      levels: [
+        ThinkingLevel.off,
+        ThinkingLevel.low,
+        ThinkingLevel.high,
+        ThinkingLevel.max,
+      ],
+      levelMap: {
+        ThinkingLevel.minimal: null,
+        ThinkingLevel.low: 'low',
+        ThinkingLevel.medium: null,
+        ThinkingLevel.high: 'high',
+        ThinkingLevel.max: 'max',
+      },
+      supportsReasoningEffort: true,
+      requiresReasoningContent: true,
+      allowEmptySignature: false,
+      alwaysIncludeEncryptedReasoning: false,
+      thinkingBudgets: {},
+      disabledEffort: null,
+      contextWindow: 1000000,
+      maxOutputTokens: 384000,
+    ),
     'deepseek-v4-flash': AgentReasoningModelRule(
       api: AgentReasoningApi.deepSeek,
       levels: [
