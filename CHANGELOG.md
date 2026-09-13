@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [4.2.2] - 2026-09-13
+
+> [!NOTE]
+> 本版本为社区 fork（ZipZipPipe/Aaalice_NAI_Launcher）发布：新增 DeepSeek V4.1 Flash 支持，并将更新检测切换至本仓库。
+
+### ✨ 新增
+
+- 新增 DeepSeek V4.1 Flash（`deepseek-flash`）模型支持：思考等级（off/low/high/max）、`reasoning_effort`、1M 上下文窗口与 384k 最大输出；DeepSeek 预设默认模型更新为 `deepseek-flash`，并默认允许图片输入。
+- 保留 `deepseek-v4-flash`、`deepseek-v4-pro` 等既有模型条目，历史配置继续可用。
+
+### 🛠 改进
+
+- 应用内更新检测、更新说明与仓库链接指向本 fork 仓库。
+- 云端 OAuth 校验改为可选（未配置时跳过，不影响构建与运行）。
+
 ## [4.2.1] - 2026-09-07
 
 > [!WARNING]
