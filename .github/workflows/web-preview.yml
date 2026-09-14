@@ -1,0 +1,27 @@
+name: Web Preview Build
+on:
+  workflow_dispatch:
+  push: { branches: [web-experiment] }
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with: { flutter-version: 3.44.2, channel: stable, cache: true }
+      - run: flutter pub get --enforce-lockfile
+      - run: flutter gen-l10n
+      - run: dart run build_runner build --delete-conflicting-outputs
+      - run: flutter create --platforms=web --no-pub .
+      - name: Build web (collect log)
+        run: |
+          set +e
+          flutter build web --no-wasm-dry-run 2>&1 | tee build.log
+          echo "exit=${PIPESTATUS[0]}" >> build.log
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-build-log
+          path: build.log
+          if-no-files-found: ignore
