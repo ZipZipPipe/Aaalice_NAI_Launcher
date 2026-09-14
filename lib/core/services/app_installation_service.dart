@@ -1,8 +1,11 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
-import 'package:win32_registry/win32_registry.dart';
+
+import 'app_installation_registry_io.dart'
+    if (dart.library.js_interop) 'app_installation_registry_web.dart';
 
 part 'app_installation_service.g.dart';
 
@@ -20,6 +23,9 @@ class AppInstallationService {
       r'Software\Microsoft\Windows\CurrentVersion\Uninstall\Aaalice NAI Launcher';
 
   AppInstallationType getInstallationType() {
+    if (kIsWeb) {
+      return AppInstallationType.unsupported;
+    }
     if (Platform.isWindows) {
       return _isInstalledWindowsApp()
           ? AppInstallationType.windowsInstaller
@@ -65,19 +71,9 @@ class AppInstallationService {
   }
 
   String? readWindowsInstallLocation() {
+    if (kIsWeb) return null;
     if (!Platform.isWindows) return null;
-    RegistryKey? key;
-    try {
-      key = Registry.openPath(
-        RegistryHive.currentUser,
-        path: uninstallRegistryPath,
-      );
-      return key.getValueAsString('InstallLocation');
-    } catch (_) {
-      return null;
-    } finally {
-      key?.close();
-    }
+    return readWindowsInstallLocationFromRegistry(uninstallRegistryPath);
   }
 
   static bool isExecutableInsideInstallDir({

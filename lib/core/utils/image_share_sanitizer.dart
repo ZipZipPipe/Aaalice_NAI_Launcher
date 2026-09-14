@@ -5,7 +5,8 @@ import 'dart:isolate';
 
 import 'package:flutter/foundation.dart';
 import 'package:image/image.dart' as img;
-import 'package:nai_png_codec/nai_png_codec.dart';
+import 'package:nai_png_codec/nai_png_codec.dart'
+    if (dart.library.js_interop) 'image_share_png_codec_web.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 

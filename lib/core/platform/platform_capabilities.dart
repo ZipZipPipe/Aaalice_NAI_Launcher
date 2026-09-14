@@ -9,10 +9,19 @@ import 'package:flutter/foundation.dart';
 /// platform checks out of feature screens.
 @immutable
 class PlatformCapabilities {
-  const PlatformCapabilities._({required this.platform});
+  const PlatformCapabilities._({required this.platform, this.isWeb = false});
 
   factory PlatformCapabilities.forPlatform(TargetPlatform platform) {
     return PlatformCapabilities._(platform: platform);
+  }
+
+  /// Capabilities for the Flutter Web (browser) target.
+  ///
+  /// A browser cannot host operating-system integrations, so every desktop
+  /// capability of this matrix stays disabled and [platform] is `null`.
+  /// Inspect [isWeb] and the capability getters instead of [platform].
+  factory PlatformCapabilities.web() {
+    return const PlatformCapabilities._(platform: null, isWeb: true);
   }
 
   /// Capabilities for the platform selected by Flutter's presentation layer.
@@ -20,7 +29,10 @@ class PlatformCapabilities {
   /// Platform services that must work before a Flutter binding exists should
   /// use [operatingSystem] instead.
   static PlatformCapabilities get current =>
-      debugOverride ?? PlatformCapabilities.forPlatform(defaultTargetPlatform);
+      debugOverride ??
+      (kIsWeb
+          ? PlatformCapabilities.web()
+          : PlatformCapabilities.forPlatform(defaultTargetPlatform));
 
   /// Allows widget tests to exercise desktop and touch capability branches
   /// without mutating Flutter's global platform debug state.
@@ -28,6 +40,9 @@ class PlatformCapabilities {
   static PlatformCapabilities? debugOverride;
 
   static PlatformCapabilities get operatingSystem {
+    if (kIsWeb) {
+      return PlatformCapabilities.web();
+    }
     if (io.Platform.isAndroid) {
       return PlatformCapabilities.forPlatform(TargetPlatform.android);
     }
@@ -43,7 +58,11 @@ class PlatformCapabilities {
     return PlatformCapabilities.forPlatform(TargetPlatform.linux);
   }
 
-  final TargetPlatform platform;
+  /// The matched [TargetPlatform]; `null` on the web target.
+  final TargetPlatform? platform;
+
+  /// Whether the app runs in a web browser (Flutter Web).
+  final bool isWeb;
 
   bool get isAndroid => platform == TargetPlatform.android;
   bool get isIOS => platform == TargetPlatform.iOS;
