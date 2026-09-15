@@ -1421,6 +1421,21 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
         AgentChatCompactionSkipReason.busy,
       );
     }
+    // _resolveRoute() 不读安全存储，缓存路由的 key 可能为 null；手动压缩
+    // 不经过 _buildSystemPrompt() 的 key 刷新，因此先在此解析一次，
+    // 避免发出无 Authorization 头的摘要请求（DeepSeek 网关 401 governor）。
+    final route = _activeRoute ?? _routeCache;
+    if (route != null && route.$3 == null) {
+      final apiKey = await _ref
+          .read(promptAssistantConfigProvider.notifier)
+          .getProviderApiKey(route.$1.id);
+      final resolvedRoute = (route.$1, route.$2, apiKey);
+      if (_activeRoute != null) {
+        _activeRoute = resolvedRoute;
+      } else {
+        _routeCache = resolvedRoute;
+      }
+    }
     final result = await _compactContext(
       List.of(agent.state.messages),
       null,
