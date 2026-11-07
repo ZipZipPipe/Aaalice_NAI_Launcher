@@ -288,7 +288,9 @@ void main() {
           (message) => message['role'] == 'assistant',
         );
         expect((assistant['tool_calls'] as List).single['id'], 'recent-1');
-        final tool = messages.firstWhere((message) => message['role'] == 'tool');
+        final tool = messages.firstWhere(
+          (message) => message['role'] == 'tool',
+        );
         expect(tool['tool_call_id'], 'recent-1');
         expect(tool['content'], contains('recent.png'));
       },
