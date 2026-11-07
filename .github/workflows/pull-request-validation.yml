@@ -159,7 +159,7 @@ jobs:
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache-namespace: nai-hosted
-          generate-code: "false"
+          generate-code: "true"
 
       - name: Validate bundled autocomplete databases
         if: matrix.shard == 0
@@ -252,7 +252,7 @@ jobs:
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache-namespace: nai-hosted
-          generate-code: "false"
+          generate-code: "true"
           cache-windows-build: "true"
 
       - name: Setup NuGet
@@ -291,7 +291,7 @@ jobs:
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache-namespace: nai-hosted
-          generate-code: "false"
+          generate-code: "true"
           cache-windows-build: "true"
 
       - name: Setup NuGet
