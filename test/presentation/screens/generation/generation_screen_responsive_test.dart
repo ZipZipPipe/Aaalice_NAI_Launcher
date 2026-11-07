@@ -33,8 +33,15 @@ void main() {
 
   tearDownAll(() async {
     PlatformCapabilities.debugOverride = null;
-    await Hive.close();
-    await hiveDirectory.delete(recursive: true);
+    // Windows CI 上 Hive 偶发不返回 close 的 Future，限制清理等待避免占满分片时限。
+    await Hive.close().timeout(const Duration(seconds: 10), onTimeout: () {});
+    try {
+      if (await hiveDirectory.exists()) {
+        await hiveDirectory.delete(recursive: true);
+      }
+    } on FileSystemException {
+      // 临时目录清理失败不影响测试结论。
+    }
   });
 
   tearDown(() {
