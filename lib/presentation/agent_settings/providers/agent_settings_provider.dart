@@ -331,6 +331,29 @@ class AgentSettingsNotifier extends StateNotifier<AgentSettingsState> {
     );
   }
 
+  /// 保存助手预填。空格与换行原样保留，只做长度边界检查。
+  Future<void> saveAssistantPrefill({
+    required bool enabled,
+    required String prefill,
+  }) {
+    if (prefill.length > AgentSettings.maxAssistantPrefillLength) {
+      throw const FormatException('Assistant prefill is too large.');
+    }
+    if (enabled && prefill.isEmpty) {
+      throw const FormatException(
+        'Assistant prefill cannot be empty when enabled.',
+      );
+    }
+    return _update(
+      (current) => current.copyWith(
+        chat: current.chat.copyWith(
+          assistantPrefillEnabled: enabled,
+          assistantPrefill: prefill,
+        ),
+      ),
+    );
+  }
+
   Future<void> saveCustomSystemPrompt({
     required AgentSystemPromptMode mode,
     required String value,

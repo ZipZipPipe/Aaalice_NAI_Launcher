@@ -6,6 +6,7 @@ import '../../../../core/agent/agent_types.dart';
 import '../../models/agent_protocol.dart';
 import '../../models/prompt_assistant_models.dart';
 import 'agent_wire_helpers.dart';
+import 'assistant_prefill.dart';
 import 'prompt_assistant_adapter.dart';
 import 'reasoning_payload.dart';
 
@@ -100,6 +101,11 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
     required AgentChatRequest request,
     required CancelToken cancelToken,
   }) async* {
+    final prefillError = validateAssistantPrefill(request);
+    if (prefillError != null) {
+      yield AgentWireError(prefillError);
+      return;
+    }
     if (request.provider.preset == ProviderPreset.pollinations ||
         request.provider.type == ProviderType.pollinations) {
       yield const AgentWireError(
@@ -226,7 +232,9 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
     try {
       final stream = agentStreamPost(
         dio,
-        endpoint: _resolveEndpoint(request.provider),
+        endpoint:
+            resolvePrefillEndpoint(request) ??
+            _resolveEndpoint(request.provider),
         payload: payload,
         headers: headers,
         cancelToken: cancelToken,
@@ -288,7 +296,7 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
     final payload = _buildAgentPayload(request, stream: false);
     try {
       final response = await dio.post<dynamic>(
-        _resolveEndpoint(request.provider),
+        resolvePrefillEndpoint(request) ?? _resolveEndpoint(request.provider),
         data: payload,
         options: Options(
           headers: _agentHeaders(request.apiKey),
@@ -423,6 +431,12 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
                   AgentReasoningApi.mistralPromptMode ||
               request.reasoningRequest?.api == AgentReasoningApi.mistralEffort,
         ),
+      if (request.assistantPrefill case final prefix? when prefix.isNotEmpty)
+        {
+          'role': 'assistant',
+          'content': prefix,
+          if (usesDeepSeekPrefill(request)) 'prefix': true,
+        },
     ];
   }
 
@@ -699,7 +713,7 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
         base == 'https://api.deepseek.com') {
       return '$base/chat/completions';
     }
-    if (base.endsWith('/v1')) {
+    if (base.endsWith('/v1') || base.endsWith('/beta')) {
       return '$base/chat/completions';
     }
     return '$base/v1/chat/completions';
@@ -707,6 +721,11 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
 
   String _resolveModelsEndpoint(ProviderConfig provider) {
     final base = normalizedBaseUrl(provider.baseUrl);
+    final uri = Uri.tryParse(base);
+    if (uri?.host == 'api.deepseek.com' &&
+        const {'/beta', '/beta/chat/completions'}.contains(uri?.path)) {
+      return uri!.replace(path: '/models').toString();
+    }
     if (base.endsWith('/models')) {
       return base;
     }

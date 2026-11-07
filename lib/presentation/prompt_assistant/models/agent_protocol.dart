@@ -71,7 +71,11 @@ class AgentChatRequest {
     this.modelMaxOutputTokens,
     this.reasoning,
     this.reasoningRequest,
+    this.assistantPrefill,
   });
+
+  /// Exact assistant prefix for this request only; never stored as a separate turn.
+  final String? assistantPrefill;
 
   final String sessionId;
   final ProviderConfig provider;

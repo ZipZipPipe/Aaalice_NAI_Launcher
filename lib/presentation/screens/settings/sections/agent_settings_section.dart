@@ -15,6 +15,7 @@ import '../widgets/settings_card.dart';
 import '../widgets/settings_page_layout.dart';
 import 'web_access_settings.dart';
 import 'agent/agent_profile_actions.dart';
+import 'agent/assistant_prefill_editor.dart';
 import 'agent/context_window_field.dart';
 import 'agent/skill_management_panel.dart';
 import 'agent/system_prompt_editor.dart';
@@ -107,6 +108,7 @@ class _AgentSettingsSectionState extends ConsumerState<AgentSettingsSection> {
           promptConfig: promptConfig,
           onOpenIntegrations: widget.onOpenIntegrations,
         ),
+        const AssistantPrefillEditor(),
         _ReadingPreferencesCard(settings: state.settings),
         _PermissionCard(settings: state.settings),
         _WebAccessCard(settings: state.settings),

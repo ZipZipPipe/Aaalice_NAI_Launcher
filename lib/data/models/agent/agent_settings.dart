@@ -131,6 +131,8 @@ class AgentChatConfig {
     this.readingTextScale = 1.0,
     this.density = AgentChatDensity.comfortable,
     this.contextWindowOverrides = const {},
+    this.assistantPrefillEnabled = false,
+    this.assistantPrefill = '',
   });
 
   static const supportedReadingTextScales = [0.9, 1.0, 1.15, 1.3];
@@ -147,6 +149,16 @@ class AgentChatConfig {
   /// 用户手填的上下文窗口，键为 [contextWindowKey]。内置目录认不出的模型
   /// （中转站、自建网关、目录未收录的新旧模型）只能靠这里拿到窗口。
   final Map<String, int> contextWindowOverrides;
+
+  /// 是否启用助手预填。
+  final bool assistantPrefillEnabled;
+
+  /// 预填文本：作为助手回复的开头随每个用户回合的首个请求发送。
+  /// 原样保留用户输入的空格与换行，不做 trim。
+  final String assistantPrefill;
+
+  bool get hasAssistantPrefill =>
+      assistantPrefillEnabled && assistantPrefill.isNotEmpty;
 
   /// 模型名可能自带 `/`（如 `anthropic/claude-opus-4.1`），服务商 id 不会，
   /// 所以首个 `/` 之前一定是服务商，键不会歧义。
@@ -185,6 +197,8 @@ class AgentChatConfig {
     double? readingTextScale,
     AgentChatDensity? density,
     Map<String, int>? contextWindowOverrides,
+    bool? assistantPrefillEnabled,
+    String? assistantPrefill,
   }) {
     return AgentChatConfig(
       modelReference: modelReference ?? this.modelReference,
@@ -197,6 +211,9 @@ class AgentChatConfig {
       density: density ?? this.density,
       contextWindowOverrides:
           contextWindowOverrides ?? this.contextWindowOverrides,
+      assistantPrefillEnabled:
+          assistantPrefillEnabled ?? this.assistantPrefillEnabled,
+      assistantPrefill: assistantPrefill ?? this.assistantPrefill,
     );
   }
 
@@ -215,6 +232,11 @@ class AgentChatConfig {
         contextWindowOverrides.entries.toList()
           ..sort((a, b) => a.key.compareTo(b.key)),
       ),
+    // 默认关闭且为空时省略新字段，保持未使用此功能的旧配置兼容。
+    if (assistantPrefillEnabled || assistantPrefill.isNotEmpty) ...{
+      'assistantPrefillEnabled': assistantPrefillEnabled,
+      'assistantPrefill': assistantPrefill,
+    },
   };
 
   factory AgentChatConfig.fromJson(
@@ -246,6 +268,8 @@ class AgentChatConfig {
               'readingTextScale',
               'density',
               'contextWindowOverrides',
+              'assistantPrefillEnabled',
+              'assistantPrefill',
             }
           : const {
               'modelReference',
@@ -267,6 +291,18 @@ class AgentChatConfig {
     }
     if (customPrompt.length > AgentSettings.maxCustomPromptLength) {
       throw const FormatException('customSystemPrompt is too large.');
+    }
+    final prefillEnabledValue = value['assistantPrefillEnabled'];
+    final prefillValue = value['assistantPrefill'];
+    if ((prefillEnabledValue != null && prefillEnabledValue is! bool) ||
+        (prefillValue != null && prefillValue is! String)) {
+      throw const FormatException(
+        'chat assistant prefills contain invalid field types.',
+      );
+    }
+    final assistantPrefill = (prefillValue as String?) ?? '';
+    if (assistantPrefill.length > AgentSettings.maxAssistantPrefillLength) {
+      throw const FormatException('assistantPrefill is too large.');
     }
     if (schemaVersion >= 4 && promptMode is! String) {
       throw const FormatException('systemPromptMode must be a string.');
@@ -334,6 +370,8 @@ class AgentChatConfig {
             ? const <String, int>{}
             : _decodeContextWindowOverrides(value['contextWindowOverrides']),
       ),
+      assistantPrefillEnabled: (prefillEnabledValue as bool?) ?? false,
+      assistantPrefill: assistantPrefill,
     );
   }
 
@@ -377,6 +415,7 @@ class AgentSettings {
   static const int maxMigratedChatRules = 100;
   static const int maxContextWindows = 500;
   static const int maxContextWindowTokens = 20000000;
+  static const int maxAssistantPrefillLength = 20000;
   static const int maxEncodedBytes = 1024 * 1024;
 
   final int schemaVersion;

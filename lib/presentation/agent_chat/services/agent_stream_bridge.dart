@@ -12,6 +12,7 @@ AssistantMessageEventStream agentWireEventStream(
   Stream<wire.AgentWireEvent> wireEvents, {
   String? provider,
   String? model,
+  String? assistantPrefill,
 }) {
   final stream = EventStream<AssistantMessageEvent, AssistantMessage>();
 
@@ -22,6 +23,7 @@ AssistantMessageEventStream agentWireEventStream(
     String? errorMessage;
     var started = false;
     var sawFinish = false;
+    var prefillPending = assistantPrefill?.isNotEmpty == true;
     final thinkingIndexes = <String, int>{};
 
     AssistantMessage finalMessage() {
@@ -41,6 +43,23 @@ AssistantMessageEventStream agentWireEventStream(
       }
       started = true;
       stream.push(AmStart(partial: finalMessage()));
+    }
+
+    // Prefixes are input, while wire text is the generated continuation.
+    // Delay adding input until a successful content/tool/finish event so an
+    // immediate HTTP failure cannot leave a fabricated assistant reply.
+    void emitPrefill() {
+      if (!prefillPending) return;
+      prefillPending = false;
+      emitStart();
+      _appendText(content, assistantPrefill!);
+      stream.push(
+        AmTextDelta(
+          partial: finalMessage(),
+          delta: assistantPrefill,
+          contentIndex: content.length - 1,
+        ),
+      );
     }
 
     try {
@@ -111,6 +130,8 @@ AssistantMessageEventStream agentWireEventStream(
               );
             }
           case wire.AgentWireTextDelta():
+            if (event.delta.isEmpty) break;
+            emitPrefill();
             emitStart();
             _appendText(content, event.delta);
             stream.push(
@@ -121,6 +142,7 @@ AssistantMessageEventStream agentWireEventStream(
               ),
             );
           case wire.AgentWireToolCallDone():
+            emitPrefill();
             emitStart();
             final toolCall = ToolCallContent(
               id: event.id,
@@ -137,6 +159,10 @@ AssistantMessageEventStream agentWireEventStream(
               ),
             );
           case wire.AgentWireFinish():
+            if (event.stopReason != StopReason.error &&
+                event.stopReason != StopReason.aborted) {
+              emitPrefill();
+            }
             sawFinish = true;
             stopReason = event.stopReason;
             usage = event.usage;

@@ -13950,6 +13950,31 @@ class AppLocalizationsEn extends AppLocalizations {
       'Enter a whole number between 1 and 20000000';
 
   @override
+  String get agentSettings_assistantPrefill => 'Assistant prefill';
+
+  @override
+  String get agentSettings_assistantPrefillDescription =>
+      'Sets the opening of the assistant\'s reply. Mainly for DeepSeek and OpenAI-compatible services that allow assistant prefill; actual support depends on the provider.';
+
+  @override
+  String get agentSettings_assistantPrefillEnabled =>
+      'Enable assistant prefill';
+
+  @override
+  String get agentSettings_assistantPrefillInput => 'Reply opening';
+
+  @override
+  String get agentSettings_assistantPrefillHint =>
+      'Spaces and line breaks are sent exactly as entered.';
+
+  @override
+  String get agentSettings_assistantPrefillScope =>
+      'Used only for the first request of each user turn. Tool continuations and summaries are not prefilled.';
+
+  @override
+  String get agentSettings_assistantPrefillSaved => 'Assistant prefill saved';
+
+  @override
   String get agentSettings_toolPermission => 'Tool permissions';
 
   @override

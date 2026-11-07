@@ -13586,6 +13586,29 @@ class AppLocalizationsJa extends AppLocalizations {
       '1 から 20000000 までの整数を入力してください';
 
   @override
+  String get agentSettings_assistantPrefill => 'アシスタントプリフィル';
+
+  @override
+  String get agentSettings_assistantPrefillDescription =>
+      'アシスタントの応答の書き出しを設定します。アシスタントプリフィルに対応する DeepSeek や OpenAI 互換サービスが主な対象で、対応状況はプロバイダーによって異なります。';
+
+  @override
+  String get agentSettings_assistantPrefillEnabled => 'アシスタントプリフィルを有効にする';
+
+  @override
+  String get agentSettings_assistantPrefillInput => '応答の書き出し';
+
+  @override
+  String get agentSettings_assistantPrefillHint => 'スペースと改行は入力どおりに送信されます。';
+
+  @override
+  String get agentSettings_assistantPrefillScope =>
+      '各ユーザーターンの最初のリクエストにのみ使用されます。ツールの継続実行と要約にはプリフィルを挿入しません。';
+
+  @override
+  String get agentSettings_assistantPrefillSaved => 'アシスタントプリフィルを保存しました';
+
+  @override
   String get agentSettings_toolPermission => 'ツール権限';
 
   @override

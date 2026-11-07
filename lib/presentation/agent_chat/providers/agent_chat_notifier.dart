@@ -39,6 +39,7 @@ import '../../providers/tag_library_page_provider.dart';
 import '../../providers/vibe_library_provider.dart';
 import '../../router/app_router_config.dart';
 import '../services/agent_api_client.dart';
+import '../services/agent_prefill.dart';
 import '../services/agent_chat_draft_controller.dart';
 import '../services/agent_chat_event_controller.dart';
 import '../services/agent_chat_session_controller.dart';
@@ -640,7 +641,14 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
     Context context, [
     SimpleStreamOptions? options,
   ]) {
-    return completeSimpleViaStreamFn(_streamFn, model, context, options);
+    // Background summaries must never inherit the user's chat prefill.
+    return completeSimpleViaStreamFn(
+      (model, context, [options]) =>
+          _streamRequest(model, context, options, allowPrefill: false),
+      model,
+      context,
+      options,
+    );
   }
 
   /// StreamFn：解析路由 → 线请求 → 适配器流 → 桥接。
@@ -648,7 +656,14 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
     Model model,
     Context context, [
     SimpleStreamOptions? options,
-  ]) {
+  ]) => _streamRequest(model, context, options, allowPrefill: true);
+
+  AssistantMessageEventStream _streamRequest(
+    Model model,
+    Context context,
+    SimpleStreamOptions? options, {
+    required bool allowPrefill,
+  }) {
     // Pi passes the aborted run signal into the next response boundary after
     // an interrupted tool. Do not create a fresh transport request for it.
     if (options?.signal case final AbortSignal signal when signal.aborted) {
@@ -660,8 +675,17 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
         return _errorStream('No LLM provider configured for chat.');
       }
       final capability = _modelCapability(route);
+      final chat =
+          (_activeAgentSettings ?? _ref.read(agentSettingsProvider).settings)
+              .chat;
+      final prefill = resolveAgentPrefill(
+        chat: chat,
+        messages: context.messages,
+        allowPrefill: allowPrefill,
+      );
       final request = AgentChatRequest(
         sessionId: 'agent_chat',
+        assistantPrefill: prefill,
         provider: route.$1,
         model: route.$2,
         systemPrompt: context.systemPrompt,
@@ -677,11 +701,15 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
             ),
         ],
         apiKey: route.$3,
-        maxOutputTokens: _clampMaxOutputTokens(
-          capability,
-          context.messages,
-          options?.maxTokens,
-        ),
+        maxOutputTokens: _clampMaxOutputTokens(capability, [
+          ...context.messages,
+          if (prefill != null)
+            AssistantMessage(
+              content: [AssistantTextContent(prefill)],
+              stopReason: StopReason.stop,
+              timestamp: 0,
+            ),
+        ], options?.maxTokens),
         modelMaxOutputTokens: capability.metadata.maxOutputTokens,
         reasoning: options?.reasoning,
         reasoningRequest: capability.resolveReasoningRequest(
@@ -698,6 +726,7 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
         wireEvents,
         provider: request.provider.id,
         model: request.model,
+        assistantPrefill: request.assistantPrefill,
       );
     } catch (e) {
       return _errorStream(e.toString());

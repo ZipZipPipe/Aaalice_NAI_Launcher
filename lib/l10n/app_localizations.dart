@@ -24235,6 +24235,48 @@ abstract class AppLocalizations {
   /// **'Enter a whole number between 1 and 20000000'**
   String get agentSettings_contextWindowInvalid;
 
+  /// No description provided for @agentSettings_assistantPrefill.
+  ///
+  /// In en, this message translates to:
+  /// **'Assistant prefill'**
+  String get agentSettings_assistantPrefill;
+
+  /// No description provided for @agentSettings_assistantPrefillDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Sets the opening of the assistant\'s reply. Mainly for DeepSeek and OpenAI-compatible services that allow assistant prefill; actual support depends on the provider.'**
+  String get agentSettings_assistantPrefillDescription;
+
+  /// No description provided for @agentSettings_assistantPrefillEnabled.
+  ///
+  /// In en, this message translates to:
+  /// **'Enable assistant prefill'**
+  String get agentSettings_assistantPrefillEnabled;
+
+  /// No description provided for @agentSettings_assistantPrefillInput.
+  ///
+  /// In en, this message translates to:
+  /// **'Reply opening'**
+  String get agentSettings_assistantPrefillInput;
+
+  /// No description provided for @agentSettings_assistantPrefillHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Spaces and line breaks are sent exactly as entered.'**
+  String get agentSettings_assistantPrefillHint;
+
+  /// No description provided for @agentSettings_assistantPrefillScope.
+  ///
+  /// In en, this message translates to:
+  /// **'Used only for the first request of each user turn. Tool continuations and summaries are not prefilled.'**
+  String get agentSettings_assistantPrefillScope;
+
+  /// No description provided for @agentSettings_assistantPrefillSaved.
+  ///
+  /// In en, this message translates to:
+  /// **'Assistant prefill saved'**
+  String get agentSettings_assistantPrefillSaved;
+
   /// No description provided for @agentSettings_toolPermission.
   ///
   /// In en, this message translates to:

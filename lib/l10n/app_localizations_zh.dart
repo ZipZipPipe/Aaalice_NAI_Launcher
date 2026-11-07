@@ -13342,6 +13342,29 @@ class AppLocalizationsZh extends AppLocalizations {
   String get agentSettings_contextWindowInvalid => '请填写 1 到 20000000 之间的整数';
 
   @override
+  String get agentSettings_assistantPrefill => '助手预填';
+
+  @override
+  String get agentSettings_assistantPrefillDescription =>
+      '设置助手回复的开头。主要面向允许助手预填的 DeepSeek 与 OpenAI 兼容接口，具体支持情况依服务商而定。';
+
+  @override
+  String get agentSettings_assistantPrefillEnabled => '启用助手预填';
+
+  @override
+  String get agentSettings_assistantPrefillInput => '回复开头';
+
+  @override
+  String get agentSettings_assistantPrefillHint => '空格与换行会按原样发送。';
+
+  @override
+  String get agentSettings_assistantPrefillScope =>
+      '仅用于每个用户回合的首次请求；工具续跑与摘要不会注入预填内容。';
+
+  @override
+  String get agentSettings_assistantPrefillSaved => '助手预填已保存';
+
+  @override
   String get agentSettings_toolPermission => '工具权限';
 
   @override
@@ -27915,6 +27938,29 @@ class AppLocalizationsZhHant extends AppLocalizationsZh {
 
   @override
   String get agentSettings_contextWindowInvalid => '請填寫 1 到 20000000 之間的整數';
+
+  @override
+  String get agentSettings_assistantPrefill => '助手預填';
+
+  @override
+  String get agentSettings_assistantPrefillDescription =>
+      '設定助手回覆的開頭。主要面向允許助手預填的 DeepSeek 與 OpenAI 相容介面，實際支援情況依供應商而定。';
+
+  @override
+  String get agentSettings_assistantPrefillEnabled => '啟用助手預填';
+
+  @override
+  String get agentSettings_assistantPrefillInput => '回覆開頭';
+
+  @override
+  String get agentSettings_assistantPrefillHint => '空格與換行會依原樣傳送。';
+
+  @override
+  String get agentSettings_assistantPrefillScope =>
+      '僅用於每個使用者回合的首次請求；工具續跑與摘要不會注入預填內容。';
+
+  @override
+  String get agentSettings_assistantPrefillSaved => '助手預填已儲存';
 
   @override
   String get agentSettings_toolPermission => '工具權限';

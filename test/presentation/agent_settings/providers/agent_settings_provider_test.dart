@@ -264,6 +264,83 @@ void main() {
     await expectLater(notifier.setReadingTextScale(1.1), throwsFormatException);
   });
 
+  test('persists assistant prefill exactly and restores it', () async {
+    final storage = _MemoryStorage();
+    storage.values[StorageKeys.agentSettingsJson] = const AgentSettings()
+        .encode();
+    final first = ProviderContainer(
+      overrides: [
+        localStorageServiceProvider.overrideWithValue(storage),
+        secureStorageServiceProvider.overrideWithValue(_MemorySecureStorage()),
+        agentSettingsProvider.overrideWith(
+          (ref) => AgentSettingsNotifier(
+            ref,
+            supportDirectory: temp,
+            workspaceDirectory: temp,
+            environment: const {},
+          ),
+        ),
+      ],
+    );
+    addTearDown(first.dispose);
+    await _waitUntilInitialized(first);
+
+    const prefill = '  好的，\n我来处理。  ';
+    await first
+        .read(agentSettingsProvider.notifier)
+        .saveAssistantPrefill(enabled: true, prefill: prefill);
+
+    final persisted = AgentSettings.decode(
+      storage.values[StorageKeys.agentSettingsJson]! as String,
+    );
+    expect(persisted.chat.assistantPrefillEnabled, isTrue);
+    expect(persisted.chat.assistantPrefill, prefill);
+
+    final restored = ProviderContainer(
+      overrides: [
+        localStorageServiceProvider.overrideWithValue(storage),
+        secureStorageServiceProvider.overrideWithValue(_MemorySecureStorage()),
+        agentSettingsProvider.overrideWith(
+          (ref) => AgentSettingsNotifier(
+            ref,
+            supportDirectory: temp,
+            workspaceDirectory: temp,
+            environment: const {},
+          ),
+        ),
+      ],
+    );
+    addTearDown(restored.dispose);
+    await _waitUntilInitialized(restored);
+
+    expect(
+      restored.read(agentSettingsProvider).settings.chat.assistantPrefill,
+      prefill,
+    );
+    expect(
+      restored.read(agentSettingsProvider).settings.chat.hasAssistantPrefill,
+      isTrue,
+    );
+    expect(
+      () => restored
+          .read(agentSettingsProvider.notifier)
+          .saveAssistantPrefill(
+            enabled: true,
+            prefill: List.filled(
+              AgentSettings.maxAssistantPrefillLength + 1,
+              'x',
+            ).join(),
+          ),
+      throwsFormatException,
+    );
+    expect(
+      () => restored
+          .read(agentSettingsProvider.notifier)
+          .saveAssistantPrefill(enabled: true, prefill: ''),
+      throwsFormatException,
+    );
+  });
+
   test(
     'separates editable body from current workspace and Skills in both modes',
     () async {

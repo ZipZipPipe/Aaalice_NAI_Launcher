@@ -311,5 +311,110 @@ void main() {
         );
       }
     });
+
+    test('defaults assistant prefill to disabled and empty', () {
+      const chat = AgentChatConfig();
+
+      expect(chat.assistantPrefillEnabled, isFalse);
+      expect(chat.assistantPrefill, isEmpty);
+      expect(chat.hasAssistantPrefill, isFalse);
+    });
+
+    test('round-trips assistant prefill without trimming whitespace', () {
+      const rawPrefill = '  你好，\n\n';
+      const settings = AgentSettings(
+        chat: AgentChatConfig(
+          assistantPrefillEnabled: true,
+          assistantPrefill: rawPrefill,
+        ),
+      );
+
+      final decoded = AgentSettings.decode(settings.encode());
+
+      expect(decoded.chat.assistantPrefillEnabled, isTrue);
+      expect(decoded.chat.assistantPrefill, rawPrefill);
+      expect(decoded.chat.hasAssistantPrefill, isTrue);
+      expect(
+        decoded.chat.copyWith(assistantPrefillEnabled: false).assistantPrefill,
+        rawPrefill,
+      );
+      expect(
+        decoded.chat.copyWith(assistantPrefill: '').assistantPrefill,
+        isEmpty,
+      );
+    });
+
+    test('old settings without prefill fields stay disabled and empty', () {
+      final raw = const AgentSettings().toJson();
+      final chat = raw['chat']! as Map<String, dynamic>;
+      expect(chat, isNot(contains('assistantPrefillEnabled')));
+      expect(chat, isNot(contains('assistantPrefill')));
+
+      final decoded = AgentSettings.decode(jsonEncode(raw));
+
+      expect(decoded.chat.assistantPrefillEnabled, isFalse);
+      expect(decoded.chat.assistantPrefill, isEmpty);
+    });
+
+    test('omits default prefill and preserves enabled empty state', () {
+      final emptyChat =
+          const AgentSettings().toJson()['chat']! as Map<String, dynamic>;
+      expect(emptyChat, isNot(contains('assistantPrefillEnabled')));
+      expect(emptyChat, isNot(contains('assistantPrefill')));
+      final decoded = AgentSettings.decode(
+        const AgentSettings(
+          chat: AgentChatConfig(assistantPrefillEnabled: true),
+        ).encode(),
+      );
+      expect(decoded.chat.assistantPrefillEnabled, isTrue);
+      expect(decoded.chat.assistantPrefill, isEmpty);
+      expect(decoded.chat.hasAssistantPrefill, isFalse);
+    });
+
+    test('rejects malformed or oversized assistant prefill', () {
+      for (final broken in <Object>[true, 1, <String>[]]) {
+        final raw = const AgentSettings().toJson();
+        (raw['chat']! as Map<String, dynamic>)['assistantPrefill'] = broken;
+        expect(
+          () => AgentSettings.decode(jsonEncode(raw)),
+          throwsFormatException,
+          reason: '$broken',
+        );
+      }
+
+      for (final broken in <Object>['true', 1]) {
+        final raw = const AgentSettings().toJson();
+        (raw['chat']! as Map<String, dynamic>)['assistantPrefillEnabled'] =
+            broken;
+        expect(
+          () => AgentSettings.decode(jsonEncode(raw)),
+          throwsFormatException,
+          reason: '$broken',
+        );
+      }
+
+      final oversized = const AgentSettings().toJson();
+      (oversized['chat']! as Map<String, dynamic>)['assistantPrefill'] =
+          List.filled(AgentSettings.maxAssistantPrefillLength + 1, ' ').join();
+      expect(
+        () => AgentSettings.decode(jsonEncode(oversized)),
+        throwsFormatException,
+      );
+    });
+
+    test('rejects assistant prefill stored before schema 6', () {
+      final raw = const AgentSettings(
+        chat: AgentChatConfig(
+          assistantPrefillEnabled: true,
+          assistantPrefill: 'Hello',
+        ),
+      ).toJson();
+      raw['schemaVersion'] = 5;
+
+      expect(
+        () => AgentSettings.decode(jsonEncode(raw)),
+        throwsFormatException,
+      );
+    });
   });
 }
