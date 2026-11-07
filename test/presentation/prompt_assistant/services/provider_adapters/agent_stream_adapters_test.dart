@@ -197,86 +197,103 @@ void main() {
     expect(payload['thinking'], {'type': 'disabled'});
   });
 
-  test(
-    'DeepSeek tool replay keeps tool pairing without image_url payloads',
-    () async {
-      final capture = _CaptureAdapter();
-      final dio = Dio()..httpClientAdapter = capture;
-      addTearDown(dio.close);
+  for (final allowImageInput in [false, true]) {
+    test(
+      'DeepSeek tool replay respects allowImageInput=$allowImageInput and keeps tool pairing',
+      () async {
+        final capture = _CaptureAdapter();
+        final dio = Dio()..httpClientAdapter = capture;
+        addTearDown(dio.close);
 
-      await const OpenAiChatCompletionsAdapter()
-          .completeAgent(
-            dio: dio,
-            request: AgentChatRequest(
-              sessionId: 'session',
-              provider: ProviderPreset.deepseek.createConfig(id: 'deepseek'),
-              model: 'deepseek-v4-flash',
-              systemPrompt: 'system',
-              messages: [
-                UserMessage(
-                  content: [
-                    const UserTextContent('show recent images'),
-                    const UserImageContent(
-                      ImageContent(
-                        source: ImageSource.base64(
-                          mimeType: 'image/png',
-                          base64Data: 'AA==',
+        await const OpenAiChatCompletionsAdapter()
+            .completeAgent(
+              dio: dio,
+              request: AgentChatRequest(
+                sessionId: 'session',
+                provider: ProviderPreset.deepseek
+                    .createConfig(id: 'deepseek')
+                    .copyWith(allowImageInput: allowImageInput),
+                model: 'deepseek-v4-flash',
+                systemPrompt: 'system',
+                messages: [
+                  UserMessage(
+                    content: [
+                      const UserTextContent('show recent images'),
+                      const UserImageContent(
+                        ImageContent(
+                          source: ImageSource.base64(
+                            mimeType: 'image/png',
+                            base64Data: 'AA==',
+                          ),
                         ),
                       ),
-                    ),
-                  ],
-                ),
-                AssistantMessage(
-                  content: const [
-                    ToolCallContent(
-                      id: 'recent-1',
-                      name: 'get_recent_images',
-                      arguments: {'limit': 1},
-                    ),
-                  ],
-                  stopReason: StopReason.toolUse,
-                ),
-                ToolResultMessage(
-                  toolCallId: 'recent-1',
-                  toolName: 'get_recent_images',
-                  content: [
-                    const ToolResultTextContent(
-                      '{"files":["recent.png"],"count":1}',
-                    ),
-                    const ToolResultImageContent(
-                      ImageContent(
-                        source: ImageSource.base64(
-                          mimeType: 'image/png',
-                          base64Data: 'AA==',
+                    ],
+                  ),
+                  AssistantMessage(
+                    content: const [
+                      ToolCallContent(
+                        id: 'recent-1',
+                        name: 'get_recent_images',
+                        arguments: {'limit': 1},
+                      ),
+                    ],
+                    stopReason: StopReason.toolUse,
+                  ),
+                  ToolResultMessage(
+                    toolCallId: 'recent-1',
+                    toolName: 'get_recent_images',
+                    content: [
+                      const ToolResultTextContent(
+                        '{"files":["recent.png"],"count":1}',
+                      ),
+                      const ToolResultImageContent(
+                        ImageContent(
+                          source: ImageSource.base64(
+                            mimeType: 'image/png',
+                            base64Data: 'AA==',
+                          ),
                         ),
                       ),
-                    ),
-                  ],
-                ),
-              ],
-              tools: const [],
-              apiKey: null,
-            ),
-            cancelToken: CancelToken(),
-          )
-          .toList();
+                    ],
+                  ),
+                ],
+                tools: const [],
+                apiKey: null,
+              ),
+              cancelToken: CancelToken(),
+            )
+            .toList();
 
-      final payload = capture.options!.data as Map<String, dynamic>;
-      final messages = (payload['messages'] as List).cast<Map>();
-      expect(payload.toString(), isNot(contains('image_url')));
-      expect(
-        messages.where((message) => message['role'] == 'user'),
-        hasLength(1),
-      );
-      expect(
-        messages.firstWhere((message) => message['role'] == 'user')['content'],
-        'show recent images',
-      );
-      final tool = messages.firstWhere((message) => message['role'] == 'tool');
-      expect(tool['tool_call_id'], 'recent-1');
-      expect(tool['content'], contains('recent.png'));
-    },
-  );
+        final payload = capture.options!.data as Map<String, dynamic>;
+        final messages = (payload['messages'] as List).cast<Map>();
+        final userMessages = messages
+            .where((message) => message['role'] == 'user')
+            .toList();
+        if (allowImageInput) {
+          expect(userMessages, hasLength(2));
+          for (final message in userMessages) {
+            expect(
+              (message['content'] as List).cast<Map>().where(
+                (part) => part['type'] == 'image_url',
+              ),
+              hasLength(1),
+            );
+          }
+        } else {
+          expect(payload.toString(), isNot(contains('image_url')));
+          expect(userMessages, hasLength(1));
+          expect(userMessages.single['content'], 'show recent images');
+        }
+        final assistant = messages.firstWhere(
+          (message) => message['role'] == 'assistant',
+        );
+        expect((assistant['tool_calls'] as List).single['id'], 'recent-1');
+        final tool = messages.firstWhere((message) => message['role'] == 'tool');
+        expect(tool['tool_call_id'], 'recent-1');
+        expect(tool['content'], contains('recent.png'));
+      },
+    );
+  }
 
   test('image-capable OpenAI replay keeps image_url content', () async {
     final capture = _CaptureAdapter();
