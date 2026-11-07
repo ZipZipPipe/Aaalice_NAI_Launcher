@@ -8,7 +8,9 @@ import '../../models/prompt_assistant_models.dart';
 import 'agent_wire_helpers.dart';
 import 'assistant_prefill.dart';
 import 'prompt_assistant_adapter.dart';
+import 'prefill_tool_decoder.dart';
 import 'reasoning_payload.dart';
+import 'thinking_prefill_messages.dart';
 
 class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
   const OpenAiChatCompletionsAdapter({this.ollamaTagsFallback = false});
@@ -128,6 +130,9 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
     }
 
     final payload = _buildAgentPayload(request, stream: true);
+    final textTools = usesThinkingPrefill(request) && request.tools.isNotEmpty
+        ? PrefillToolDecoder(request.tools)
+        : null;
     final headers = _agentHeaders(request.apiKey);
     final toolBuffers = <int, _OpenAiToolBuffer>{};
     final toolOrder = <int>[];
@@ -171,13 +176,19 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
             if (delta is Map<String, dynamic>) {
               final content = delta['content'];
               if (content is String && content.isNotEmpty) {
-                pending.add(AgentWireTextDelta(content));
+                pending.addAll(
+                  textTools?.push(content) ?? [AgentWireTextDelta(content)],
+                );
               } else if (content is List) {
                 for (final item in content) {
                   if (item is! Map<String, dynamic>) continue;
                   if (item['type'] == 'text' && item['text'] is String) {
                     final text = item['text'] as String;
-                    if (text.isNotEmpty) pending.add(AgentWireTextDelta(text));
+                    if (text.isNotEmpty) {
+                      pending.addAll(
+                        textTools?.push(text) ?? [AgentWireTextDelta(text)],
+                      );
+                    }
                   } else if (item['type'] == 'thinking') {
                     final thinking = _mistralThinkingText(item['thinking']);
                     if (thinking.isNotEmpty) {
@@ -193,6 +204,15 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
               }
               final calls = delta['tool_calls'];
               if (calls is List) {
+                if (usesThinkingPrefill(request) && calls.isNotEmpty) {
+                  sawError = true;
+                  pending.add(
+                    const AgentWireError(
+                      'Native tool calls are not supported with thinking prefill.',
+                    ),
+                  );
+                  return;
+                }
                 for (final call in calls) {
                   if (call is! Map) {
                     continue;
@@ -266,6 +286,13 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
     if (!sawDone && finishReason == null) {
       yield const AgentWireError(
         'OpenAI-compatible stream ended before its terminal event.',
+      );
+      return;
+    }
+
+    if (textTools != null) {
+      yield* Stream.fromIterable(
+        textTools.finish(reason: finishReason, usage: usage),
       );
       return;
     }
@@ -381,7 +408,8 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
           reasoningApi: request.reasoningRequest?.api,
         ): maxTokens,
       ..._reasoningPayload(request),
-      if (request.tools.isNotEmpty) ...{
+      if (usesThinkingPrefill(request)) 'thinking': {'type': 'enabled'},
+      if (request.tools.isNotEmpty && !usesThinkingPrefill(request)) ...{
         'tools': [
           for (final tool in request.tools)
             {
@@ -415,6 +443,9 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
   }
 
   List<Map<String, dynamic>> _buildAgentMessages(AgentChatRequest request) {
+    if (usesThinkingPrefill(request)) {
+      return buildThinkingPrefillMessages(request);
+    }
     return [
       if (request.systemPrompt.trim().isNotEmpty)
         {'role': 'system', 'content': request.systemPrompt.trim()},

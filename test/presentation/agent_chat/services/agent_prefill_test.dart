@@ -41,25 +41,66 @@ void main() {
       isNull,
     );
   });
+  test('every nonempty response boundary receives a fresh prefix', () {
+    for (final messages in <List<Message>>[
+      [ToolResultMessage(toolCallId: '1', toolName: 'read', content: [])],
+      [AssistantMessage(content: [], stopReason: StopReason.stop)],
+    ]) {
+      expect(
+        resolveAgentPrefill(
+          chat: config,
+          messages: messages,
+          allowPrefill: true,
+        ),
+        '  start\n',
+      );
+    }
+  });
+  test('empty context is not prefilled', () {
+    expect(
+      resolveAgentPrefill(chat: config, messages: [], allowPrefill: true),
+      isNull,
+    );
+  });
   test(
-    'tool continuation and assistant continuation do not repeat prefill',
-    () {
-      for (final messages in <List<Message>>[
-        [],
-        [ToolResultMessage(toolCallId: '1', toolName: 'read', content: [])],
-        [AssistantMessage(content: [], stopReason: StopReason.stop)],
-      ]) {
-        expect(
-          resolveAgentPrefill(
-            chat: config,
-            messages: messages,
-            allowPrefill: true,
-          ),
-          isNull,
-        );
-      }
+    'thinking prefix is joined once and never appears in answer text',
+    () async {
+      final stream = agentWireEventStream(
+        Stream.fromIterable(const <AgentWireEvent>[
+          AgentWireThinkingDelta('continued'),
+          AgentWireTextDelta('answer'),
+          AgentWireFinish(stopReason: StopReason.stop),
+        ]),
+        assistantPrefill: '  start\n',
+        prefillThinking: true,
+      );
+      final events = await stream.stream.toList();
+      final result = await stream.result();
+      expect(result.text, 'answer');
+      expect(
+        result.content.whereType<AssistantThinkingContent>().single.thinking,
+        '  start\ncontinued',
+      );
+      expect(
+        events.whereType<AmThinkingDelta>().map((e) => e.delta).join(),
+        '  start\ncontinued',
+      );
+      expect(
+        events.whereType<AmTextDelta>().map((e) => e.delta).join(),
+        'answer',
+      );
     },
   );
+  test('thinking prefix does not fabricate content on early failure', () async {
+    final stream = agentWireEventStream(
+      Stream.value(const AgentWireError('HTTP 400')),
+      assistantPrefill: 'prefix',
+      prefillThinking: true,
+    );
+    final result = await stream.result();
+    expect(result.content, isEmpty);
+    expect(result.stopReason, StopReason.error);
+  });
   test(
     'stream merges prefix once and records full text in final history',
     () async {

@@ -616,6 +616,78 @@ User instructions.
       },
     );
 
+    test(
+      'thinking prefill survives tool-result continuation in the notifier',
+      () async {
+        final config = container.read(promptAssistantConfigProvider.notifier);
+        await config.upsertProvider(ProviderPreset.deepseek.createConfig());
+        await config.upsertModel(
+          const ModelConfig(
+            providerId: 'deepseek',
+            name: 'deepseek-v4-pro',
+            displayName: 'DeepSeek V4 Pro',
+            forTask: AssistantTaskType.chat,
+          ),
+        );
+        final settings = container.read(agentSettingsProvider.notifier);
+        await settings.setModelReference(
+          const AgentModelReference(
+            providerId: 'deepseek',
+            model: 'deepseek-v4-pro',
+          ),
+        );
+        await settings.saveAssistantPrefill(enabled: true, prefill: '  先思考\n');
+        await _waitForProviderState<AgentChatState>(
+          container,
+          provider,
+          (state) => state.routeReady,
+          'Route not ready',
+        );
+        wireCompletion = (request) {
+          requests.add(request);
+          return Stream.fromIterable([
+            const AgentWireThinkingDelta('继续'),
+            if (requests.length == 1) ...[
+              // An unavailable tool produces a tool error and another response
+              // boundary, without invoking platform plugins or external APIs.
+              const AgentWireToolCallDone(
+                id: 'missing',
+                name: 'missing_tool',
+                arguments: {},
+              ),
+              const AgentWireFinish(stopReason: StopReason.toolUse),
+            ] else ...[
+              const AgentWireTextDelta('done'),
+              const AgentWireFinish(stopReason: StopReason.stop),
+            ],
+          ]);
+        };
+        final notifier = container.read(provider.notifier);
+        await notifier.setThinkingLevel(ThinkingLevel.high);
+        await notifier.send('run');
+        expect(requests, hasLength(2));
+        expect(
+          requests.map((r) => r.assistantPrefill),
+          everyElement('  先思考\n'),
+        );
+        expect(requests.last.messages.last, isA<ToolResultMessage>());
+        for (final message
+            in container
+                .read(provider)
+                .messages
+                .whereType<AssistantMessage>()) {
+          expect(
+            message.content
+                .whereType<AssistantThinkingContent>()
+                .single
+                .thinking,
+            '  先思考\n继续',
+          );
+          expect(message.text, isNot(contains('先思考')));
+        }
+      },
+    );
+
     test('temporary route loss preserves the session thinking level', () async {
       final configNotifier = container.read(
         promptAssistantConfigProvider.notifier,

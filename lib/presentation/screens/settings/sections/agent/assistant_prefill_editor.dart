@@ -7,7 +7,7 @@ import 'package:nai_launcher/presentation/agent_settings/providers/agent_setting
 import 'package:nai_launcher/presentation/widgets/common/app_toast.dart';
 import '../../widgets/settings_card.dart';
 
-/// 助手预填：作为助手回复开头随每个用户回合的首个请求发送。
+/// 助手预填：每次请求均发送，DeepSeek 用于思考开头。
 ///
 /// 内容保持空白，不提供示例或默认值；开关与文本框一起保存。
 class AssistantPrefillEditor extends ConsumerStatefulWidget {

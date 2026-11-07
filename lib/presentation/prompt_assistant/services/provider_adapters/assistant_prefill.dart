@@ -8,6 +8,10 @@ bool usesDeepSeekPrefill(AgentChatRequest request) =>
     Uri.tryParse(request.provider.baseUrl)?.host == 'api.deepseek.com' ||
     request.reasoningRequest?.api == AgentReasoningApi.deepSeek;
 
+bool usesThinkingPrefill(AgentChatRequest request) =>
+    request.assistantPrefill?.isNotEmpty == true &&
+    usesDeepSeekPrefill(request);
+
 String? validateAssistantPrefill(AgentChatRequest request) {
   if (request.assistantPrefill?.isNotEmpty != true) return null;
   if (request.provider.protocol != ProviderProtocol.openaiChatCompletions ||
@@ -17,6 +21,11 @@ String? validateAssistantPrefill(AgentChatRequest request) {
         'assistant continuation (for example DeepSeek). Disable prefill or '
         'select a compatible provider. Responses, Gemini, Anthropic and Ollama '
         'protocols are not enabled for prefill.';
+  }
+  if (usesThinkingPrefill(request) &&
+      !(request.reasoningRequest?.enabled ?? (request.reasoning != null))) {
+    return 'DeepSeek thinking prefill requires thinking mode. Select a '
+        'reasoning level or disable prefill.';
   }
   return null;
 }

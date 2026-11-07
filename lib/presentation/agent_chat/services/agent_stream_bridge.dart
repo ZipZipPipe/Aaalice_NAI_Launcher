@@ -13,6 +13,7 @@ AssistantMessageEventStream agentWireEventStream(
   String? provider,
   String? model,
   String? assistantPrefill,
+  bool prefillThinking = false,
 }) {
   final stream = EventStream<AssistantMessageEvent, AssistantMessage>();
 
@@ -52,20 +53,32 @@ AssistantMessageEventStream agentWireEventStream(
       if (!prefillPending) return;
       prefillPending = false;
       emitStart();
-      _appendText(content, assistantPrefill!);
-      stream.push(
-        AmTextDelta(
-          partial: finalMessage(),
-          delta: assistantPrefill,
-          contentIndex: content.length - 1,
-        ),
-      );
+      if (prefillThinking) {
+        _appendThinking(content, assistantPrefill!);
+        stream.push(
+          AmThinkingDelta(
+            partial: finalMessage(),
+            delta: assistantPrefill,
+            contentIndex: content.length - 1,
+          ),
+        );
+      } else {
+        _appendText(content, assistantPrefill!);
+        stream.push(
+          AmTextDelta(
+            partial: finalMessage(),
+            delta: assistantPrefill,
+            contentIndex: content.length - 1,
+          ),
+        );
+      }
     }
 
     try {
       await for (final event in wireEvents) {
         switch (event) {
           case wire.AgentWireThinkingDelta():
+            if (prefillThinking) emitPrefill();
             emitStart();
             var index = event.itemId == null
                 ? null

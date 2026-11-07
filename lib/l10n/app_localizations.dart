@@ -24244,7 +24244,7 @@ abstract class AppLocalizations {
   /// No description provided for @agentSettings_assistantPrefillDescription.
   ///
   /// In en, this message translates to:
-  /// **'Sets the opening of the assistant\'s reply. Mainly for DeepSeek and OpenAI-compatible services that allow assistant prefill; actual support depends on the provider.'**
+  /// **'DeepSeek uses this as the opening of its thinking. Other OpenAI-compatible services that support prefill use it as the reply opening; support varies by provider.'**
   String get agentSettings_assistantPrefillDescription;
 
   /// No description provided for @agentSettings_assistantPrefillEnabled.
@@ -24256,7 +24256,7 @@ abstract class AppLocalizations {
   /// No description provided for @agentSettings_assistantPrefillInput.
   ///
   /// In en, this message translates to:
-  /// **'Reply opening'**
+  /// **'Prefill content'**
   String get agentSettings_assistantPrefillInput;
 
   /// No description provided for @agentSettings_assistantPrefillHint.
@@ -24268,7 +24268,7 @@ abstract class AppLocalizations {
   /// No description provided for @agentSettings_assistantPrefillScope.
   ///
   /// In en, this message translates to:
-  /// **'Used only for the first request of each user turn. Tool continuations and summaries are not prefilled.'**
+  /// **'Used for every model request, including tool continuations, except background summaries. DeepSeek requires thinking mode.'**
   String get agentSettings_assistantPrefillScope;
 
   /// No description provided for @agentSettings_assistantPrefillSaved.

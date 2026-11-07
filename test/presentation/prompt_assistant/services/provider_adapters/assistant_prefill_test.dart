@@ -14,6 +14,7 @@ AgentChatRequest request({
   ProviderPreset? preset = ProviderPreset.deepseek,
   ProviderProtocol protocol = ProviderProtocol.openaiChatCompletions,
   String? prefix = '  prefix\n',
+  String? reasoning = 'max',
   List<Message>? messages,
 }) => AgentChatRequest(
   sessionId: 'test',
@@ -28,6 +29,7 @@ AgentChatRequest request({
   systemPrompt: 'system',
   apiKey: null,
   assistantPrefill: prefix,
+  reasoning: reasoning,
   messages: messages ?? [UserMessage.text('hello')],
   tools: const [Tool(name: 'read', description: 'read', parameters: {})],
 );
@@ -57,11 +59,13 @@ void main() {
       final payload = adapter.options!.data as Map;
       expect((payload['messages'] as List).last, {
         'role': 'assistant',
-        'content': '  prefix\n',
+        'content': '',
+        'reasoning_content': '  prefix\n',
         'prefix': true,
       });
-      expect(payload['tools'], isNotEmpty);
-      expect(payload['tool_choice'], 'auto');
+      expect(payload.containsKey('tools'), isFalse);
+      expect(payload.containsKey('tool_choice'), isFalse);
+      expect(payload['thinking'], {'type': 'enabled'});
     });
   }
   for (final prefix in [null, '']) {
@@ -77,6 +81,8 @@ void main() {
           (adapter.options!.data['messages'] as List).last['role'],
           'user',
         );
+        expect(adapter.options!.data['tools'], isNotEmpty);
+        expect(adapter.options!.data['tool_choice'], 'auto');
       },
     );
   }
@@ -157,7 +163,7 @@ void main() {
     expect(models, ['test-model']);
     expect(adapter.options!.uri.toString(), 'https://api.deepseek.com/models');
   });
-  test('historical assistants and tool pairs are left unchanged', () async {
+  test('tool history is serialized without mutating stored messages', () async {
     final messages = <Message>[
       AssistantMessage(
         content: [
@@ -178,12 +184,54 @@ void main() {
     addTearDown(dio.close);
     await AgentApiClient(dio).complete(request(messages: messages)).toList();
     final wire = adapter.options!.data['messages'] as List;
-    expect(wire[1]['content'], 'old');
+    expect(wire[1]['content'], startsWith('old\n<launcher_tool_calls>'));
+    expect(wire[1]['content'], contains('"id":"call"'));
     expect((wire[1] as Map).containsKey('prefix'), isFalse);
-    expect(wire[2]['tool_call_id'], 'call');
+    expect(wire[2]['role'], 'user');
+    expect(wire[2]['content'], contains('"id":"call"'));
+    expect(
+      wire.every((m) => m['role'] != 'tool' && !m.containsKey('tool_calls')),
+      isTrue,
+    );
     expect(wire.last['prefix'], true);
     expect(messages, hasLength(3));
+    expect((messages.first as AssistantMessage).text, 'old');
   });
+  test(
+    'thinking off reports an actionable error before network access',
+    () async {
+      final adapter = CaptureAdapter();
+      final dio = Dio()..httpClientAdapter = adapter;
+      addTearDown(dio.close);
+      final events = await AgentApiClient(
+        dio,
+      ).complete(request(reasoning: null)).toList();
+      expect(events.single, isA<AgentWireError>());
+      expect(
+        (events.single as AgentWireError).message,
+        contains('thinking mode'),
+      );
+      expect(adapter.calls, 0);
+    },
+  );
+  test(
+    'retry reuses the exact prefix without changing stored history',
+    () async {
+      final adapter = CaptureAdapter();
+      final dio = Dio()..httpClientAdapter = adapter;
+      addTearDown(dio.close);
+      final input = request();
+      for (var attempt = 0; attempt < 2; attempt++) {
+        await AgentApiClient(dio).complete(input).toList();
+        final messages = adapter.options!.data['messages'] as List;
+        expect(messages.where((m) => m['prefix'] == true), hasLength(1));
+        expect(messages.last['reasoning_content'], '  prefix\n');
+        expect(input.messages, hasLength(1));
+        expect(input.messages.single, isA<UserMessage>());
+      }
+      expect(adapter.calls, 2);
+    },
+  );
 }
 
 class CaptureAdapter implements HttpClientAdapter {

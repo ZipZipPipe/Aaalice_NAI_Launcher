@@ -13954,14 +13954,14 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get agentSettings_assistantPrefillDescription =>
-      'Sets the opening of the assistant\'s reply. Mainly for DeepSeek and OpenAI-compatible services that allow assistant prefill; actual support depends on the provider.';
+      'DeepSeek uses this as the opening of its thinking. Other OpenAI-compatible services that support prefill use it as the reply opening; support varies by provider.';
 
   @override
   String get agentSettings_assistantPrefillEnabled =>
       'Enable assistant prefill';
 
   @override
-  String get agentSettings_assistantPrefillInput => 'Reply opening';
+  String get agentSettings_assistantPrefillInput => 'Prefill content';
 
   @override
   String get agentSettings_assistantPrefillHint =>
@@ -13969,7 +13969,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get agentSettings_assistantPrefillScope =>
-      'Used only for the first request of each user turn. Tool continuations and summaries are not prefilled.';
+      'Used for every model request, including tool continuations, except background summaries. DeepSeek requires thinking mode.';
 
   @override
   String get agentSettings_assistantPrefillSaved => 'Assistant prefill saved';

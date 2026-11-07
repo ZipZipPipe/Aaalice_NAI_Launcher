@@ -33,6 +33,7 @@ import '../../prompt_assistant/models/agent_protocol.dart';
 import '../../prompt_assistant/providers/prompt_assistant_config_provider.dart';
 import '../../prompt_assistant/providers/web_access_provider.dart';
 import '../../prompt_assistant/services/prompt_assistant_service.dart';
+import '../../prompt_assistant/services/provider_adapters/assistant_prefill.dart';
 import '../../providers/fixed_tags_provider.dart';
 import '../../providers/precise_ref_library_provider.dart';
 import '../../providers/tag_library_page_provider.dart';
@@ -727,6 +728,7 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
         provider: request.provider.id,
         model: request.model,
         assistantPrefill: request.assistantPrefill,
+        prefillThinking: usesThinkingPrefill(request),
       );
     } catch (e) {
       return _errorStream(e.toString());

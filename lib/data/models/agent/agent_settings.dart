@@ -153,7 +153,7 @@ class AgentChatConfig {
   /// 是否启用助手预填。
   final bool assistantPrefillEnabled;
 
-  /// 预填文本：作为助手回复的开头随每个用户回合的首个请求发送。
+  /// 每次模型请求的前缀：DeepSeek 用于思考，其他兼容服务用于正文。
   /// 原样保留用户输入的空格与换行，不做 trim。
   final String assistantPrefill;
 

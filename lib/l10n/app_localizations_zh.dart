@@ -13346,20 +13346,20 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get agentSettings_assistantPrefillDescription =>
-      '设置助手回复的开头。主要面向允许助手预填的 DeepSeek 与 OpenAI 兼容接口，具体支持情况依服务商而定。';
+      'DeepSeek 将内容作为思考的开头；其他支持预填的 OpenAI 兼容服务将其作为回复开头，具体支持情况依服务商而定。';
 
   @override
   String get agentSettings_assistantPrefillEnabled => '启用助手预填';
 
   @override
-  String get agentSettings_assistantPrefillInput => '回复开头';
+  String get agentSettings_assistantPrefillInput => '预填内容';
 
   @override
   String get agentSettings_assistantPrefillHint => '空格与换行会按原样发送。';
 
   @override
   String get agentSettings_assistantPrefillScope =>
-      '仅用于每个用户回合的首次请求；工具续跑与摘要不会注入预填内容。';
+      '每次模型请求（含工具续跑）均使用；后台摘要不使用。DeepSeek 需要开启思考模式。';
 
   @override
   String get agentSettings_assistantPrefillSaved => '助手预填已保存';
@@ -27944,20 +27944,20 @@ class AppLocalizationsZhHant extends AppLocalizationsZh {
 
   @override
   String get agentSettings_assistantPrefillDescription =>
-      '設定助手回覆的開頭。主要面向允許助手預填的 DeepSeek 與 OpenAI 相容介面，實際支援情況依供應商而定。';
+      'DeepSeek 將內容作為思考的開頭；其他支援預填的 OpenAI 相容服務將其作為回覆開頭，實際支援情況依供應商而定。';
 
   @override
   String get agentSettings_assistantPrefillEnabled => '啟用助手預填';
 
   @override
-  String get agentSettings_assistantPrefillInput => '回覆開頭';
+  String get agentSettings_assistantPrefillInput => '預填內容';
 
   @override
   String get agentSettings_assistantPrefillHint => '空格與換行會依原樣傳送。';
 
   @override
   String get agentSettings_assistantPrefillScope =>
-      '僅用於每個使用者回合的首次請求；工具續跑與摘要不會注入預填內容。';
+      '每次模型請求（含工具續跑）均使用；背景摘要不使用。DeepSeek 需要開啟思考模式。';
 
   @override
   String get agentSettings_assistantPrefillSaved => '助手預填已儲存';

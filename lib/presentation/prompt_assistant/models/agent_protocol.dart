@@ -74,7 +74,9 @@ class AgentChatRequest {
     this.assistantPrefill,
   });
 
-  /// Exact assistant prefix for this request only; never stored as a separate turn.
+  /// Exact prefix for this response boundary, including tool continuations.
+  /// DeepSeek continues reasoning; other compatible providers continue text.
+  /// Never stored as a separate turn.
   final String? assistantPrefill;
 
   final String sessionId;

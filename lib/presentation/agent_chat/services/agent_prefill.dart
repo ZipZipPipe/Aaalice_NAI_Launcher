@@ -1,8 +1,8 @@
 import '../../../core/agent/agent_types.dart';
 import '../../../data/models/agent/agent_settings.dart';
 
-/// Use a prefix only at a user-message boundary, never for summaries or tool
-/// continuations. A retry resolves the same prefix without mutating history.
+/// Resolve a fresh prefix at every response boundary, including tool results.
+/// Summaries opt out. Retries never mutate or append to existing history.
 String? resolveAgentPrefill({
   required AgentChatConfig chat,
   required List<Message> messages,
@@ -11,8 +11,7 @@ String? resolveAgentPrefill({
   if (!allowPrefill ||
       !chat.assistantPrefillEnabled ||
       chat.assistantPrefill.isEmpty ||
-      messages.isEmpty ||
-      messages.last is! UserMessage) {
+      messages.isEmpty) {
     return null;
   }
   return chat.assistantPrefill;

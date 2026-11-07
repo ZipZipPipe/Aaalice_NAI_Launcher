@@ -13590,20 +13590,20 @@ class AppLocalizationsJa extends AppLocalizations {
 
   @override
   String get agentSettings_assistantPrefillDescription =>
-      'アシスタントの応答の書き出しを設定します。アシスタントプリフィルに対応する DeepSeek や OpenAI 互換サービスが主な対象で、対応状況はプロバイダーによって異なります。';
+      'DeepSeek では思考の書き出しとして使用します。プリフィル対応の他の OpenAI 互換サービスでは応答の書き出しとして使用し、対応状況はプロバイダーによって異なります。';
 
   @override
   String get agentSettings_assistantPrefillEnabled => 'アシスタントプリフィルを有効にする';
 
   @override
-  String get agentSettings_assistantPrefillInput => '応答の書き出し';
+  String get agentSettings_assistantPrefillInput => 'プリフィル内容';
 
   @override
   String get agentSettings_assistantPrefillHint => 'スペースと改行は入力どおりに送信されます。';
 
   @override
   String get agentSettings_assistantPrefillScope =>
-      '各ユーザーターンの最初のリクエストにのみ使用されます。ツールの継続実行と要約にはプリフィルを挿入しません。';
+      'ツールの継続実行を含む各モデルリクエストで使用します。バックグラウンドの要約には使用しません。DeepSeek では思考モードが必要です。';
 
   @override
   String get agentSettings_assistantPrefillSaved => 'アシスタントプリフィルを保存しました';
