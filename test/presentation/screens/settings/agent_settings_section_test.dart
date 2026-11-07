@@ -1100,31 +1100,31 @@ void main() {
       expect(tester.widget<TextField>(input).controller!.text, isEmpty);
       expect(tester.widget<SwitchListTile>(toggle).value, isFalse);
 
-      await tester.ensureVisible(toggle);
+      // 直接驱动开关回调，避免窄屏滚动后点击坐标落到卡片边缘。
+      tester.widget<SwitchListTile>(toggle).onChanged!(true);
       await tester.pump();
-      await tester.tap(toggle);
-      await tester.pump(const Duration(milliseconds: 200));
+      expect(tester.widget<SwitchListTile>(toggle).value, isTrue);
       expect(tester.widget<FilledButton>(save).onPressed, isNull);
 
       const prefill = '  好的，\n我来处理。  ';
-      await tester.ensureVisible(input);
-      await tester.pump();
       await tester.enterText(input, prefill);
       await tester.pump();
       expect(tester.takeException(), isNull);
       expect(tester.widget<FilledButton>(save).onPressed, isNotNull);
 
-      await tester.ensureVisible(save);
-      await tester.pump();
-      await tester.tap(save);
-      await tester.pump();
-      for (var attempt = 0; attempt < 50; attempt++) {
-        final chat = container.read(agentSettingsProvider).settings.chat;
-        if (chat.assistantPrefill == prefill && chat.assistantPrefillEnabled) {
-          break;
+      // 保存会写真实存储，必须在真实事件循环里等待完成。
+      await tester.runAsync(() async {
+        tester.widget<FilledButton>(save).onPressed!();
+        for (var attempt = 0; attempt < 100; attempt++) {
+          final chat = container.read(agentSettingsProvider).settings.chat;
+          if (chat.assistantPrefill == prefill &&
+              chat.assistantPrefillEnabled) {
+            return;
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 10));
         }
-        await tester.pump(const Duration(milliseconds: 20));
-      }
+      });
+      await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 
       final saved = container.read(agentSettingsProvider);
