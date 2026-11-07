@@ -1079,6 +1079,15 @@ void main() {
     final save = find.byKey(const ValueKey('agent-assistant-prefill-save'));
 
     try {
+      // 初始化会扫描真实目录，必须让真实事件循环完成 I/O。
+      await tester.runAsync(() async {
+        container.read(agentSettingsProvider);
+        for (var attempt = 0; attempt < 100; attempt++) {
+          if (container.read(agentSettingsProvider).initialized) return;
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+        fail('Agent settings did not initialize.');
+      });
       await pumpEditor();
       final initial = container.read(agentSettingsProvider);
       expect(
@@ -1141,6 +1150,7 @@ void main() {
       }
     } finally {
       await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump(const Duration(seconds: 5));
       container.dispose();
       await tester.binding.setSurfaceSize(null);
       if (root.existsSync()) root.deleteSync(recursive: true);
