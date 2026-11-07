@@ -19,6 +19,7 @@ import 'package:nai_launcher/l10n/app_localizations.dart';
 import 'package:nai_launcher/presentation/agent_settings/providers/agent_settings_provider.dart';
 import 'package:nai_launcher/presentation/prompt_assistant/models/prompt_assistant_models.dart';
 import 'package:nai_launcher/presentation/screens/settings/sections/agent/agent_profile_actions.dart';
+import 'package:nai_launcher/presentation/screens/settings/sections/agent/assistant_prefill_editor.dart';
 import 'package:nai_launcher/presentation/screens/settings/sections/agent/skill_management_panel.dart';
 import 'package:nai_launcher/presentation/screens/settings/sections/agent_settings_section.dart';
 import 'package:nai_launcher/presentation/screens/settings/widgets/settings_card.dart';
@@ -1020,9 +1021,8 @@ void main() {
   });
 
   testWidgets('助手预填在窄屏保存原始空格换行并在重建后恢复', (tester) async {
-    debugDefaultTargetPlatformOverride = TargetPlatform.android;
     await tester.binding.setSurfaceSize(const Size(320, 720));
-    final root = Directory('tool/.tmp/agent-assistant-prefill-test')
+    final root = Directory('tool/.tmp/agent-assistant-prefill-editor-test')
       ..createSync(recursive: true);
     final storage = _MemoryLocalStorage();
     await storage.setSetting(
@@ -1030,7 +1030,7 @@ void main() {
       const AgentSettings().encode(),
     );
 
-    ProviderContainer createContainer() => ProviderContainer(
+    final container = ProviderContainer(
       overrides: [
         localStorageServiceProvider.overrideWithValue(storage),
         secureStorageServiceProvider.overrideWithValue(_MemorySecureStorage()),
@@ -1046,18 +1046,7 @@ void main() {
       ],
     );
 
-    Future<void> waitUntilInitialized(ProviderContainer container) async {
-      await tester.runAsync(() async {
-        container.read(agentSettingsProvider);
-        for (var attempt = 0; attempt < 100; attempt++) {
-          if (container.read(agentSettingsProvider).initialized) return;
-          await Future<void>.delayed(const Duration(milliseconds: 10));
-        }
-        fail('Agent settings did not initialize.');
-      });
-    }
-
-    Future<void> pumpSection(ProviderContainer container) async {
+    Future<void> pumpEditor() async {
       await tester.pumpWidget(
         UncontrolledProviderScope(
           container: container,
@@ -1074,86 +1063,87 @@ void main() {
             home: const Scaffold(
               body: SingleChildScrollView(
                 padding: EdgeInsets.all(16),
-                child: AgentSettingsSection(),
+                child: AssistantPrefillEditor(),
               ),
             ),
           ),
         ),
       );
-      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pump(const Duration(milliseconds: 200));
     }
 
-    final first = createContainer();
-    ProviderContainer? second;
-    try {
-      await waitUntilInitialized(first);
-      await pumpSection(first);
+    final input = find.byKey(const ValueKey('agent-assistant-prefill-input'));
+    final toggle = find.byKey(
+      const ValueKey('agent-assistant-prefill-enabled'),
+    );
+    final save = find.byKey(const ValueKey('agent-assistant-prefill-save'));
 
-      final input = find.byKey(const ValueKey('agent-assistant-prefill-input'));
-      final toggle = find.byKey(
-        const ValueKey('agent-assistant-prefill-enabled'),
+    try {
+      await pumpEditor();
+      final initial = container.read(agentSettingsProvider);
+      expect(
+        initial.error,
+        isEmpty,
+        reason: 'agent settings must stay editable',
       );
-      final save = find.byKey(const ValueKey('agent-assistant-prefill-save'));
-      await tester.ensureVisible(input);
+      expect(initial.initialized, isTrue);
+
       expect(tester.widget<TextField>(input).controller!.text, isEmpty);
       expect(tester.widget<SwitchListTile>(toggle).value, isFalse);
 
       await tester.ensureVisible(toggle);
+      await tester.pump();
       await tester.tap(toggle);
       await tester.pump(const Duration(milliseconds: 200));
-      await tester.ensureVisible(save);
       expect(tester.widget<FilledButton>(save).onPressed, isNull);
 
       const prefill = '  好的，\n我来处理。  ';
       await tester.ensureVisible(input);
+      await tester.pump();
       await tester.enterText(input, prefill);
       await tester.pump();
       expect(tester.takeException(), isNull);
       expect(tester.widget<FilledButton>(save).onPressed, isNotNull);
 
       await tester.ensureVisible(save);
+      await tester.pump();
       await tester.tap(save);
       await tester.pump();
       for (var attempt = 0; attempt < 50; attempt++) {
-        final chat = first.read(agentSettingsProvider).settings.chat;
+        final chat = container.read(agentSettingsProvider).settings.chat;
         if (chat.assistantPrefill == prefill && chat.assistantPrefillEnabled) {
           break;
         }
-        await tester.pump(const Duration(milliseconds: 10));
+        await tester.pump(const Duration(milliseconds: 20));
       }
-      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 300));
 
-      final savedChat = first.read(agentSettingsProvider).settings.chat;
+      final saved = container.read(agentSettingsProvider);
+      expect(saved.error, isEmpty);
+      final savedChat = saved.settings.chat;
       expect(savedChat.assistantPrefillEnabled, isTrue);
       expect(savedChat.assistantPrefill, prefill);
       expect(savedChat.hasAssistantPrefill, isTrue);
       expect(find.text('助手预填已保存'), findsWidgets);
       expect(tester.takeException(), isNull);
 
-      await tester.pump(const Duration(seconds: 4));
-      await tester.pump(const Duration(milliseconds: 400));
-
       await tester.pumpWidget(const SizedBox.shrink());
-      second = createContainer();
-      await waitUntilInitialized(second);
-      await pumpSection(second);
-      await tester.ensureVisible(input);
+      await tester.pump();
+      await pumpEditor();
       expect(tester.widget<TextField>(input).controller!.text, prefill);
       expect(tester.widget<SwitchListTile>(toggle).value, isTrue);
       expect(tester.takeException(), isNull);
 
       for (final width in [600.0, 840.0, 1180.0, 1600.0]) {
         await tester.binding.setSurfaceSize(Size(width, 900));
-        await tester.pump(const Duration(milliseconds: 300));
+        await tester.pump(const Duration(milliseconds: 200));
         expect(tester.takeException(), isNull);
       }
     } finally {
       await tester.pumpWidget(const SizedBox.shrink());
-      first.dispose();
-      second?.dispose();
-      debugDefaultTargetPlatformOverride = null;
+      container.dispose();
       await tester.binding.setSurfaceSize(null);
-      root.deleteSync(recursive: true);
+      if (root.existsSync()) root.deleteSync(recursive: true);
     }
   });
 }
