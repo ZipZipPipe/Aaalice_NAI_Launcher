@@ -34,7 +34,10 @@ void main() {
   tearDownAll(() async {
     PlatformCapabilities.debugOverride = null;
     // Windows CI 上 Hive 偶发不返回 close 的 Future，限制清理等待避免占满分片时限。
-    await Hive.close().timeout(const Duration(seconds: 10), onTimeout: () {});
+    await Hive.close().timeout(
+      const Duration(seconds: 10),
+      onTimeout: () => const <void>[],
+    );
     try {
       if (await hiveDirectory.exists()) {
         await hiveDirectory.delete(recursive: true);
