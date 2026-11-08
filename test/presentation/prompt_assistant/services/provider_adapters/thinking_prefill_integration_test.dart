@@ -14,6 +14,7 @@ import 'package:nai_launcher/presentation/prompt_assistant/models/prompt_assista
 import 'package:nai_launcher/presentation/prompt_assistant/services/provider_adapters/thinking_prefill_messages.dart';
 
 const prefix = '  我先检查当前状态。\n';
+const toolPreamble = '这就用这套标签重绘一次，看效果。\n\n';
 const model = Model(id: 'test', name: 'Test', api: 'test', provider: 'test');
 const chat = AgentChatConfig(
   assistantPrefillEnabled: true,
@@ -21,10 +22,10 @@ const chat = AgentChatConfig(
 );
 
 void main() {
-  test(
-    'real agent loop prefills thinking across two tool executions',
-    () async {
-      final run = await _run();
+  for (final preamble in ['', toolPreamble]) {
+    test('real agent loop prefills thinking across two tool executions '
+        '(${preamble.isEmpty ? 'bare' : 'mixed'} tool reply)', () async {
+      final run = await _run(toolPreamble: preamble);
       expect(run.tool.executions, 2);
       expect(run.approvals, 2);
       expect(run.service.requests, hasLength(3));
@@ -37,7 +38,9 @@ void main() {
           '$prefix继续思考',
         );
         expect(message.text, isNot(contains(prefix)));
+        expect(message.text, isNot(contains('<launcher_tool_calls>')));
       }
+      expect(assistants.take(2).map((m) => m.text), [preamble, preamble]);
       expect(assistants.last.text, '已完成。');
       final ids = assistants
           .expand((m) => m.toolCalls)
@@ -69,13 +72,17 @@ void main() {
             (m['content'] as String).contains('launcher_tool_result'),
       );
       expect(observations, hasLength(2));
-    },
-  );
+    });
+  }
 
   test(
     'existing permissions still block text-protocol tool execution',
     () async {
-      final run = await _run(blocked: true, toolRounds: 1);
+      final run = await _run(
+        blocked: true,
+        toolRounds: 1,
+        toolPreamble: toolPreamble,
+      );
       expect(run.approvals, 1);
       expect(run.tool.executions, 0);
       expect(
@@ -93,7 +100,11 @@ void main() {
   test(
     'existing argument validation runs before permissions and execution',
     () async {
-      final run = await _run(arguments: {'path': 42}, toolRounds: 1);
+      final run = await _run(
+        arguments: {'path': 42},
+        toolRounds: 1,
+        toolPreamble: toolPreamble,
+      );
       expect(run.approvals, 0);
       expect(run.tool.executions, 0);
       expect(
@@ -108,7 +119,11 @@ void main() {
     test(
       'transport finish $finish cannot execute a complete tool envelope',
       () async {
-        final run = await _run(finish: finish, toolRounds: 1);
+        final run = await _run(
+          finish: finish,
+          toolRounds: 1,
+          toolPreamble: toolPreamble,
+        );
         expect(run.tool.executions, 0);
         expect(run.approvals, 0);
         expect(run.service.requests, hasLength(1));
@@ -123,7 +138,11 @@ void main() {
   test(
     'cancellation after tool text cannot execute the pending request',
     () async {
-      final run = await _run(cancelAfterContent: true, toolRounds: 1);
+      final run = await _run(
+        cancelAfterContent: true,
+        toolRounds: 1,
+        toolPreamble: toolPreamble,
+      );
       expect(run.tool.executions, 0);
       expect(run.approvals, 0);
       expect(
@@ -210,12 +229,14 @@ Future<_Run> _run({
   int toolRounds = 2,
   String? finish = 'stop',
   bool cancelAfterContent = false,
+  String toolPreamble = '',
 }) async {
   final service = _StrictService(
     arguments,
     toolRounds,
     finish,
     cancelAfterContent,
+    toolPreamble: toolPreamble,
   );
   final dio = Dio()..httpClientAdapter = service;
   final client = AgentApiClient(dio);
@@ -297,12 +318,14 @@ class _StrictService implements HttpClientAdapter {
     this.arguments,
     this.toolRounds,
     this.finish,
-    this.cancelAfterContent,
-  );
+    this.cancelAfterContent, {
+    this.toolPreamble = '',
+  });
   final Map<String, dynamic> arguments;
   final int toolRounds;
   final String? finish;
   final bool cancelAfterContent;
+  final String toolPreamble;
   final requests = <Map<String, dynamic>>[];
   @override
   Future<ResponseBody> fetch(
@@ -331,7 +354,7 @@ class _StrictService implements HttpClientAdapter {
       );
     }
     final content = requests.length <= toolRounds
-        ? '<launcher_tool_calls>${jsonEncode([
+        ? '$toolPreamble<launcher_tool_calls>${jsonEncode([
             {'name': 'read', 'arguments': arguments},
           ])}</launcher_tool_calls>'
         : '已完成。';

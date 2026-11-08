@@ -15,10 +15,13 @@ List<Map<String, dynamic>> buildThinkingPrefillMessages(
       ? ''
       : '''
 Launcher tool protocol:
-To use tools, your entire answer content must be $prefillToolStart followed by
-a JSON array of objects with "name" and "arguments", then $prefillToolEnd.
+To use tools, end your answer with one standalone tool block: $prefillToolStart
+followed by a JSON array of objects with "name" and "arguments", then
+$prefillToolEnd. Start the opening tag on a new line, outside Markdown code.
 Example: $prefillToolStart[{"name":"tool_name","arguments":{}}]$prefillToolEnd
-Do not use Markdown fences, add prose around a tool request, or invent tools.
+You may write a brief explanation before the block. Do not write anything after
+it, split calls across blocks, wrap it in Markdown fences, or invent tools.
+Show protocol examples only inside fenced code blocks, never as a tool block.
 Use only the tools listed below and follow their parameter schemas. Wait for
 their results before claiming success. The client assigns tool call IDs.
 When no tool is needed, respond with ordinary answer text, without these tags.

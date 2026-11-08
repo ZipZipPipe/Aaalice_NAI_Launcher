@@ -6,40 +6,87 @@ import '../../../../core/agent/agent_types.dart';
 import '../../models/agent_protocol.dart';
 import 'thinking_prefill_messages.dart';
 
-/// Streams ordinary text, but buffers an explicitly framed tool request until
-/// the response finishes normally. Partial, cancelled or malformed batches
-/// never emit executable tool events.
+/// Streams prose and buffers a standalone final tool frame until the response
+/// finishes normally. Inline examples and Markdown code stay literal; partial,
+/// cancelled or malformed batches never emit executable tool events.
 class PrefillToolDecoder {
   PrefillToolDecoder(List<Tool> tools)
     : _names = tools.map((tool) => tool.name).toSet();
 
   final Set<String> _names;
   final StringBuffer _buffer = StringBuffer();
-  bool _plainText = false;
+  final StringBuffer _line = StringBuffer();
+  String _pendingStart = '';
+  bool _lineStart = true;
+  int _indent = 0;
+  String? _fenceMarker;
   bool _toolFrame = false;
   bool _finished = false;
   static const _maxToolCharacters = 1024 * 1024;
+  static final _fenceLine = RegExp(r'^ {0,3}(`{3,}|~{3,})(.*)$');
 
   List<AgentWireEvent> push(String delta) {
     if (_finished || delta.isEmpty) return const [];
-    if (_plainText) return [AgentWireTextDelta(delta)];
-    _buffer.write(delta);
     if (_toolFrame) {
+      _buffer.write(delta);
       _checkSize();
       return const [];
     }
-    final content = _buffer.toString().trimLeft();
-    if (content.startsWith(prefillToolStart)) {
-      _toolFrame = true;
-      _checkSize();
-      return const [];
+    final text = StringBuffer();
+    for (var index = 0; index < delta.length; index++) {
+      final character = delta[index];
+      if (_pendingStart.isNotEmpty) {
+        _pendingStart += character;
+        if (_pendingStart == prefillToolStart) {
+          _toolFrame = true;
+          _buffer.write(_pendingStart);
+          _buffer.write(delta.substring(index + 1));
+          _pendingStart = '';
+          _line.clear();
+          _checkSize();
+          break;
+        }
+        if (!prefillToolStart.startsWith(_pendingStart)) {
+          text.write(_pendingStart);
+          _pendingStart = '';
+        }
+      } else if (_lineStart && _fenceMarker == null && character == '<') {
+        _pendingStart = character;
+      } else {
+        text.write(character);
+      }
+      _trackLine(character);
     }
-    if (prefillToolStart.startsWith(content)) {
-      _checkSize();
-      return const [];
+    return text.isEmpty ? const [] : [AgentWireTextDelta(text.toString())];
+  }
+
+  void _trackLine(String character) {
+    if (character == '\n' || character == '\r') {
+      final fence = _fenceLine.firstMatch(_line.toString());
+      if (fence != null) {
+        final marker = fence.group(1)!;
+        final suffix = fence.group(2)!;
+        if (_fenceMarker == null) {
+          if (marker[0] != '`' || !suffix.contains('`')) {
+            _fenceMarker = marker;
+          }
+        } else if (marker[0] == _fenceMarker![0] &&
+            marker.length >= _fenceMarker!.length &&
+            suffix.trim().isEmpty) {
+          _fenceMarker = null;
+        }
+      }
+      _line.clear();
+      _lineStart = true;
+      _indent = 0;
+      return;
     }
-    _plainText = true;
-    return [AgentWireTextDelta(_buffer.toString())];
+    _line.write(character);
+    if (_lineStart && character == ' ' && _indent < 3) {
+      _indent++;
+    } else {
+      _lineStart = false;
+    }
   }
 
   void _checkSize() {
@@ -53,13 +100,14 @@ class PrefillToolDecoder {
   List<AgentWireEvent> finish({required String? reason, Usage? usage}) {
     if (_finished) return const [];
     _finished = true;
-    if (_plainText) {
-      return [AgentWireFinish(stopReason: _stopReason(reason), usage: usage)];
+    if (!_toolFrame && !_pendingStart.startsWith('<launcher_')) {
+      return [
+        if (_pendingStart.isNotEmpty) AgentWireTextDelta(_pendingStart),
+        AgentWireFinish(stopReason: _stopReason(reason), usage: usage),
+      ];
     }
+    _buffer.write(_pendingStart);
     final content = _buffer.toString().trim();
-    if (content.isEmpty) {
-      return [AgentWireFinish(stopReason: _stopReason(reason), usage: usage)];
-    }
     if (reason != 'stop') {
       return const [
         AgentWireError(
