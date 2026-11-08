@@ -177,6 +177,13 @@ class AgentWireError extends AgentWireEvent {
   final bool transient;
 }
 
+/// 适配层丢弃了不可用的首次回复（例如思考预填续跑返回空正文且无工具
+/// 块）并重启生成。消费方应丢弃已生成内容、保留预填前缀，等待重试
+/// 事件流重建同一条助手消息。
+class AgentWireRestart extends AgentWireEvent {
+  const AgentWireRestart();
+}
+
 /// 用户消息内联图片的便捷提取（适配器构造 payload 用）。
 List<({Uint8List bytes, String mimeType})> inlineImagesOf(Message message) {
   if (message is! UserMessage) {

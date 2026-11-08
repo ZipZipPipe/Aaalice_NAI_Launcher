@@ -98,6 +98,21 @@ void main() {
     expect(decoder.finish(reason: 'stop').single, isA<AgentWireFinish>());
   });
 
+  test('sawAnswerText only tracks visible prose, whitespace never counts', () {
+    final decoder = PrefillToolDecoder(tools);
+    expect(decoder.sawAnswerText, isFalse);
+    expect(decoder.hasToolFrame, isFalse);
+    decoder.push('  \r\n\t');
+    expect(decoder.sawAnswerText, isFalse);
+    decoder.push(introduction);
+    expect(decoder.sawAnswerText, isTrue);
+
+    final bare = PrefillToolDecoder(tools)..push(frame);
+    expect(bare.sawAnswerText, isFalse);
+    expect(bare.hasToolFrame, isTrue);
+    bare.finish(reason: 'stop');
+  });
+
   for (final reason in [
     'length',
     'content_filter',

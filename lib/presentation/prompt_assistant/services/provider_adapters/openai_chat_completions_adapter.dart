@@ -129,7 +129,41 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
       return;
     }
 
-    final payload = _buildAgentPayload(request, stream: true);
+    // 思考预填续跑可能只返回思考而无正文与工具块。此时发出 Restart 让
+    // 消费方丢弃该次已流出的生成，并带显式提醒重发一次；仍为空则报错，
+    // 保证运行始终有可见收尾，而不是静默完成。
+    var retriedEmptyContinuation = false;
+    while (true) {
+      var retryEmptyContinuation = false;
+      await for (final event in _completeAgentStreamOnce(
+        dio: dio,
+        request: request,
+        cancelToken: cancelToken,
+        remindContinue: retriedEmptyContinuation,
+        onEmptyContinuation: () => retryEmptyContinuation = true,
+      )) {
+        yield event;
+      }
+      if (retryEmptyContinuation && !retriedEmptyContinuation) {
+        retriedEmptyContinuation = true;
+        continue;
+      }
+      return;
+    }
+  }
+
+  Stream<AgentWireEvent> _completeAgentStreamOnce({
+    required Dio dio,
+    required AgentChatRequest request,
+    required CancelToken cancelToken,
+    required bool remindContinue,
+    required void Function() onEmptyContinuation,
+  }) async* {
+    final payload = _buildAgentPayload(
+      request,
+      stream: true,
+      remindContinue: remindContinue,
+    );
     final textTools = usesThinkingPrefill(request) && request.tools.isNotEmpty
         ? PrefillToolDecoder(request.tools)
         : null;
@@ -291,6 +325,26 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
     }
 
     if (textTools != null) {
+      // 续跑（上一条为工具结果）只返回思考、既无正文也无工具块时，该次
+      // 生成没有可执行内容。首次丢弃并让外层带提醒重试一次；重试后仍为
+      // 空则显式报错，保证运行始终有可见收尾。
+      final isContinuation = request.messages.last is ToolResultMessage;
+      if (isContinuation &&
+          (finishReason == 'stop' || finishReason == 'length') &&
+          !textTools.sawAnswerText &&
+          !textTools.hasToolFrame) {
+        if (!remindContinue) {
+          onEmptyContinuation();
+          yield const AgentWireRestart();
+          return;
+        }
+        yield const AgentWireError(
+          'Thinking prefill continuation produced no answer text and no tool '
+          'request (even after one retry). Continue the task manually, '
+          'disable prefill, or shorten the prefix.',
+        );
+        return;
+      }
       yield* Stream.fromIterable(
         textTools.finish(reason: finishReason, usage: usage),
       );
@@ -396,12 +450,13 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
   Map<String, dynamic> _buildAgentPayload(
     AgentChatRequest request, {
     required bool stream,
+    bool remindContinue = false,
   }) {
     return {
       'model': request.model,
       if (stream) 'stream': true,
       if (stream) 'stream_options': {'include_usage': true},
-      'messages': _buildAgentMessages(request),
+      'messages': _buildAgentMessages(request, remindContinue: remindContinue),
       if (request.effectiveMaxOutputTokens case final maxTokens?)
         _maxTokensField(
           request.provider,
@@ -442,9 +497,15 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
     return chatReasoningPayload(reasoning);
   }
 
-  List<Map<String, dynamic>> _buildAgentMessages(AgentChatRequest request) {
+  List<Map<String, dynamic>> _buildAgentMessages(
+    AgentChatRequest request, {
+    bool remindContinue = false,
+  }) {
     if (usesThinkingPrefill(request)) {
-      return buildThinkingPrefillMessages(request);
+      return buildThinkingPrefillMessages(
+        request,
+        remindContinue: remindContinue,
+      );
     }
     return [
       if (request.systemPrompt.trim().isNotEmpty)

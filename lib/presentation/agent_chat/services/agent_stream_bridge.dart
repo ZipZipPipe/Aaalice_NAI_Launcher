@@ -154,6 +154,16 @@ AssistantMessageEventStream agentWireEventStream(
                 contentIndex: content.length - 1,
               ),
             );
+          case wire.AgentWireRestart():
+            // 适配层将重启生成（如思考预填续跑的空回复重试）。丢弃本次
+            // 已累积的内容并恢复预填注入状态；started 保持 true，消费方
+            // 沿用同一条助手消息槽，不会看到重复的开始事件。
+            content.clear();
+            thinkingIndexes.clear();
+            prefillPending = assistantPrefill?.isNotEmpty == true;
+            errorMessage = null;
+            stopReason = StopReason.stop;
+            usage = null;
           case wire.AgentWireToolCallDone():
             emitPrefill();
             emitStart();

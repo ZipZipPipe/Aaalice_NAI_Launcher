@@ -136,6 +136,45 @@ void main() {
   }
 
   test(
+    'empty thinking-only continuation restarts with a reminder and recovers',
+    () async {
+      final run = await _run(toolRounds: 1, emptyContinuations: 1);
+      // 首轮工具 + 一次空续跑（重试）+ 成功收尾。
+      expect(run.service.requests, hasLength(3));
+      expect(run.tool.executions, 1);
+      final assistants = run.messages.whereType<AssistantMessage>().toList();
+      expect(assistants, hasLength(2));
+      // 空续跑的思考被丢弃：恢复后的助手消息只含预填 + 继续思考。
+      for (final message in assistants) {
+        expect(message.text, isNot(contains('<launcher_tool_calls>')));
+        expect(message.text, isNot(contains('REMINDER')));
+      }
+      expect(assistants.last.text, '已完成。');
+      // 重试请求的思考前缀带有提醒标记。
+      final retryPayload = run.service.requests[2];
+      final prefixMessage = (retryPayload['messages'] as List).last;
+      expect(
+        prefixMessage['reasoning_content'] as String,
+        startsWith('REMINDER'),
+      );
+    },
+  );
+
+  test(
+    'persistently empty continuation surfaces an explicit error',
+    () async {
+      final run = await _run(toolRounds: 1, emptyContinuations: 99);
+      expect(run.service.requests, hasLength(3));
+      final last = run.messages.last as AssistantMessage;
+      expect(last.stopReason, StopReason.error);
+      expect(
+        last.errorMessage,
+        contains('no answer text and no tool request'),
+      );
+    },
+  );
+
+  test(
     'cancellation after tool text cannot execute the pending request',
     () async {
       final run = await _run(
@@ -230,6 +269,7 @@ Future<_Run> _run({
   String? finish = 'stop',
   bool cancelAfterContent = false,
   String toolPreamble = '',
+  int emptyContinuations = 0,
 }) async {
   final service = _StrictService(
     arguments,
@@ -237,6 +277,7 @@ Future<_Run> _run({
     finish,
     cancelAfterContent,
     toolPreamble: toolPreamble,
+    emptyContinuations: emptyContinuations,
   );
   final dio = Dio()..httpClientAdapter = service;
   final client = AgentApiClient(dio);
@@ -320,13 +361,16 @@ class _StrictService implements HttpClientAdapter {
     this.finish,
     this.cancelAfterContent, {
     this.toolPreamble = '',
+    this.emptyContinuations = 0,
   });
   final Map<String, dynamic> arguments;
   final int toolRounds;
   final String? finish;
   final bool cancelAfterContent;
   final String toolPreamble;
+  final int emptyContinuations;
   final requests = <Map<String, dynamic>>[];
+  var _continuationRequests = 0;
   @override
   Future<ResponseBody> fetch(
     RequestOptions options,
@@ -343,7 +387,6 @@ class _StrictService implements HttpClientAdapter {
           (m) => m['role'] == 'tool' || m.containsKey('tool_calls'),
         ) ||
         messages.last['content'] != '' ||
-        messages.last['reasoning_content'] != prefix ||
         payload['thinking']['type'] != 'enabled') {
       return ResponseBody.fromString(
         '{"error":{"message":"incompatible prefix request"}}',
@@ -353,11 +396,40 @@ class _StrictService implements HttpClientAdapter {
         },
       );
     }
-    final content = requests.length <= toolRounds
-        ? '$toolPreamble<launcher_tool_calls>${jsonEncode([
-            {'name': 'read', 'arguments': arguments},
-          ])}</launcher_tool_calls>'
-        : '已完成。';
+    // 重试请求的思考前缀带提醒；普通请求保持用户原样前缀。
+    final expectedPrefix = (messages.last['reasoning_content'] as String)
+        .replaceAll(RegExp(r'^REMINDER[^\n]*\n\n'), '');
+    if (expectedPrefix != prefix) {
+      return ResponseBody.fromString(
+        '{"error":{"message":"incompatible prefix request"}}',
+        400,
+        headers: {
+          Headers.contentTypeHeader: ['application/json'],
+        },
+      );
+    }
+    final seenToolResults = messages
+        .where((m) => m['role'] == 'user')
+        .where(
+          (m) =>
+              m['content'] is String &&
+              (m['content'] as String).contains('launcher_tool_result'),
+        )
+        .length;
+    var content = '已完成。';
+    if (seenToolResults < toolRounds) {
+      content =
+          '$toolPreamble<launcher_tool_calls>${jsonEncode([
+              {'name': 'read', 'arguments': arguments},
+            ])}</launcher_tool_calls>';
+    } else {
+      // 按续跑请求序号模拟真实故障：前 N 次续跑只输出思考、正文为空
+      // （含适配器带提醒的重试请求），其后恢复正常收尾。
+      _continuationRequests++;
+      if (_continuationRequests <= emptyContinuations) {
+        content = '';
+      }
+    }
     String event(Map<String, dynamic> delta, [String? stop]) =>
         'data: ${jsonEncode({
           'choices': [

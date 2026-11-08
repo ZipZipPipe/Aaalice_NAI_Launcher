@@ -22,7 +22,14 @@ class PrefillToolDecoder {
   String? _fenceMarker;
   bool _toolFrame = false;
   bool _finished = false;
+  bool _sawAnswerText = false;
   static const _maxToolCharacters = 1024 * 1024;
+
+  /// 流式正文里是否出现过非空白字符（判定续跑是否为空回复）。
+  bool get sawAnswerText => _sawAnswerText;
+
+  /// 是否进入了工具块模式（判定续跑是否包含工具请求）。
+  bool get hasToolFrame => _toolFrame;
   static final _fenceLine = RegExp(r'^ {0,3}(`{3,}|~{3,})(.*)$');
 
   List<AgentWireEvent> push(String delta) {
@@ -48,12 +55,14 @@ class PrefillToolDecoder {
         }
         if (!prefillToolStart.startsWith(_pendingStart)) {
           text.write(_pendingStart);
+          _noteAnswerText(_pendingStart);
           _pendingStart = '';
         }
       } else if (_lineStart && _fenceMarker == null && character == '<') {
         _pendingStart = character;
       } else {
         text.write(character);
+        _noteAnswerText(character);
       }
       _trackLine(character);
     }
@@ -97,10 +106,17 @@ class PrefillToolDecoder {
     }
   }
 
+  void _noteAnswerText(String value) {
+    if (!_sawAnswerText && value.trim().isNotEmpty) {
+      _sawAnswerText = true;
+    }
+  }
+
   List<AgentWireEvent> finish({required String? reason, Usage? usage}) {
     if (_finished) return const [];
     _finished = true;
     if (!_toolFrame && !_pendingStart.startsWith('<launcher_')) {
+      _noteAnswerText(_pendingStart);
       return [
         if (_pendingStart.isNotEmpty) AgentWireTextDelta(_pendingStart),
         AgentWireFinish(stopReason: _stopReason(reason), usage: usage),
