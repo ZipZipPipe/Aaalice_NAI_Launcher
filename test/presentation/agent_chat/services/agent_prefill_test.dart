@@ -60,7 +60,7 @@ void main() {
     final chat = config.copyWith(
       assistantPrefillInjectionMode: AgentPrefillInjectionMode.firstTurn,
     );
-    const firstTurn = <Message>[UserMessage.text('hello')];
+    final firstTurn = <Message>[UserMessage.text('hello')];
     expect(
       resolveAgentPrefill(chat: chat, messages: firstTurn, allowPrefill: true),
       '  start\n',
