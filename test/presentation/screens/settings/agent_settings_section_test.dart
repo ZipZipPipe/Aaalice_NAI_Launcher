@@ -1186,11 +1186,11 @@ void main() {
       await tester.pumpWidget(
         UncontrolledProviderScope(
           container: container,
-          child: MaterialApp(
-            locale: const Locale('zh'),
+          child: const MaterialApp(
+            locale: Locale('zh'),
             localizationsDelegates: AppLocalizations.localizationsDelegates,
             supportedLocales: AppLocalizations.supportedLocales,
-            home: const Scaffold(
+            home: Scaffold(
               body: SingleChildScrollView(
                 padding: EdgeInsets.all(16),
                 child: AssistantPrefillEditor(),
