@@ -93,7 +93,7 @@ class _AssistantPrefillEditorState
               segments: [
                 ButtonSegment(
                   value: AgentPrefillInjectionMode.firstTurn,
-                  icon: const Icon(Icons.look_one_outlined),
+                  icon: const Icon(Icons.looks_one_outlined),
                   label: Text(l10n.agentSettings_prefillModeFirstTurn),
                 ),
                 ButtonSegment(
