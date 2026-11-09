@@ -317,6 +317,7 @@ void main() {
 
       expect(chat.assistantPrefillEnabled, isFalse);
       expect(chat.assistantPrefill, isEmpty);
+      expect(chat.assistantPrefillInjectionMode, AgentPrefillInjectionMode.everyTurn);
       expect(chat.hasAssistantPrefill, isFalse);
     });
 
@@ -341,6 +342,64 @@ void main() {
       expect(
         decoded.chat.copyWith(assistantPrefill: '').assistantPrefill,
         isEmpty,
+      );
+    });
+
+    test('round-trips first-turn prefill injection mode', () {
+      const settings = AgentSettings(
+        chat: AgentChatConfig(
+          assistantPrefillEnabled: true,
+          assistantPrefill: 'prefix',
+          assistantPrefillInjectionMode: AgentPrefillInjectionMode.firstTurn,
+        ),
+      );
+
+      final decoded = AgentSettings.decode(settings.encode());
+
+      expect(
+        decoded.chat.assistantPrefillInjectionMode,
+        AgentPrefillInjectionMode.firstTurn,
+      );
+    });
+
+    test('legacy prefill documents without injection mode stay every-turn', () {
+      const legacy = AgentSettings(
+        chat: AgentChatConfig(
+          assistantPrefillEnabled: true,
+          assistantPrefill: 'prefix',
+        ),
+      );
+
+      final encoded = legacy.encode();
+      // 每轮是默认值，从不落盘；旧文档缺键即解码为每轮。
+      expect(encoded.contains('assistantPrefillInjectionMode'), isFalse);
+      expect(
+        AgentSettings.decode(encoded).chat.assistantPrefillInjectionMode,
+        AgentPrefillInjectionMode.everyTurn,
+      );
+
+      // 显式注入 firstTurn 的文档正常回读。
+      expect(
+        AgentSettings.decode(
+          encoded.replaceFirst(
+            '"assistantPrefill":"prefix"',
+            '"assistantPrefill":"prefix","assistantPrefillInjectionMode":'
+                '"firstTurn"',
+          ),
+        ).chat.assistantPrefillInjectionMode,
+        AgentPrefillInjectionMode.firstTurn,
+      );
+
+      // 未知取值拒绝解码。
+      expect(
+        () => AgentSettings.decode(
+          encoded.replaceFirst(
+            '"assistantPrefill":"prefix"',
+            '"assistantPrefill":"prefix","assistantPrefillInjectionMode":'
+                '"sometimes"',
+          ),
+        ),
+        throwsFormatException,
       );
     });
 

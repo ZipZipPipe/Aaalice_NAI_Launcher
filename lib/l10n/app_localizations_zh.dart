@@ -13362,6 +13362,20 @@ class AppLocalizationsZh extends AppLocalizations {
       '每次模型请求（含工具续跑）均使用；后台摘要不使用。DeepSeek 需要开启思考模式。';
 
   @override
+  String get agentSettings_prefillModeFirstTurn => '仅首轮注入';
+
+  @override
+  String get agentSettings_prefillModeFirstTurnDescription =>
+      '仅随本轮对话的首个请求发送预填；工具续跑不再携带，改用服务商原生工具协议。若续跑频繁只返回思考并报错，建议选这项。';
+
+  @override
+  String get agentSettings_prefillModeEveryTurn => '每轮注入';
+
+  @override
+  String get agentSettings_prefillModeEveryTurnDescription =>
+      '随每次模型请求（含工具续跑）发送预填，让 DeepSeek 的思考前缀贯穿整个任务。';
+
+  @override
   String get agentSettings_assistantPrefillSaved => '助手预填已保存';
 
   @override
@@ -27958,6 +27972,20 @@ class AppLocalizationsZhHant extends AppLocalizationsZh {
   @override
   String get agentSettings_assistantPrefillScope =>
       '每次模型請求（含工具續跑）均使用；背景摘要不使用。DeepSeek 需要開啟思考模式。';
+
+  @override
+  String get agentSettings_prefillModeFirstTurn => '僅首輪注入';
+
+  @override
+  String get agentSettings_prefillModeFirstTurnDescription =>
+      '僅隨本輪對話的首個請求發送預填；工具續跑不再攜帶，改用供應商原生工具協定。若續跑頻繁只返回思考並報錯，建議選這項。';
+
+  @override
+  String get agentSettings_prefillModeEveryTurn => '每輪注入';
+
+  @override
+  String get agentSettings_prefillModeEveryTurnDescription =>
+      '隨每次模型請求（含工具續跑）發送預填，讓 DeepSeek 的思考前綴貫穿整個任務。';
 
   @override
   String get agentSettings_assistantPrefillSaved => '助手預填已儲存';

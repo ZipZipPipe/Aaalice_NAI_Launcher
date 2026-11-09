@@ -13972,6 +13972,20 @@ class AppLocalizationsEn extends AppLocalizations {
       'Used for every model request, including tool continuations, except background summaries. DeepSeek requires thinking mode.';
 
   @override
+  String get agentSettings_prefillModeFirstTurn => 'First turn only';
+
+  @override
+  String get agentSettings_prefillModeFirstTurnDescription =>
+      'Sends the prefill only with the first request of each conversation round. Tool continuations run without it and use the native tool protocol of the provider; prefer this if continuations keep returning thinking only.';
+
+  @override
+  String get agentSettings_prefillModeEveryTurn => 'Every turn';
+
+  @override
+  String get agentSettings_prefillModeEveryTurnDescription =>
+      'Sends the prefill with every model request, including tool continuations, keeping the DeepSeek thinking prefix stable across the whole task.';
+
+  @override
   String get agentSettings_assistantPrefillSaved => 'Assistant prefill saved';
 
   @override

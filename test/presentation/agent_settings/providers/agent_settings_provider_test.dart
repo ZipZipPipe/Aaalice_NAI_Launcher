@@ -295,6 +295,10 @@ void main() {
     );
     expect(persisted.chat.assistantPrefillEnabled, isTrue);
     expect(persisted.chat.assistantPrefill, prefill);
+    expect(
+      persisted.chat.assistantPrefillInjectionMode,
+      AgentPrefillInjectionMode.everyTurn,
+    );
 
     final restored = ProviderContainer(
       overrides: [
@@ -338,6 +342,23 @@ void main() {
           .read(agentSettingsProvider.notifier)
           .saveAssistantPrefill(enabled: true, prefill: ''),
       throwsFormatException,
+    );
+
+    // 注入模式透传保存。
+    await restored
+        .read(agentSettingsProvider.notifier)
+        .saveAssistantPrefill(
+          enabled: true,
+          prefill: prefill,
+          injectionMode: AgentPrefillInjectionMode.firstTurn,
+        );
+    expect(
+      restored
+          .read(agentSettingsProvider)
+          .settings
+          .chat
+          .assistantPrefillInjectionMode,
+      AgentPrefillInjectionMode.firstTurn,
     );
   });
 

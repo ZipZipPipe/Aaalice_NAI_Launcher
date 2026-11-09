@@ -1156,6 +1156,130 @@ void main() {
       if (root.existsSync()) root.deleteSync(recursive: true);
     }
   });
+
+  testWidgets('助手预填注入模式可切换并随保存落盘', (tester) async {
+    final root = Directory('tool/.tmp/agent-assistant-prefill-mode-test')
+      ..createSync(recursive: true);
+    final storage = _MemoryLocalStorage();
+    await storage.setSetting(
+      StorageKeys.agentSettingsJson,
+      const AgentSettings().encode(),
+    );
+
+    final container = ProviderContainer(
+      overrides: [
+        localStorageServiceProvider.overrideWithValue(storage),
+        secureStorageServiceProvider.overrideWithValue(_MemorySecureStorage()),
+        agentSettingsProvider.overrideWith(
+          (ref) => AgentSettingsNotifier(
+            ref,
+            supportDirectory: root,
+            workspaceDirectory: root,
+            environment: const {},
+            skillCatalogService: const _EmptySkillCatalogService(),
+          ),
+        ),
+      ],
+    );
+
+    Future<void> pumpEditor() async {
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp(
+            locale: const Locale('zh'),
+            localizationsDelegates: AppLocalizations.localizationsDelegates,
+            supportedLocales: AppLocalizations.supportedLocales,
+            home: const Scaffold(
+              body: SingleChildScrollView(
+                padding: EdgeInsets.all(16),
+                child: AssistantPrefillEditor(),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 200));
+    }
+
+    final input = find.byKey(const ValueKey('agent-assistant-prefill-input'));
+    final toggle = find.byKey(
+      const ValueKey('agent-assistant-prefill-enabled'),
+    );
+    final modeSelector = find.byKey(
+      const ValueKey('agent-assistant-prefill-injection-mode'),
+    );
+    final save = find.byKey(const ValueKey('agent-assistant-prefill-save'));
+
+    try {
+      await tester.runAsync(() async {
+        container.read(agentSettingsProvider);
+        for (var attempt = 0; attempt < 100; attempt++) {
+          if (container.read(agentSettingsProvider).initialized) return;
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+        fail('Agent settings did not initialize.');
+      });
+      await pumpEditor();
+
+      // 默认每轮注入；先填写内容并开启开关。
+      tester.widget<SwitchListTile>(toggle).onChanged!(true);
+      await tester.enterText(input, 'prefix');
+      await tester.pump();
+      expect(
+        find.descendant(
+          of: modeSelector,
+          matching: find.text('仅首轮注入'),
+        ),
+        findsOneWidget,
+      );
+
+      // 切到仅首轮：直接驱动分段按钮回调，避免滚动点击。
+      final segment = tester.widget<SegmentedButton<AgentPrefillInjectionMode>>(
+        modeSelector,
+      );
+      segment.onSelectionChanged!({AgentPrefillInjectionMode.firstTurn});
+      await tester.pump();
+      expect(
+        find.text(
+          '仅随本轮对话的首个请求发送预填；工具续跑不再携带，改用服务商原生工具协议。'
+          '若续跑频繁只返回思考并报错，建议选这项。',
+        ),
+        findsOneWidget,
+      );
+
+      await tester.runAsync(() async {
+        tester.widget<FilledButton>(save).onPressed!();
+        for (var attempt = 0; attempt < 100; attempt++) {
+          final chat = container.read(agentSettingsProvider).settings.chat;
+          if (chat.assistantPrefillInjectionMode ==
+              AgentPrefillInjectionMode.firstTurn) {
+            return;
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+      });
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      final saved = container.read(agentSettingsProvider);
+      expect(saved.error, isEmpty);
+      expect(
+        saved.settings.chat.assistantPrefillInjectionMode,
+        AgentPrefillInjectionMode.firstTurn,
+      );
+      expect(
+        saved.settings.chat.assistantPrefill,
+        'prefix',
+      );
+      expect(tester.takeException(), isNull);
+    } finally {
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump(const Duration(seconds: 5));
+      container.dispose();
+      if (root.existsSync()) root.deleteSync(recursive: true);
+    }
+  });
 }
 
 class _FakeFilePicker extends FilePicker {

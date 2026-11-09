@@ -56,6 +56,50 @@ void main() {
       );
     }
   });
+  test('first-turn mode stops injecting after any assistant reply', () {
+    final chat = config.copyWith(
+      assistantPrefillInjectionMode: AgentPrefillInjectionMode.firstTurn,
+    );
+    const firstTurn = <Message>[UserMessage.text('hello')];
+    expect(
+      resolveAgentPrefill(chat: chat, messages: firstTurn, allowPrefill: true),
+      '  start\n',
+    );
+    final continuation = <Message>[
+      UserMessage.text('hello'),
+      AssistantMessage(content: [], stopReason: StopReason.toolUse),
+      ToolResultMessage(toolCallId: '1', toolName: 'read', content: []),
+    ];
+    expect(
+      resolveAgentPrefill(
+        chat: chat,
+        messages: continuation,
+        allowPrefill: true,
+      ),
+      isNull,
+    );
+    // 每轮模式在相同历史下仍注入。
+    expect(
+      resolveAgentPrefill(
+        chat: config,
+        messages: continuation,
+        allowPrefill: true,
+      ),
+      '  start\n',
+    );
+    // 助手回复为空内容也算已开轮：仅首轮模式随即收手。
+    final assistantOnly = <Message>[
+      AssistantMessage(content: [], stopReason: StopReason.stop),
+    ];
+    expect(
+      resolveAgentPrefill(
+        chat: chat,
+        messages: assistantOnly,
+        allowPrefill: true,
+      ),
+      isNull,
+    );
+  });
   test('empty context is not prefilled', () {
     expect(
       resolveAgentPrefill(chat: config, messages: [], allowPrefill: true),

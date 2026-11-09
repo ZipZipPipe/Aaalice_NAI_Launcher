@@ -10,6 +10,10 @@ enum AgentSystemPromptMode { append, override }
 
 enum AgentChatDensity { comfortable, compact }
 
+/// 助手预填的注入范围：firstTurn 仅注入每轮对话的首个请求，everyTurn
+/// 注入到每次模型请求（含工具续跑）。
+enum AgentPrefillInjectionMode { firstTurn, everyTurn }
+
 class AgentModelReference {
   const AgentModelReference({this.providerId = '', this.model = ''});
 
@@ -133,6 +137,7 @@ class AgentChatConfig {
     this.contextWindowOverrides = const {},
     this.assistantPrefillEnabled = false,
     this.assistantPrefill = '',
+    this.assistantPrefillInjectionMode = AgentPrefillInjectionMode.everyTurn,
   });
 
   static const supportedReadingTextScales = [0.9, 1.0, 1.15, 1.3];
@@ -156,6 +161,9 @@ class AgentChatConfig {
   /// 每次模型请求的前缀：DeepSeek 用于思考，其他兼容服务用于正文。
   /// 原样保留用户输入的空格与换行，不做 trim。
   final String assistantPrefill;
+
+  /// 预填的注入范围：默认每轮（历史行为），可选仅首轮。
+  final AgentPrefillInjectionMode assistantPrefillInjectionMode;
 
   bool get hasAssistantPrefill =>
       assistantPrefillEnabled && assistantPrefill.isNotEmpty;
@@ -199,6 +207,7 @@ class AgentChatConfig {
     Map<String, int>? contextWindowOverrides,
     bool? assistantPrefillEnabled,
     String? assistantPrefill,
+    AgentPrefillInjectionMode? assistantPrefillInjectionMode,
   }) {
     return AgentChatConfig(
       modelReference: modelReference ?? this.modelReference,
@@ -214,6 +223,8 @@ class AgentChatConfig {
       assistantPrefillEnabled:
           assistantPrefillEnabled ?? this.assistantPrefillEnabled,
       assistantPrefill: assistantPrefill ?? this.assistantPrefill,
+      assistantPrefillInjectionMode:
+          assistantPrefillInjectionMode ?? this.assistantPrefillInjectionMode,
     );
   }
 
@@ -236,6 +247,10 @@ class AgentChatConfig {
     if (assistantPrefillEnabled || assistantPrefill.isNotEmpty) ...{
       'assistantPrefillEnabled': assistantPrefillEnabled,
       'assistantPrefill': assistantPrefill,
+      // 仅首轮才落盘；每轮是默认值，缺键即每轮，旧配置无需迁移。
+      if (assistantPrefillInjectionMode ==
+        AgentPrefillInjectionMode.firstTurn)
+        'assistantPrefillInjectionMode': assistantPrefillInjectionMode.name,
     },
   };
 
@@ -257,7 +272,22 @@ class AgentChatConfig {
     }
     _rejectUnknownFields(
       value,
-      schemaVersion >= 6
+      schemaVersion >= 7
+          ? const {
+              'modelReference',
+              'permissionMode',
+              'webAccessEnabled',
+              'systemPromptMode',
+              'customSystemPrompt',
+              'migratedChatRules',
+              'readingTextScale',
+              'density',
+              'contextWindowOverrides',
+              'assistantPrefillEnabled',
+              'assistantPrefill',
+              'assistantPrefillInjectionMode',
+            }
+          : schemaVersion >= 6
           ? const {
               'modelReference',
               'permissionMode',
@@ -294,12 +324,22 @@ class AgentChatConfig {
     }
     final prefillEnabledValue = value['assistantPrefillEnabled'];
     final prefillValue = value['assistantPrefill'];
+    final prefillModeValue = value['assistantPrefillInjectionMode'];
     if ((prefillEnabledValue != null && prefillEnabledValue is! bool) ||
-        (prefillValue != null && prefillValue is! String)) {
+        (prefillValue != null && prefillValue is! String) ||
+        (prefillModeValue != null && prefillModeValue is! String)) {
       throw const FormatException(
         'chat assistant prefills contain invalid field types.',
       );
     }
+    final injectionMode = switch (prefillModeValue) {
+      null => AgentPrefillInjectionMode.everyTurn,
+      'firstTurn' => AgentPrefillInjectionMode.firstTurn,
+      'everyTurn' => AgentPrefillInjectionMode.everyTurn,
+      _ => throw FormatException(
+        'Unknown assistantPrefillInjectionMode: $prefillModeValue',
+      ),
+    };
     final assistantPrefill = (prefillValue as String?) ?? '';
     if (assistantPrefill.length > AgentSettings.maxAssistantPrefillLength) {
       throw const FormatException('assistantPrefill is too large.');
@@ -372,6 +412,7 @@ class AgentChatConfig {
       ),
       assistantPrefillEnabled: (prefillEnabledValue as bool?) ?? false,
       assistantPrefill: assistantPrefill,
+      assistantPrefillInjectionMode: injectionMode,
     );
   }
 
@@ -409,7 +450,7 @@ class AgentSettings {
     this.skillEnabledOverrides = const {},
   });
 
-  static const int currentSchemaVersion = 6;
+  static const int currentSchemaVersion = 7;
   static const int maxCustomPromptLength = 50000;
   static const int maxSkillPreferences = 5000;
   static const int maxMigratedChatRules = 100;

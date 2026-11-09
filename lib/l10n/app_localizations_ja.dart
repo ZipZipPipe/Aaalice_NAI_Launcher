@@ -13606,6 +13606,20 @@ class AppLocalizationsJa extends AppLocalizations {
       'ツールの継続実行を含む各モデルリクエストで使用します。バックグラウンドの要約には使用しません。DeepSeek では思考モードが必要です。';
 
   @override
+  String get agentSettings_prefillModeFirstTurn => '初回のみ';
+
+  @override
+  String get agentSettings_prefillModeFirstTurnDescription =>
+      '会話の最初のリクエストにのみプリフィルを送信します。ツールの継続実行ではプリフィルを使わず、プロバイダーのネイティブツールプロトコルを使用します。継続実行が思考のみを返してエラーになる場合は、こちらを選択してください。';
+
+  @override
+  String get agentSettings_prefillModeEveryTurn => '毎回';
+
+  @override
+  String get agentSettings_prefillModeEveryTurnDescription =>
+      'ツールの継続実行を含む各モデルリクエストでプリフィルを送信し、DeepSeek の思考プレフィックスをタスク全体で維持します。';
+
+  @override
   String get agentSettings_assistantPrefillSaved => 'アシスタントプリフィルを保存しました';
 
   @override

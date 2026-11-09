@@ -335,6 +335,8 @@ class AgentSettingsNotifier extends StateNotifier<AgentSettingsState> {
   Future<void> saveAssistantPrefill({
     required bool enabled,
     required String prefill,
+    AgentPrefillInjectionMode injectionMode =
+        AgentPrefillInjectionMode.everyTurn,
   }) {
     if (prefill.length > AgentSettings.maxAssistantPrefillLength) {
       throw const FormatException('Assistant prefill is too large.');
@@ -349,6 +351,7 @@ class AgentSettingsNotifier extends StateNotifier<AgentSettingsState> {
         chat: current.chat.copyWith(
           assistantPrefillEnabled: enabled,
           assistantPrefill: prefill,
+          assistantPrefillInjectionMode: injectionMode,
         ),
       ),
     );
