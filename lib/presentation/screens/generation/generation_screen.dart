@@ -10,10 +10,12 @@ import '../../providers/image_generation_provider.dart';
 import '../../providers/layout_state_provider.dart';
 import '../../widgets/common/owned_scroll_controller.dart';
 import '../../widgets/drop/global_drop_handler.dart';
+import '../../widgets/raster_cache/raster_cache_boundary.dart';
 import 'desktop_layout.dart';
 import 'mobile_layout.dart';
 import 'web_style_layout.dart';
 import 'widgets/fixed_tags_sidebar.dart';
+import 'widgets/generation_selection_back_scope.dart';
 import 'widgets/prompt_input_controller.dart';
 
 /// 图像生成页面
@@ -57,31 +59,37 @@ class _GenerationScreenState extends ConsumerState<GenerationScreen> {
         );
         if (sizeClass.isExpandedOrWider) {
           final layoutMode = ref.watch(generationLayoutModeNotifierProvider);
-          return layoutMode == GenerationLayoutMode.webStyle
-              ? WebStyleGenerationLayout(
-                  historyViewport: _historyViewport,
-                  negativeModeNotifier: _webNegativeMode,
-                  promptInputController: _promptInputController,
-                  promptInputKey: _promptInputKey,
-                )
-              : DesktopGenerationLayout(
-                  historyViewport: _historyViewport,
-                  promptInputController: _promptInputController,
-                  promptInputKey: _promptInputKey,
-                );
+          // 手机布局把多选排进自己的返回顺序，这里只覆盖平板及以上宽度
+          return GenerationSelectionBackScope(
+            child: layoutMode == GenerationLayoutMode.webStyle
+                ? WebStyleGenerationLayout(
+                    historyViewport: _historyViewport,
+                    negativeModeNotifier: _webNegativeMode,
+                    promptInputController: _promptInputController,
+                    promptInputKey: _promptInputKey,
+                  )
+                : DesktopGenerationLayout(
+                    historyViewport: _historyViewport,
+                    promptInputController: _promptInputController,
+                    promptInputKey: _promptInputKey,
+                  ),
+          );
         }
 
         final layoutState = ref.watch(layoutStateNotifierProvider);
+        final fixedTagsOverlayVisible =
+            layoutState.fixedTagsSidebarExpanded && constraints.maxWidth < 900;
         final mobileLayout = MobileGenerationLayout(
           historyViewport: _historyViewport,
           promptInputController: _promptInputController,
           promptInputKey: _promptInputKey,
+          fixedTagsOverlayVisible: fixedTagsOverlayVisible,
         );
         if (!layoutState.fixedTagsSidebarExpanded) {
           return mobileLayout;
         }
 
-        if (constraints.maxWidth < 900) {
+        if (fixedTagsOverlayVisible) {
           final overlayWidth = math.max(
             160.0,
             math.min(360.0, constraints.maxWidth - 48),
@@ -108,7 +116,9 @@ class _GenerationScreenState extends ConsumerState<GenerationScreen> {
                   key: const Key('generation-fixed-tags-overlay'),
                   color: Theme.of(context).colorScheme.surfaceContainerLow,
                   elevation: 12,
-                  child: const SafeArea(child: FixedTagsSidebar()),
+                  child: const SafeArea(
+                    child: RasterCacheBoundary(child: FixedTagsSidebar()),
+                  ),
                 ),
               ),
             ],
@@ -126,15 +136,17 @@ class _GenerationScreenState extends ConsumerState<GenerationScreen> {
         return Row(
           children: [
             Expanded(child: mobileLayout),
-            Container(
-              width: sidebarWidth,
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.surface,
-                border: Border(
-                  left: BorderSide(color: Theme.of(context).dividerColor),
+            RasterCacheBoundary(
+              child: Container(
+                width: sidebarWidth,
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surface,
+                  border: Border(
+                    left: BorderSide(color: Theme.of(context).dividerColor),
+                  ),
                 ),
+                child: const FixedTagsSidebar(),
               ),
-              child: const FixedTagsSidebar(),
             ),
           ],
         );

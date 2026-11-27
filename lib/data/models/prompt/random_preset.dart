@@ -4,6 +4,7 @@ import 'package:uuid/uuid.dart';
 import 'algorithm_config.dart';
 import 'default_categories.dart';
 import 'default_tag_group_mappings.dart';
+import 'diy_category_references.dart';
 import 'pool_mapping.dart';
 import 'random_category.dart';
 import 'random_tag_group.dart';
@@ -16,7 +17,7 @@ part 'random_preset.g.dart';
 ///
 /// 包含完整的算法配置和类别/分组配置
 @freezed
-class RandomPreset with _$RandomPreset {
+abstract class RandomPreset with _$RandomPreset {
   const RandomPreset._();
 
   const factory RandomPreset({
@@ -76,7 +77,7 @@ class RandomPreset with _$RandomPreset {
       id: const Uuid().v4(),
       name: name,
       description: description,
-      version: 4,
+      version: currentVersion,
       algorithmConfig: algorithmConfig ?? const AlgorithmConfig(),
       categories: categories ?? [],
       createdAt: now,
@@ -94,7 +95,7 @@ class RandomPreset with _$RandomPreset {
       name: 'NovelAI 官网预设',
       description: '使用当前模型对应的 NovelAI 官网词库和随机算法',
       isDefault: true,
-      version: 4,
+      version: currentVersion,
       algorithmConfig: _defaultTemplateAlgorithmConfig,
       categories: DefaultCategories.createDefault(),
       tagGroupMappings: DefaultTagGroupMappings.createDefaultMappings(),
@@ -121,15 +122,25 @@ class RandomPreset with _$RandomPreset {
   /// 从现有预设复制创建新预设
   factory RandomPreset.copyFrom(RandomPreset source, {required String name}) {
     final now = DateTime.now();
+    // 副本里类别与各层词组都换了新 ID，规则、分支输出与分支条件可跨类别按 ID 引用它们
+    final copiedIds = <String, String>{};
+    final copiedCategories = [
+      for (final category in source.categories)
+        _categoryWithFreshIds(category, copiedIds),
+    ];
+    String remap(String reference) => copiedIds[reference] ?? reference;
     return RandomPreset(
       id: const Uuid().v4(),
       name: name,
       description: source.description,
       isDefault: false,
       version: source.version,
-      algorithmConfig: source.algorithmConfig,
+      algorithmConfig: source.algorithmConfig.mapCategoryReferences(remap),
       categoryProbabilities: source.categoryProbabilities,
-      categories: source.categories.map((c) => c.deepCopy()).toList(),
+      categories: [
+        for (final category in copiedCategories)
+          category.mapCategoryReferences(remap).mapBranchReferences(remap),
+      ],
       tagGroupMappings: source.tagGroupMappings
           .map(
             (m) => m.copyWith(
@@ -394,11 +405,16 @@ class RandomPreset with _$RandomPreset {
     };
   }
 
+  /// 当前应用写出的预设数据版本
+  static const currentVersion = 4;
+
   /// 从导出的 JSON 导入
+  ///
+  /// 接受不高于 [currentVersion] 的导出文件；缺少版本号的旧文件按 2 处理
   static RandomPreset fromExportJson(Map<String, dynamic> json) {
     final version = json['version'] as int? ?? 2;
-    if (version > 2) {
-      throw FormatException('不支持的预设版本: $version，请更新应用后重试');
+    if (version > currentVersion) {
+      throw RandomPresetVersionException(version);
     }
 
     final now = DateTime.now();
@@ -432,7 +448,8 @@ class RandomPreset with _$RandomPreset {
       name: json['name'] as String? ?? '导入的预设',
       description: json['description'] as String?,
       isDefault: false,
-      version: 2,
+      // 低于当前版本的会在加载时走与本地存量相同的迁移
+      version: version,
       algorithmConfig: json['algorithmConfig'] != null
           ? AlgorithmConfig.fromJson(
               json['algorithmConfig'] as Map<String, dynamic>,
@@ -450,4 +467,41 @@ class RandomPreset with _$RandomPreset {
       updatedAt: now,
     );
   }
+}
+
+/// 换上新 ID 并把旧 ID 到新 ID 记入 [ids]；引用由调用方按整个复制范围改写
+RandomCategory _categoryWithFreshIds(
+  RandomCategory category,
+  Map<String, String> ids,
+) {
+  final copyId = const Uuid().v4();
+  ids[category.id] = copyId;
+  return category.copyWith(
+    id: copyId,
+    groups: [
+      for (final group in category.groups) _groupWithFreshIds(group, ids),
+    ],
+  );
+}
+
+RandomTagGroup _groupWithFreshIds(
+  RandomTagGroup group,
+  Map<String, String> ids,
+) {
+  final copyId = const Uuid().v4();
+  ids[group.id] = copyId;
+  return group.copyWith(
+    id: copyId,
+    children: [
+      for (final child in group.children) _groupWithFreshIds(child, ids),
+    ],
+  );
+}
+
+/// 导入的预设由更高版本的应用导出，需要先更新应用
+class RandomPresetVersionException extends FormatException {
+  RandomPresetVersionException(this.version)
+    : super('不支持的预设版本: $version，请更新应用后重试');
+
+  final int version;
 }

@@ -2,12 +2,14 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hive/hive.dart';
+import 'package:hive_ce/hive_ce.dart';
 import 'package:nai_launcher/core/constants/storage_keys.dart';
 import 'package:nai_launcher/core/storage/local_storage_service.dart';
 import 'package:nai_launcher/data/cloud_sync/online_favorites_cloud_sync_adapter.dart';
+import 'package:nai_launcher/data/models/gallery/nai_image_metadata.dart';
 import 'package:nai_launcher/data/models/online_gallery/gallery_item.dart';
 import 'package:nai_launcher/data/models/online_gallery/gallery_source.dart';
+import 'package:nai_launcher/data/models/online_gallery/online_gallery_favorite_record.dart';
 import 'package:nai_launcher/data/repositories/online_gallery_local_favorites_repository.dart';
 import 'package:nai_launcher/data/services/online_gallery/quick_tag_cloud_parser.dart';
 import 'package:nai_launcher/data/services/online_gallery/quick_tag_cloud_user_service.dart';
@@ -118,6 +120,80 @@ void main() {
     expect(page.nextOffset, 2);
   });
 
+  test('收藏按完整标签片段和逗号分隔的多个词搜索', () async {
+    final repository = _repository(box, storage);
+    await repository.upsertAll([
+      _detail(
+        sourceId: GallerySourceId.aiTag,
+        workId: 'tag',
+        title: 'Portrait',
+        tags: const ['solo', 'long_hair'],
+      ),
+      _detail(
+        sourceId: GallerySourceId.aiTag,
+        workId: 'title',
+        title: 'Long Hair',
+      ),
+      _detail(
+        sourceId: GallerySourceId.aiTag,
+        workId: 'split',
+        title: 'Other',
+        tags: const ['solo', 'long_sleeves', 'short_hair'],
+      ),
+    ], savedAt: DateTime.utc(2025));
+
+    List<String> matches(String text) => repository
+        .query(OnlineGalleryFavoriteQuery(searchText: text))
+        .items
+        .map((item) => item.sourceWorkId)
+        .toList();
+
+    expect(matches('long_hair'), ['title', 'tag']);
+    expect(matches('solo, long_hair'), ['title', 'tag']);
+    expect(matches('long hair'), ['split', 'title', 'tag']);
+  });
+
+  test('原有 AI TAG 收藏从各图元数据恢复正向角色黑名单', () async {
+    const detail = GalleryDetail(
+      item: GalleryItem(id: 11, sourceId: GallerySourceId.aiTag, tags: ['solo']),
+      media: [
+        GalleryMedia(id: '11_p0'),
+        GalleryMedia(
+          id: '11_p1',
+          promptMetadata: NaiImageMetadata(
+            characterPrompts: ['1.2::silver ribbon::'],
+            characterNegativePrompts: ['glasses'],
+          ),
+        ),
+      ],
+      negativePrompt: 'lowres',
+    );
+    final record = OnlineGalleryFavoriteRecord.fromDetail(
+      detail,
+      savedAt: DateTime.utc(2025),
+    );
+    final snapshot = record.toMap();
+    await box.put(record.stableKey, snapshot);
+    final restored = _repository(box, storage);
+    await restored.ensureInitialized();
+
+    final hidden = restored.query(
+      const OnlineGalleryFavoriteQuery(blacklistTags: {'silver_ribbon'}),
+    );
+    final visible = restored.query(
+      const OnlineGalleryFavoriteQuery(blacklistTags: {'glasses', 'lowres'}),
+    );
+    expect(hidden.total, 0);
+    expect(visible.items.single.tags, ['solo']);
+    expect(box.get(record.stableKey), snapshot);
+    expect(
+      restored.query(
+        const OnlineGalleryFavoriteQuery(searchText: 'silver_ribbon'),
+      ).total,
+      0,
+    );
+  });
+
   test('toggle/remove 及重复批量键保持确定语义', () async {
     final repository = _repository(box, storage);
     await repository.ensureInitialized();
@@ -197,6 +273,14 @@ void main() {
     final restored = _repository(box, storage);
     await restored.ensureInitialized();
     expect(restored.count, 1);
+    expect(
+      restored.query(const OnlineGalleryFavoriteQuery(blacklistTags: {'girl'})).total,
+      0,
+    );
+    expect(
+      restored.query(const OnlineGalleryFavoriteQuery(blacklistTags: {'boy'})).total,
+      1,
+    );
   });
 
   test('QuickTagCloud 任一损坏条目会中止整批迁移并保留旧数据', () async {

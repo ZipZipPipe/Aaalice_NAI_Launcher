@@ -5,6 +5,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import '../../../data/models/gallery/local_image_record.dart'
     show MetadataStatus;
 import '../../utils/app_logger.dart';
+import '../single_message_transaction.dart';
 import 'gallery_database_gateway.dart';
 import 'gallery_records.dart';
 import 'gallery_store_context.dart';
@@ -31,6 +32,7 @@ abstract interface class GalleryImageRepository {
     String newPath, {
     String? newFileName,
   });
+  Future<void> updateMetadataStatus(int imageId, MetadataStatus status);
   Future<Map<String, int?>> getImageIdsByPaths(List<String> filePaths);
   Future<GalleryImageRecord?> getImageById(int id);
   Future<List<GalleryImageRecord>> getImagesByIds(List<int> ids);
@@ -54,7 +56,9 @@ abstract interface class GalleryImageRepository {
   Future<void> batchMarkAsDeleted(List<String> filePaths);
   Future<int> countImages({bool includeDeleted = false});
   Future<Map<String, int>> countImagesByMetadataStatus();
-  Future<void> deleteAllImages();
+  Future<({int total, int unparsed})> countImagesForPaths(
+    bool Function(String path) accepts,
+  );
 }
 
 class SqliteGalleryImageRepository implements GalleryImageRepository {
@@ -214,6 +218,26 @@ class SqliteGalleryImageRepository implements GalleryImageRepository {
       );
       rethrow;
     }
+  }
+
+  @override
+  Future<void> updateMetadataStatus(int imageId, MetadataStatus status) async {
+    await gateway.execute(
+      'updateMetadataStatus',
+      (db) async {
+        await db.update(
+          GalleryTables.images,
+          {'metadata_status': status.index},
+          where: 'id = ?',
+          whereArgs: [imageId],
+        );
+        context.removeImage(imageId);
+      },
+      timeout: const Duration(seconds: 10),
+      maxRetries: 3,
+    );
+
+    context.markDataChanged();
   }
 
   @override
@@ -556,78 +580,9 @@ class SqliteGalleryImageRepository implements GalleryImageRepository {
         final batch = records.sublist(i, end);
         final batchIndex = i ~/ batchSize;
 
-        final batchResults = await gateway.executeTransaction(
+        final batchResults = await gateway.execute(
           'batchUpsertImages#batch$batchIndex',
-          (txn) async {
-            final batchIds = <int>[];
-
-            // 1. 批量查询现有记录，同时遵守 SQLite 变量数量限制。
-            final filePaths = batch.map((r) => r.filePath).toList();
-            final pathToIdMap = <String, int>{};
-            for (final pathChunk in _chunk(filePaths, 900)) {
-              final placeholders = List.filled(pathChunk.length, '?').join(',');
-              final existingResults = await txn.rawQuery('''
-                  SELECT id, file_path FROM ${GalleryTables.images}
-                  WHERE file_path IN ($placeholders)
-                  ''', pathChunk);
-
-              for (final row in existingResults) {
-                final path = row['file_path'] as String?;
-                final id = (row['id'] as num?)?.toInt();
-                if (path != null && id != null) {
-                  pathToIdMap[path] = id;
-                }
-              }
-            }
-
-            // 2. 批量插入/更新
-            for (final record in batch) {
-              final dateYmd = _formatDateYmd(record.modifiedAt);
-              final existingId = pathToIdMap[record.filePath];
-
-              if (existingId != null) {
-                context.removeImage(existingId);
-              }
-
-              final map = {
-                'file_path': record.filePath,
-                'file_name': record.fileName,
-                'file_size': record.fileSize,
-                'width': record.width,
-                'height': record.height,
-                'aspect_ratio': record.aspectRatio,
-                'created_at': record.createdAt.millisecondsSinceEpoch,
-                'modified_at': record.modifiedAt.millisecondsSinceEpoch,
-                'indexed_at': now.millisecondsSinceEpoch,
-                'last_scanned_at': record.lastScannedAt?.millisecondsSinceEpoch,
-                'date_ymd': dateYmd,
-                'resolution_key': record.resolutionKey,
-                'metadata_status': record.metadataStatus.index,
-                'is_favorite': record.isFavorite ? 1 : 0,
-                'is_deleted': record.isDeleted ? 1 : 0,
-              };
-
-              final id =
-                  existingId ??
-                  await txn.insert(
-                    GalleryTables.images,
-                    map,
-                    conflictAlgorithm: ConflictAlgorithm.abort,
-                  );
-              if (existingId != null) {
-                await txn.update(
-                  GalleryTables.images,
-                  map,
-                  where: 'id = ?',
-                  whereArgs: [existingId],
-                );
-              }
-
-              batchIds.add(id);
-            }
-
-            return batchIds;
-          },
+          (db) => _upsertImageBatch(db, batch, now),
           timeout: const Duration(seconds: 60),
         );
 
@@ -656,40 +611,29 @@ class SqliteGalleryImageRepository implements GalleryImageRepository {
 
     await gateway.execute('batchMarkAsDeleted', (db) async {
       try {
-        final idsToInvalidate = <int>{};
-
-        await db.transaction((txn) async {
-          for (final pathChunk in _chunk(filePaths, 900)) {
-            final placeholders = List.filled(pathChunk.length, '?').join(',');
-            final rows = await txn.rawQuery('''
+        final pathChunks = _chunk(filePaths, 900);
+        final results = await db.applyAtomically((batch) {
+          for (final pathChunk in pathChunks) {
+            batch.rawQuery('''
               SELECT id FROM ${GalleryTables.images}
-              WHERE file_path IN ($placeholders)
+              WHERE file_path IN (${_placeholders(pathChunk.length)})
               ''', pathChunk);
-
-            for (final row in rows) {
-              final id = (row['id'] as num?)?.toInt();
-              if (id != null) {
-                idsToInvalidate.add(id);
-              }
-            }
           }
-
-          final batch = txn.batch();
-
-          for (final path in filePaths) {
-            batch.update(
-              GalleryTables.images,
-              {'is_deleted': 1},
-              where: 'file_path = ?',
-              whereArgs: [path],
-            );
+          for (final pathChunk in pathChunks) {
+            batch.rawUpdate('''
+              UPDATE ${GalleryTables.images} SET is_deleted = 1
+              WHERE file_path IN (${_placeholders(pathChunk.length)})
+              ''', pathChunk);
           }
-
-          await batch.commit(noResult: true);
         });
 
-        for (final id in idsToInvalidate) {
-          context.removeImage(id);
+        for (final rows in results.take(pathChunks.length)) {
+          for (final row in batchQueryRows(rows)) {
+            final id = (row['id'] as num?)?.toInt();
+            if (id != null) {
+              context.removeImage(id);
+            }
+          }
         }
 
         AppLogger.d(
@@ -722,6 +666,29 @@ class SqliteGalleryImageRepository implements GalleryImageRepository {
       }
     });
   }
+
+  @override
+  Future<({int total, int unparsed})> countImagesForPaths(
+    bool Function(String path) accepts,
+  ) => gateway.execute('countImagesForPaths', (db) async {
+    final rows = await db.query(
+      GalleryTables.images,
+      columns: ['file_path', 'metadata_status'],
+      where: 'is_deleted = 0',
+    );
+    var total = 0;
+    var unparsed = 0;
+    for (final row in rows) {
+      if (!accepts(row['file_path'] as String)) continue;
+      total++;
+      final status = row['metadata_status'];
+      if (status != MetadataStatus.success.index &&
+          status != MetadataStatus.failed.index) {
+        unparsed++;
+      }
+    }
+    return (total: total, unparsed: unparsed);
+  });
 
   /// 按元数据状态统计图片数量
   ///
@@ -774,41 +741,86 @@ class SqliteGalleryImageRepository implements GalleryImageRepository {
     });
   }
 
-  int _formatDateYmd(DateTime date) {
-    return date.year * 10000 + date.month * 100 + date.day;
+  // 读写之间同一路径被别处先插入时，UNIQUE 冲突让整批回滚，网关重试会重新读取已有行
+  Future<List<int>> _upsertImageBatch(
+    Database db,
+    List<GalleryImageRecord> records,
+    DateTime indexedAt,
+  ) async {
+    final existingIds = <String, int>{};
+    for (final pathChunk in _chunk([
+      for (final record in records) record.filePath,
+    ], 900)) {
+      final rows = await db.rawQuery('''
+          SELECT id, file_path FROM ${GalleryTables.images}
+          WHERE file_path IN (${_placeholders(pathChunk.length)})
+          ''', pathChunk);
+      for (final row in rows) {
+        final path = row['file_path'] as String?;
+        final id = (row['id'] as num?)?.toInt();
+        if (path != null && id != null) {
+          existingIds[path] = id;
+        }
+      }
+    }
+
+    final writeResults = await db.applyAtomically((batch) {
+      for (final record in records) {
+        final row = _imageRecordRow(record, indexedAt);
+        final existingId = existingIds[record.filePath];
+        if (existingId == null) {
+          batch.insert(
+            GalleryTables.images,
+            row,
+            conflictAlgorithm: ConflictAlgorithm.abort,
+          );
+        } else {
+          batch.update(
+            GalleryTables.images,
+            row,
+            where: 'id = ?',
+            whereArgs: [existingId],
+          );
+        }
+      }
+    });
+
+    for (final id in existingIds.values) {
+      context.removeImage(id);
+    }
+    return [
+      for (final (index, record) in records.indexed)
+        existingIds[record.filePath] ?? writeResults[index]! as int,
+    ];
   }
 
-  /// 删除所有图片记录（保留文件）
-  ///
-  /// 用于深度清除画廊数据，强制下次重新扫描
-  @override
-  Future<void> deleteAllImages() async {
-    try {
-      await gateway.execute(
-        'deleteAllImages',
-        (db) async {
-          // 先删除关联的全文索引与元数据（外键约束）
-          await db.delete(GalleryTables.ftsIndex);
-          await db.delete(GalleryTables.metadata);
-          // 删除收藏记录
-          await db.delete(GalleryTables.favorites);
-          // 删除图片标签关联
-          await db.delete(GalleryTables.imageTags);
-          // 最后删除图片记录
-          final count = await db.delete(GalleryTables.images);
-          AppLogger.i('Deleted $count image records', 'GalleryDS');
-        },
-        timeout: const Duration(seconds: 30),
-        maxRetries: 2,
-      );
+  Map<String, Object?> _imageRecordRow(
+    GalleryImageRecord record,
+    DateTime indexedAt,
+  ) {
+    return {
+      'file_path': record.filePath,
+      'file_name': record.fileName,
+      'file_size': record.fileSize,
+      'width': record.width,
+      'height': record.height,
+      'aspect_ratio': record.aspectRatio,
+      'created_at': record.createdAt.millisecondsSinceEpoch,
+      'modified_at': record.modifiedAt.millisecondsSinceEpoch,
+      'indexed_at': indexedAt.millisecondsSinceEpoch,
+      'last_scanned_at': record.lastScannedAt?.millisecondsSinceEpoch,
+      'date_ymd': _formatDateYmd(record.modifiedAt),
+      'resolution_key': record.resolutionKey,
+      'metadata_status': record.metadataStatus.index,
+      'is_favorite': record.isFavorite ? 1 : 0,
+      'is_deleted': record.isDeleted ? 1 : 0,
+    };
+  }
 
-      // 清除内存缓存，并让上层结果缓存感知这次批量写入。
-      context.clearCache();
-      context.markDataChanged();
-    } catch (e, stack) {
-      AppLogger.e('Failed to delete all images', e, stack, 'GalleryDS');
-      rethrow;
-    }
+  String _placeholders(int count) => List.filled(count, '?').join(',');
+
+  int _formatDateYmd(DateTime date) {
+    return date.year * 10000 + date.month * 100 + date.day;
   }
 
   List<List<T>> _chunk<T>(List<T> values, int size) {

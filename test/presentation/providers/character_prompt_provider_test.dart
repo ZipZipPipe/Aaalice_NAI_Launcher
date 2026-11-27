@@ -3,7 +3,7 @@ import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hive_flutter/hive_flutter.dart';
+import 'package:hive_ce_flutter/hive_ce_flutter.dart';
 import 'package:nai_launcher/core/constants/api_constants.dart';
 import 'package:nai_launcher/core/constants/storage_keys.dart';
 import 'package:nai_launcher/data/models/character/character_prompt.dart';
@@ -22,7 +22,7 @@ void main() {
     );
     Hive.init(hiveTempDir.path);
     await Hive.openBox(StorageKeys.settingsBox);
-    await Hive.openBox(StorageKeys.historyBox);
+    await Hive.openLazyBox<dynamic>(StorageKeys.historyBox);
   });
 
   tearDownAll(() async {
@@ -37,7 +37,7 @@ void main() {
 
     setUp(() async {
       await Hive.box(StorageKeys.settingsBox).clear();
-      await Hive.box(StorageKeys.historyBox).clear();
+      await Hive.lazyBox<dynamic>(StorageKeys.historyBox).clear();
       container = ProviderContainer();
     });
 

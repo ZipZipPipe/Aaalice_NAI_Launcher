@@ -15,7 +15,7 @@ permissions:
   contents: write
 
 env:
-  FLUTTER_VERSION: "3.44.2"
+  FLUTTER_VERSION: "3.47.5"
   PUB_HOSTED_URL: "https://pub.dev"
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
@@ -268,6 +268,10 @@ jobs:
             "--dart-define=ONEDRIVE_WINDOWS_REDIRECT_URI=http://127.0.0.1" `
             "--dart-define=ONEDRIVE_TENANT_ID=$env:ONEDRIVE_TENANT_ID"
 
+      - name: Build MCP CLI
+        shell: pwsh
+        run: ./scripts/build_mcp_cli.ps1 -OutputPath build/windows/x64/runner/Release/nai_launcher_mcp.exe
+
       - name: Sign Windows application
         shell: pwsh
         env:
@@ -285,7 +289,10 @@ jobs:
             [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERT_BASE64)
           )
           ./scripts/sign_windows_binary.ps1 `
-            -Path 'build/windows/x64/runner/Release/nai_launcher.exe' `
+            -Path @(
+              'build/windows/x64/runner/Release/nai_launcher.exe',
+              'build/windows/x64/runner/Release/nai_launcher_mcp.exe'
+            ) `
             -CertificatePath $certificatePath `
             -CertificatePassword $env:WINDOWS_SIGNING_CERT_PASSWORD
 
@@ -411,6 +418,13 @@ jobs:
             "--dart-define=ONEDRIVE_MACOS_REDIRECT_URI=$ONEDRIVE_MACOS_REDIRECT_URI" \
             "--dart-define=ONEDRIVE_TENANT_ID=$ONEDRIVE_TENANT_ID"
 
+      - name: Build MCP CLI
+        shell: pwsh
+        run: ./scripts/build_mcp_cli.ps1 -OutputPath "build/macos/Build/Products/Release/Aaalice NAI Launcher.app/Contents/MacOS/nai_launcher_mcp"
+
+      - name: Re-sign macOS bundle with the bundled CLI
+        run: codesign --force --deep --sign - "build/macos/Build/Products/Release/Aaalice NAI Launcher.app"
+
       - name: Package macOS artifact
         run: |
           version="${{ needs.prepare.outputs.version }}"
@@ -495,19 +509,8 @@ jobs:
                 -z "$ANDROID_KEYSTORE_PASSWORD" || \
                 -z "$ANDROID_KEY_ALIAS" || \
                 -z "$ANDROID_KEY_PASSWORD" ]]; then
-            echo 'Android release signing secrets not configured; falling back to debug signing.' >&1
-            debug_keystore="$RUNNER_TEMP/debug.keystore"
-            keytool -genkeypair -v \
-              -keystore "$debug_keystore" \
-              -storepass android -keypass android \
-              -alias androiddebugkey \
-              -keyalg RSA -keysize 2048 -validity 10000 \
-              -dname 'CN=Android Debug,O=Android,C=US'
-            echo "ANDROID_KEYSTORE_PATH=$debug_keystore" >> "$GITHUB_ENV"
-            echo "ANDROID_KEYSTORE_PASSWORD=android" >> "$GITHUB_ENV"
-            echo "ANDROID_KEY_ALIAS=androiddebugkey" >> "$GITHUB_ENV"
-            echo "ANDROID_KEY_PASSWORD=android" >> "$GITHUB_ENV"
-            exit 0
+            echo 'Android release signing secrets are required.' >&2
+            exit 1
           fi
           keystore="$RUNNER_TEMP/nai-launcher-release.keystore"
           printf '%s' "$ANDROID_SIGNING_KEYSTORE_BASE64" | base64 --decode > "$keystore"
@@ -542,60 +545,27 @@ jobs:
           ONEDRIVE_TENANT_ID: ${{ vars.ONEDRIVE_TENANT_ID || 'common' }}
         run: ./scripts/verify_cloud_drive_oauth_config.ps1 -Platform android
 
-      - name: Build signed Android APK
+      - name: Build signed Android APKs
         env:
           GOOGLE_DRIVE_ANDROID_CLIENT_ID: ${{ vars.GOOGLE_DRIVE_ANDROID_CLIENT_ID }}
           ONEDRIVE_ANDROID_CLIENT_ID: ${{ vars.ONEDRIVE_CLIENT_ID }}
           ONEDRIVE_ANDROID_REDIRECT_URI: ${{ vars.ONEDRIVE_ANDROID_REDIRECT_URI }}
           ONEDRIVE_TENANT_ID: ${{ vars.ONEDRIVE_TENANT_ID || 'common' }}
         run: |
-          flutter build apk --release \
+          flutter build apk --release --split-per-abi \
+            --android-project-arg=force-version-code-ignoring-abi=true \
             "--dart-define=GOOGLE_DRIVE_ANDROID_CLIENT_ID=$GOOGLE_DRIVE_ANDROID_CLIENT_ID" \
             "--dart-define=ONEDRIVE_ANDROID_CLIENT_ID=$ONEDRIVE_ANDROID_CLIENT_ID" \
             "--dart-define=ONEDRIVE_ANDROID_REDIRECT_URI=$ONEDRIVE_ANDROID_REDIRECT_URI" \
             "--dart-define=ONEDRIVE_TENANT_ID=$ONEDRIVE_TENANT_ID"
 
-      - name: Verify and package Android APK
+      - name: Verify and package Android APKs
         run: |
           set -euo pipefail
-          apk='build/app/outputs/flutter-apk/app-release.apk'
-          test -s "$apk"
           apksigner="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
           test -x "$apksigner"
-          verification="$("$apksigner" verify --verbose --print-certs "$apk" 2>&1)"
-          printf '%s\n' "$verification"
-          signer_count="$(
-            sed -nE 's/^Number of signers: ([0-9]+)$/\1/p' \
-              <<< "$verification"
-          )"
-          if [[ "$signer_count" != "1" ]]; then
-            echo "Android release APK must contain exactly one signer; found: ${signer_count:-unknown}" >&2
-            exit 1
-          fi
-          mapfile -t signer_digests < <(
-            sed -nE \
-              -e 's/^[[:space:]]*(Signer #1 certificate|V2 Signer: certificate) SHA-256 digest: ([0-9a-fA-F]{64})[[:space:]]*$/\2/p' \
-              <<< "$verification" |
-              tr '[:upper:]' '[:lower:]' |
-              sort -u
-          )
-          if (( ${#signer_digests[@]} != 1 )); then
-            echo 'Unable to determine exactly one Android APK signer digest.' >&2
-            exit 1
-          fi
-          actual_signer_sha256="${signer_digests[0]}"
-          if [[ -n "$ANDROID_EXPECTED_SIGNER_SHA256" ]]; then
-            if [[ "$actual_signer_sha256" != "$ANDROID_EXPECTED_SIGNER_SHA256" ]]; then
-              echo 'Android release APK signer does not match the configured keystore.' >&2
-              exit 1
-            fi
-            if grep -qi 'CN=Android Debug' <<< "$verification"; then
-              echo 'Android release APK was signed with the debug certificate.' >&2
-              exit 1
-            fi
-          else
-            echo 'Skipping strict signer digest checks (debug-signing fallback).'
-          fi
+          aapt="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)"
+          test -x "$aapt"
 
           expected_version='${{ needs.prepare.outputs.version }}'
           if [[ ! "$expected_version" =~ ^(.+)\+([0-9]+)$ ]]; then
@@ -604,18 +574,55 @@ jobs:
           fi
           expected_version_name="${BASH_REMATCH[1]}"
           expected_version_code="${BASH_REMATCH[2]}"
-          aapt="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)"
-          test -x "$aapt"
-          package_line="$("$aapt" dump badging "$apk" | head -n 1)"
-          if [[ "$package_line" != *"name='com.aaalice.nai_launcher'"* || \
-                "$package_line" != *"versionCode='$expected_version_code'"* || \
-                "$package_line" != *"versionName='$expected_version_name'"* ]]; then
-            echo "Android APK package/version mismatch: $package_line" >&2
-            exit 1
-          fi
 
           mkdir -p dist
-          cp "$apk" "dist/NAI_Launcher_Android_${{ needs.prepare.outputs.version }}.apk"
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            apk="build/app/outputs/flutter-apk/app-${abi}-release.apk"
+            test -s "$apk"
+
+            verification="$("$apksigner" verify --verbose --print-certs "$apk" 2>&1)"
+            printf '=== %s ===\n%s\n' "$abi" "$verification"
+            signer_count="$(
+              sed -nE 's/^Number of signers: ([0-9]+)$/\1/p' \
+                <<< "$verification"
+            )"
+            if [[ "$signer_count" != "1" ]]; then
+              echo "Android release APK ($abi) must contain exactly one signer; found: ${signer_count:-unknown}" >&2
+              exit 1
+            fi
+            mapfile -t signer_digests < <(
+              sed -nE \
+                -e 's/^[[:space:]]*(Signer #1 certificate|V2 Signer: certificate) SHA-256 digest: ([0-9a-fA-F]{64})[[:space:]]*$/\2/p' \
+                <<< "$verification" |
+                tr '[:upper:]' '[:lower:]' |
+                sort -u
+            )
+            if (( ${#signer_digests[@]} != 1 )); then
+              echo "Unable to determine exactly one Android APK signer digest for $abi." >&2
+              exit 1
+            fi
+            actual_signer_sha256="${signer_digests[0]}"
+            if [[ "$actual_signer_sha256" != "$ANDROID_EXPECTED_SIGNER_SHA256" ]]; then
+              echo "Android release APK ($abi) signer does not match the configured keystore." >&2
+              exit 1
+            fi
+            if grep -qi 'CN=Android Debug' <<< "$verification"; then
+              echo "Android release APK ($abi) was signed with the debug certificate." >&2
+              exit 1
+            fi
+
+            package_line="$("$aapt" dump badging "$apk" | head -n 1)"
+            if [[ "$package_line" != *"name='com.aaalice.nai_launcher'"* || \
+                  "$package_line" != *"versionCode='$expected_version_code'"* || \
+                  "$package_line" != *"versionName='$expected_version_name'"* ]]; then
+              echo "Android APK ($abi) package/version mismatch: $package_line" >&2
+              exit 1
+            fi
+
+            out_apk="dist/NAI_Launcher_Android_${expected_version}_${abi}.apk"
+            cp "$apk" "$out_apk"
+            test -s "$out_apk"
+          done
 
       - name: Remove Android signing key
         if: ${{ always() }}
@@ -625,7 +632,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: android-release
-          path: dist/NAI_Launcher_Android_*.apk
+          path: |
+            dist/NAI_Launcher_Android_*_arm64-v8a.apk
+            dist/NAI_Launcher_Android_*_armeabi-v7a.apk
+            dist/NAI_Launcher_Android_*_x86_64.apk
           if-no-files-found: error
 
   publish:

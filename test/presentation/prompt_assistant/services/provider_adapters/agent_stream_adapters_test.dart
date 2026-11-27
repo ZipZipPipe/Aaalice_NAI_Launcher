@@ -5,13 +5,22 @@ import 'dart:typed_data';
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nai_launcher/core/agent/agent_types.dart';
+import 'package:nai_launcher/core/agent/harness/llm_helpers.dart';
 import 'package:nai_launcher/presentation/prompt_assistant/models/agent_protocol.dart';
-import 'package:nai_launcher/presentation/prompt_assistant/models/prompt_assistant_models.dart';
+import 'package:nai_launcher/data/models/prompt_assistant/prompt_assistant_models.dart';
 import 'package:nai_launcher/presentation/prompt_assistant/services/provider_adapters/anthropic_messages_adapter.dart';
 import 'package:nai_launcher/presentation/prompt_assistant/services/provider_adapters/gemini_generate_content_adapter.dart';
 import 'package:nai_launcher/presentation/prompt_assistant/services/provider_adapters/openai_chat_completions_adapter.dart';
 import 'package:nai_launcher/presentation/prompt_assistant/services/provider_adapters/openai_responses_adapter.dart';
 import 'package:nai_launcher/presentation/prompt_assistant/services/provider_adapters/prompt_assistant_adapter.dart';
+
+bool _isRetryable(AgentWireError error) => isRetryableAssistantError(
+  AssistantMessage(
+    content: const [],
+    stopReason: StopReason.error,
+    errorMessage: error.message,
+  ),
+);
 
 void main() {
   test('streaming HTTP errors preserve the provider response body', () async {
@@ -99,6 +108,7 @@ void main() {
 
     expect(events.whereType<AgentWireError>(), hasLength(1));
     expect(events.whereType<AgentWireFinish>(), isEmpty);
+    expect(_isRetryable(events.whereType<AgentWireError>().single), isTrue);
   });
 
   test('DeepSeek replays reasoning content before tool results', () async {
@@ -194,7 +204,8 @@ void main() {
     );
     final payload = capture.options!.data as Map<String, dynamic>;
     expect(payload['model'], 'deepseek-v4-flash');
-    expect(payload['thinking'], {'type': 'disabled'});
+    expect(payload, isNot(contains('thinking')));
+    expect(payload, isNot(contains('reasoning_effort')));
   });
 
   for (final allowImageInput in [false, true]) {
@@ -426,6 +437,26 @@ void main() {
     );
   });
 
+  test('Gemini rejects a truncated stream', () async {
+    final dio = Dio()
+      ..httpClientAdapter = _SseAdapter(
+        'data: {"candidates":[{"content":{"parts":[{"text":"partial"}]}}]}\n\n',
+      );
+    addTearDown(dio.close);
+
+    final events = await const GeminiGenerateContentAdapter()
+        .completeAgent(
+          dio: dio,
+          request: _request(ProviderProtocol.geminiGenerateContent),
+          cancelToken: CancelToken(),
+        )
+        .toList();
+
+    expect(events.whereType<AgentWireError>(), hasLength(1));
+    expect(events.whereType<AgentWireFinish>(), isEmpty);
+    expect(_isRetryable(events.whereType<AgentWireError>().single), isTrue);
+  });
+
   test('Gemini maps cached and thinking tokens like Pi', () async {
     final dio = Dio()
       ..httpClientAdapter = _SseAdapter(
@@ -609,6 +640,114 @@ void main() {
     });
   });
 
+  test('Gemini 2.5 sends tool images in a separate user turn', () async {
+    final capture = _CaptureAdapter();
+    final dio = Dio()..httpClientAdapter = capture;
+    addTearDown(dio.close);
+    const names = ['read', 'preview', 'size'];
+    const image = ToolResultImageContent(
+      ImageContent(
+        source: ImageSource.base64(mimeType: 'image/png', base64Data: 'AA=='),
+      ),
+    );
+
+    await const GeminiGenerateContentAdapter()
+        .completeAgent(
+          dio: dio,
+          request: AgentChatRequest(
+            sessionId: 'session',
+            provider: ProviderPreset.gemini.createConfig(),
+            model: 'gemini-2.5-flash',
+            systemPrompt: '',
+            messages: [
+              UserMessage.text('inspect the image'),
+              AssistantMessage(
+                content: [
+                  for (final name in names)
+                    ToolCallContent(id: name, name: name, arguments: const {}),
+                ],
+                stopReason: StopReason.toolUse,
+              ),
+              for (final name in names)
+                ToolResultMessage(
+                  toolCallId: name,
+                  toolName: name,
+                  content: name == 'preview'
+                      ? const [image]
+                      : [ToolResultTextContent(name)],
+                ),
+            ],
+            tools: const [],
+            apiKey: null,
+          ),
+          cancelToken: CancelToken(),
+        )
+        .toList();
+
+    final contents = (capture.options!.data as Map)['contents'] as List;
+    Map<String, dynamic> response(String name, String output) => {
+      'functionResponse': {
+        'name': name,
+        'response': {'output': output},
+      },
+    };
+    expect(contents.skip(2).toList(), [
+      {
+        'role': 'user',
+        'parts': [
+          response('read', 'read'),
+          response('preview', '(see attached image)'),
+        ],
+      },
+      {
+        'role': 'user',
+        'parts': [
+          {'text': 'Tool result image:'},
+          {
+            'inlineData': {'mimeType': 'image/png', 'data': 'AA=='},
+          },
+        ],
+      },
+      {
+        'role': 'user',
+        'parts': [response('size', 'size')],
+      },
+    ]);
+  });
+
+  test(
+    'Gemini preserves truncation when the final frame calls a tool',
+    () async {
+      for (final (reason, expected) in [
+        ('MAX_TOKENS', StopReason.length),
+        ('CONTINUATION', StopReason.length),
+        ('STOP', StopReason.toolUse),
+      ]) {
+        final dio = Dio()
+          ..httpClientAdapter = _SseAdapter(
+            'data: {"candidates":[{"content":{"parts":['
+            '{"functionCall":{"name":"read","args":{}}}'
+            ']},"finishReason":"$reason"}]}\n\n',
+          );
+        addTearDown(dio.close);
+        final events = await const GeminiGenerateContentAdapter()
+            .completeAgent(
+              dio: dio,
+              request: _request(ProviderProtocol.geminiGenerateContent),
+              cancelToken: CancelToken(),
+            )
+            .toList();
+
+        expect(events.whereType<AgentWireToolCallDone>().single.name, 'read');
+        expect(
+          events.whereType<AgentWireFinish>().single.stopReason,
+          expected,
+          reason: reason,
+        );
+      }
+    },
+  );
+
   test('Gemini function call finishes the turn with toolUse', () async {
     final dio = Dio()
       ..httpClientAdapter = _SseAdapter(
@@ -677,6 +816,7 @@ void main() {
 
     expect(events.whereType<AgentWireError>(), hasLength(1));
     expect(events.whereType<AgentWireFinish>(), isEmpty);
+    expect(_isRetryable(events.whereType<AgentWireError>().single), isTrue);
   });
 
   test(
@@ -773,6 +913,7 @@ void main() {
 
     expect(events.whereType<AgentWireError>(), hasLength(1));
     expect(events.whereType<AgentWireFinish>(), isEmpty);
+    expect(_isRetryable(events.whereType<AgentWireError>().single), isTrue);
   });
 
   test('OpenAI Responses persists encrypted reasoning and replays it', () async {
@@ -1014,6 +1155,324 @@ void main() {
       expect(payload.toString(), contains('exact_tool'), reason: protocol.name);
     }
   });
+
+  test('Anthropic drops a replayed tool_use batch at the same index', () async {
+    final dio = Dio()
+      ..httpClientAdapter = _SseAdapter(
+        _anthropicToolUseStream(const [
+          (0, 'toolu_A', 'get_prompt_state'),
+          (1, 'toolu_B', 'read_skill'),
+          (0, 'toolu_A', 'get_prompt_state'),
+          (1, 'toolu_B', 'read_skill'),
+        ]),
+      );
+    addTearDown(dio.close);
+
+    final events = await const AnthropicMessagesAdapter()
+        .completeAgent(
+          dio: dio,
+          request: _request(ProviderProtocol.anthropicMessages),
+          cancelToken: CancelToken(),
+        )
+        .toList();
+
+    final calls = events.whereType<AgentWireToolCallDone>().toList();
+    expect(calls.map((call) => call.id), ['toolu_A', 'toolu_B']);
+  });
+
+  test('Anthropic drops a replay that lands on fresh indexes', () async {
+    final dio = Dio()
+      ..httpClientAdapter = _SseAdapter(
+        _anthropicToolUseStream(const [
+          (0, 'toolu_A', 'get_prompt_state'),
+          (1, 'toolu_B', 'read_skill'),
+          (2, 'toolu_A', 'get_prompt_state'),
+          (3, 'toolu_B', 'read_skill'),
+        ]),
+      );
+    addTearDown(dio.close);
+
+    final events = await const AnthropicMessagesAdapter()
+        .completeAgent(
+          dio: dio,
+          request: _request(ProviderProtocol.anthropicMessages),
+          cancelToken: CancelToken(),
+        )
+        .toList();
+
+    final calls = events.whereType<AgentWireToolCallDone>().toList();
+    expect(calls.map((call) => call.id), ['toolu_A', 'toolu_B']);
+  });
+
+  test('Anthropic keeps two distinct ids for the same tool', () async {
+    final dio = Dio()
+      ..httpClientAdapter = _SseAdapter(
+        _anthropicToolUseStream(const [
+          (0, 'toolu_A', 'search_tags'),
+          (1, 'toolu_B', 'search_tags'),
+        ]),
+      );
+    addTearDown(dio.close);
+
+    final events = await const AnthropicMessagesAdapter()
+        .completeAgent(
+          dio: dio,
+          request: _request(ProviderProtocol.anthropicMessages),
+          cancelToken: CancelToken(),
+        )
+        .toList();
+
+    final calls = events.whereType<AgentWireToolCallDone>().toList();
+    expect(calls.map((call) => call.id), ['toolu_A', 'toolu_B']);
+  });
+
+  test('OpenAI chat drops a tool call whose id was already sent', () async {
+    final dio = Dio()
+      ..httpClientAdapter = _SseAdapter(
+        'data: {"choices":[{"delta":{"tool_calls":['
+        '{"index":0,"id":"call_A","function":'
+        '{"name":"read","arguments":"{}"}},'
+        '{"index":1,"id":"call_B","function":'
+        '{"name":"write","arguments":"{}"}},'
+        '{"index":2,"id":"call_A","function":'
+        '{"name":"read","arguments":"{}"}}'
+        ']}}]}\n\n'
+        'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n'
+        'data: [DONE]\n\n',
+      );
+    addTearDown(dio.close);
+
+    final events = await const OpenAiChatCompletionsAdapter()
+        .completeAgent(
+          dio: dio,
+          request: _request(ProviderProtocol.openaiChatCompletions),
+          cancelToken: CancelToken(),
+        )
+        .toList();
+
+    final calls = events.whereType<AgentWireToolCallDone>().toList();
+    expect(calls.map((call) => call.id), ['call_A', 'call_B']);
+  });
+
+  test(
+    'OpenAI chat emits thinking before text, parses cache usage, and handles reasoning_text',
+    () async {
+      final dio = Dio()
+        ..httpClientAdapter = _SseAdapter(
+          'data: {"choices":[{"delta":{"content":"answer","reasoning_text":"thought"}}]}\n\n'
+          'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":'
+          '{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,'
+          '"prompt_tokens_details":{"cached_tokens":40,"cache_write_tokens":10}}}\n\n'
+          'data: [DONE]\n\n',
+        );
+      addTearDown(dio.close);
+
+      final events = await const OpenAiChatCompletionsAdapter()
+          .completeAgent(
+            dio: dio,
+            request: _request(ProviderProtocol.openaiChatCompletions),
+            cancelToken: CancelToken(),
+          )
+          .toList();
+
+      final thinkingIndex = events.indexWhere(
+        (e) => e is AgentWireThinkingDelta,
+      );
+      final textIndex = events.indexWhere((e) => e is AgentWireTextDelta);
+      expect(thinkingIndex, greaterThanOrEqualTo(0));
+      expect(textIndex, greaterThan(thinkingIndex));
+      expect(
+        (events[thinkingIndex] as AgentWireThinkingDelta).delta,
+        'thought',
+      );
+      expect((events[textIndex] as AgentWireTextDelta).delta, 'answer');
+
+      final usage = events.whereType<AgentWireFinish>().single.usage!;
+      expect(usage.input, 50);
+      expect(usage.cacheRead, 40);
+      expect(usage.cacheWrite, 10);
+      expect(usage.output, 20);
+      expect(usage.totalTokens, 120);
+    },
+  );
+
+  test(
+    'OpenAI chat drops cross-model thinking, uses max_tokens for Kimi Coding, and guards empty tool output',
+    () async {
+      final capture = _CaptureAdapter();
+      final dio = Dio()..httpClientAdapter = capture;
+      addTearDown(dio.close);
+
+      final kimi = ProviderPreset.kimiCoding.createConfig();
+      await const OpenAiChatCompletionsAdapter()
+          .completeAgent(
+            dio: dio,
+            request: AgentChatRequest(
+              sessionId: 'session',
+              provider: kimi,
+              model: 'kimi-for-coding',
+              systemPrompt: 'sys',
+              messages: [
+                UserMessage.text('go'),
+                AssistantMessage(
+                  provider: 'anthropic',
+                  model: 'claude-opus-5-5',
+                  content: const [
+                    AssistantThinkingContent('foreign thought'),
+                    ToolCallContent(id: 'c1', name: 'noop', arguments: {}),
+                  ],
+                  stopReason: StopReason.toolUse,
+                ),
+                ToolResultMessage(
+                  toolCallId: 'c1',
+                  toolName: 'noop',
+                  content: const [ToolResultTextContent('   ')],
+                ),
+              ],
+              tools: const [],
+              apiKey: 'k',
+              modelMaxOutputTokens: 4096,
+              reasoningRequest: const AgentReasoningRequest(
+                api: AgentReasoningApi.openAiCompletions,
+                enabled: true,
+                effort: 'high',
+                preserveReasoningContent: true,
+              ),
+            ),
+            cancelToken: CancelToken(),
+          )
+          .toList();
+
+      final payload = capture.options!.data as Map<String, dynamic>;
+      expect(payload['max_tokens'], 4096);
+      expect(payload, isNot(contains('max_completion_tokens')));
+      final messages = (payload['messages'] as List).cast<Map>();
+      final assistant = messages.firstWhere((m) => m['role'] == 'assistant');
+      expect(assistant['reasoning_content'], '');
+      final tool = messages.firstWhere((m) => m['role'] == 'tool');
+      expect(tool['content'], '(no tool output)');
+    },
+  );
+
+  test(
+    'Gemini rewrites const to enum, drops cross-model thinking, and maps CONTINUATION to length',
+    () async {
+      final sse = _SseAdapter(
+        'data: {"candidates":[{"content":{"parts":[{"text":"partial"}]},'
+        '"finishReason":"CONTINUATION"}]}\n\n',
+      );
+      final dio = Dio()..httpClientAdapter = sse;
+      addTearDown(dio.close);
+
+      final events = await const GeminiGenerateContentAdapter()
+          .completeAgent(
+            dio: dio,
+            request: AgentChatRequest(
+              sessionId: 'session',
+              provider: ProviderPreset.gemini.createConfig(),
+              model: 'gemini-4-argon',
+              systemPrompt: 'sys',
+              messages: [
+                UserMessage.text('go'),
+                AssistantMessage(
+                  provider: 'openai',
+                  model: 'gpt-6.2-sol',
+                  content: const [
+                    AssistantThinkingContent('foreign thought'),
+                    AssistantTextContent('visible'),
+                  ],
+                  stopReason: StopReason.stop,
+                ),
+              ],
+              tools: const [
+                Tool(
+                  name: 'tagged',
+                  description: 'uses const',
+                  parameters: {
+                    'type': 'object',
+                    'properties': {
+                      'kind': {'const': 'fixed'},
+                    },
+                  },
+                ),
+              ],
+              apiKey: 'k',
+            ),
+            cancelToken: CancelToken(),
+          )
+          .toList();
+
+      expect(
+        events.whereType<AgentWireFinish>().single.stopReason,
+        StopReason.length,
+      );
+      final sent = sse.requestData as Map<String, dynamic>;
+      final contents = (sent['contents'] as List).cast<Map>();
+      final modelParts = (contents[1]['parts'] as List).cast<Map>();
+      expect(modelParts, [
+        {'text': 'visible'},
+      ]);
+      final decl =
+          (((sent['tools'] as List).single as Map)['functionDeclarations']
+                      as List)
+                  .single
+              as Map;
+      final kindSchema =
+          ((decl['parametersJsonSchema'] as Map)['properties'] as Map)['kind']
+              as Map;
+      expect(kindSchema, {
+        'enum': ['fixed'],
+      });
+    },
+  );
+
+  test(
+    'OpenAI Responses sends session-id header and parses cached input tokens',
+    () async {
+      final capture = _SseAdapter(
+        'event: response.completed\n'
+        'data: {"response":{"usage":{"input_tokens":100,"output_tokens":15,'
+        '"total_tokens":115,"input_tokens_details":{"cached_tokens":30}}}}\n\n',
+      );
+      final dio = Dio()..httpClientAdapter = capture;
+      addTearDown(dio.close);
+
+      final events = await const OpenAiResponsesAdapter()
+          .completeAgent(
+            dio: dio,
+            request: AgentChatRequest(
+              sessionId: 'sess-123',
+              provider: ProviderPreset.openaiResponses.createConfig(),
+              model: 'gpt-6.2-sol',
+              systemPrompt: 'sys',
+              messages: [UserMessage.text('hi')],
+              tools: const [],
+              apiKey: 'sk-test',
+            ),
+            cancelToken: CancelToken(),
+          )
+          .toList();
+
+      final usage = events.whereType<AgentWireFinish>().single.usage!;
+      expect(usage.input, 70);
+      expect(usage.cacheRead, 30);
+      expect(usage.output, 15);
+      expect(capture.requestHeaders?['session-id'], 'sess-123');
+    },
+  );
+}
+
+/// Builds an Anthropic tool_use stream, terminated by message_stop.
+String _anthropicToolUseStream(List<(int, String, String)> blocks) {
+  return [
+    for (final (index, id, name) in blocks)
+      'event: content_block_start\n'
+          'data: {"index":$index,"content_block":'
+          '{"type":"tool_use","id":"$id","name":"$name"}}\n\n'
+          'event: content_block_stop\n'
+          'data: {"index":$index}\n\n',
+    'event: message_stop\ndata: {}\n\n',
+  ].join();
 }
 
 AgentChatRequest _request(
@@ -1059,6 +1518,7 @@ class _SseAdapter implements HttpClientAdapter {
 
   final String body;
   Object? requestData;
+  Map<String, dynamic>? requestHeaders;
 
   @override
   Future<ResponseBody> fetch(
@@ -1067,6 +1527,7 @@ class _SseAdapter implements HttpClientAdapter {
     Future<void>? cancelFuture,
   ) async {
     requestData = options.data;
+    requestHeaders = Map<String, dynamic>.from(options.headers);
     return ResponseBody.fromString(
       body,
       200,

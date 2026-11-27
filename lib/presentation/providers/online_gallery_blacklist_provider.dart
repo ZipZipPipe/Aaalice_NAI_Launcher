@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/constants/storage_keys.dart';
@@ -92,31 +93,38 @@ class OnlineGalleryBlacklistState {
 }
 
 class OnlineGalleryBlacklistNotifier
-    extends StateNotifier<OnlineGalleryBlacklistState> {
-  OnlineGalleryBlacklistNotifier(this._ref, this._storage, this._repository)
-    : super(const OnlineGalleryBlacklistState()) {
-    _ref.listen<DanbooruAuthState>(danbooruAuthProvider, _handleAuthChanged);
-    _ref.onDispose(_dispose);
-    _initFuture = _loadFromStorage();
-  }
-
+    extends Notifier<OnlineGalleryBlacklistState> {
   static const Duration _startupSyncMinInterval = Duration(minutes: 30);
   static const Duration _authWaitStep = Duration(milliseconds: 500);
   static const int _authWaitMaxRounds = 24;
 
-  final Ref _ref;
-  final LocalStorageService _storage;
-  final OnlineGalleryBlacklistRepository _repository;
+  late LocalStorageService _storage;
+  late OnlineGalleryBlacklistRepository _repository;
   late GalleryBlacklistStore _store;
-  late final Future<void> _initFuture;
+  late Future<void> _initFuture;
   Future<void> _mutationQueue = Future<void>.value();
   GalleryBlacklistUndo? _undo;
   Timer? _incrementalSyncDebounce;
   bool _incrementalSyncRequested = false;
+  Completer<void>? _incrementalSyncSettled;
   CancelToken? _remoteCancelToken;
   int _remoteGeneration = 0;
 
-  Future<void> _loadFromStorage() async {
+  @override
+  OnlineGalleryBlacklistState build() {
+    _storage = ref.read(localStorageServiceProvider);
+    _repository = ref.read(onlineGalleryBlacklistRepositoryProvider);
+    _mutationQueue = Future<void>.value();
+    _undo = null;
+    _incrementalSyncRequested = false;
+    ref.listen<DanbooruAuthState>(danbooruAuthProvider, _handleAuthChanged);
+    ref.onDispose(_dispose);
+    final initial = _loadInitialState();
+    _initFuture = _saveInitialIfNeeded(_store);
+    return initial;
+  }
+
+  OnlineGalleryBlacklistState _loadInitialState() {
     _store = _repository.load();
     final autoSync =
         _storage.getSetting<bool>(
@@ -124,12 +132,12 @@ class OnlineGalleryBlacklistNotifier
           defaultValue: true,
         ) ??
         true;
-    final auth = _ref.read(danbooruAuthProvider);
+    final auth = ref.read(danbooruAuthProvider);
     final accountKey = _accountKey(auth);
     final snapshot = accountKey == null
         ? null
         : _store.remoteSnapshots[accountKey];
-    state = OnlineGalleryBlacklistState(
+    return OnlineGalleryBlacklistState(
       tags: immutableTagSet(_store.desiredTags),
       tombstones: immutableTagSet(_store.tombstones),
       remoteTags: immutableTagSet(snapshot?.simpleTags ?? const {}),
@@ -143,13 +151,16 @@ class OnlineGalleryBlacklistNotifier
       revision: _store.revision,
       isInitialized: true,
     );
-    if (_store.desiredTags.isNotEmpty ||
-        _store.tombstones.isNotEmpty ||
-        _store.pendingRemoteDeletions.isNotEmpty ||
-        _store.remoteSnapshots.isNotEmpty ||
-        _store.legacyUnscopedRules.isNotEmpty ||
-        _store.legacyUnscopedLastSyncAt != null) {
-      await _repository.save(_store);
+  }
+
+  Future<void> _saveInitialIfNeeded(GalleryBlacklistStore store) async {
+    if (store.desiredTags.isNotEmpty ||
+        store.tombstones.isNotEmpty ||
+        store.pendingRemoteDeletions.isNotEmpty ||
+        store.remoteSnapshots.isNotEmpty ||
+        store.legacyUnscopedRules.isNotEmpty ||
+        store.legacyUnscopedLastSyncAt != null) {
+      await _repository.save(store);
     }
   }
 
@@ -254,14 +265,15 @@ class OnlineGalleryBlacklistNotifier
       StorageKeys.onlineGalleryBlacklistAutoSync,
       value,
     );
+    if (!ref.mounted) return;
     state = state.copyWith(autoSyncOnStartup: value);
   }
 
   Future<void> syncOnStartup() async {
     await ensureInitialized();
-    if (!state.autoSyncOnStartup) return;
+    if (!ref.mounted || !state.autoSyncOnStartup) return;
     final auth = await _waitAuthReadyForStartup();
-    if (!auth.isLoggedIn) return;
+    if (!ref.mounted || !auth.isLoggedIn) return;
     final hasRelevantPendingDeletion =
         _store.pendingRemoteDeletions.any(state.remoteTags.contains) ||
         (state.lastSyncAt == null && _store.pendingRemoteDeletions.isNotEmpty);
@@ -282,11 +294,12 @@ class OnlineGalleryBlacklistNotifier
     bool background = false,
   }) async {
     await ensureInitialized();
+    if (!ref.mounted) return null;
     final operation = _beginRemoteOperation(GalleryBlacklistSyncPhase.pulling);
     if (operation == null) return null;
     final (generation, accountKey, cancelToken) = operation;
     try {
-      final rules = await _ref
+      final rules = await ref
           .read(danbooruApiServiceProvider)
           .fetchBlacklistRules(cancelToken: cancelToken);
       if (!_isCurrentRemoteOperation(generation, accountKey)) return null;
@@ -296,7 +309,7 @@ class OnlineGalleryBlacklistNotifier
         rules: List.unmodifiable(rules),
         lastSyncAt: DateTime.now(),
       );
-      return _enqueueMutation(() async {
+      return await _enqueueMutation(() async {
         if (!_isCurrentRemoteOperation(generation, accountKey)) return null;
         final remoteSimple = snapshot.simpleTags;
         final additions = remoteSimple
@@ -356,13 +369,14 @@ class OnlineGalleryBlacklistNotifier
 
   Future<GalleryBlacklistPushPreview?> preparePushToCloud() async {
     await ensureInitialized();
+    if (!ref.mounted) return null;
     final operation = _beginRemoteOperation(
       GalleryBlacklistSyncPhase.preparingPush,
     );
     if (operation == null) return null;
     final (generation, accountKey, cancelToken) = operation;
     try {
-      final rules = await _ref
+      final rules = await ref
           .read(danbooruApiServiceProvider)
           .fetchBlacklistRules(cancelToken: cancelToken);
       if (!_isCurrentRemoteOperation(generation, accountKey)) return null;
@@ -371,7 +385,7 @@ class OnlineGalleryBlacklistNotifier
         rules: List.unmodifiable(rules),
         lastSyncAt: DateTime.now(),
       );
-      return _enqueueMutation(() async {
+      return await _enqueueMutation(() async {
         if (!_isCurrentRemoteOperation(generation, accountKey)) return null;
         await _persistRemoteSnapshot(snapshot);
         if (!_isCurrentRemoteOperation(generation, accountKey)) return null;
@@ -425,7 +439,7 @@ class OnlineGalleryBlacklistNotifier
     final desired = targetTags.toList()..sort();
     var cloudWriteVerified = false;
     try {
-      final latestRules = await _ref
+      final latestRules = await ref
           .read(danbooruApiServiceProvider)
           .fetchBlacklistRules(cancelToken: cancelToken);
       if (!_isCurrentRemoteOperation(generation, accountKey)) return false;
@@ -434,7 +448,7 @@ class OnlineGalleryBlacklistNotifier
       }
 
       // Once the write starts, cancellation cannot honestly guarantee rollback.
-      await _ref
+      await ref
           .read(danbooruApiServiceProvider)
           .updateBlacklistRules(
             desired,
@@ -442,7 +456,7 @@ class OnlineGalleryBlacklistNotifier
           );
       if (!_isCurrentRemoteOperation(generation, accountKey)) return false;
       state = state.copyWith(syncPhase: GalleryBlacklistSyncPhase.verifying);
-      final verifiedRules = await _ref
+      final verifiedRules = await ref
           .read(danbooruApiServiceProvider)
           .fetchBlacklistRules();
       if (!_isCurrentRemoteOperation(generation, accountKey)) return false;
@@ -517,10 +531,11 @@ class OnlineGalleryBlacklistNotifier
   }
 
   Future<DanbooruAuthState> _waitAuthReadyForStartup() async {
-    var auth = _ref.read(danbooruAuthProvider);
+    var auth = ref.read(danbooruAuthProvider);
     for (var i = 0; i < _authWaitMaxRounds && auth.isLoading; i++) {
       await Future<void>.delayed(_authWaitStep);
-      auth = _ref.read(danbooruAuthProvider);
+      if (!ref.mounted) return auth;
+      auth = ref.read(danbooruAuthProvider);
     }
     return auth;
   }
@@ -625,7 +640,7 @@ class OnlineGalleryBlacklistNotifier
   (int, String, CancelToken)? _beginRemoteOperation(
     GalleryBlacklistSyncPhase phase,
   ) {
-    final auth = _ref.read(danbooruAuthProvider);
+    final auth = ref.read(danbooruAuthProvider);
     final accountKey = _accountKey(auth);
     if (!auth.isLoggedIn ||
         accountKey == null ||
@@ -642,7 +657,7 @@ class OnlineGalleryBlacklistNotifier
   }
 
   bool _isCurrentRemoteOperation(int generation, String accountKey) {
-    return mounted &&
+    return ref.mounted &&
         generation == _remoteGeneration &&
         accountKey == state.currentAccountKey;
   }
@@ -652,6 +667,9 @@ class OnlineGalleryBlacklistNotifier
       state = state.copyWith(syncPhase: GalleryBlacklistSyncPhase.idle);
     }
     _resumeRequestedIncrementalSync();
+    if (_incrementalSyncDebounce == null && !_incrementalSyncRequested) {
+      _settleIncrementalSync();
+    }
   }
 
   void _resumeRequestedIncrementalSync() {
@@ -660,18 +678,33 @@ class OnlineGalleryBlacklistNotifier
     }
   }
 
+  /// Completes once the pending debounce and incremental sync have finished,
+  /// or immediately when nothing is scheduled.
+  @visibleForTesting
+  Future<void> get incrementalSyncSettled =>
+      _incrementalSyncSettled?.future ?? Future<void>.value();
+
+  void _settleIncrementalSync() {
+    final settled = _incrementalSyncSettled;
+    _incrementalSyncSettled = null;
+    settled?.complete();
+  }
+
   void _scheduleIncrementalSync() {
     _incrementalSyncRequested = true;
     _incrementalSyncDebounce?.cancel();
     if (_store.desiredTags.isEmpty && _store.pendingRemoteDeletions.isEmpty) {
       _incrementalSyncRequested = false;
+      _settleIncrementalSync();
       return;
     }
     if (!state.isCloudAvailable ||
         state.isSyncing ||
         _store.legacyUnscopedRules.isNotEmpty) {
+      if (!state.isSyncing) _settleIncrementalSync();
       return;
     }
+    _incrementalSyncSettled ??= Completer<void>();
     _incrementalSyncDebounce = Timer(const Duration(milliseconds: 500), () {
       _incrementalSyncDebounce = null;
       unawaited(_syncIncrementally());
@@ -685,7 +718,7 @@ class OnlineGalleryBlacklistNotifier
     final (generation, accountKey, cancelToken) = operation;
     var cloudWriteVerified = false;
     try {
-      final latestRules = await _ref
+      final latestRules = await ref
           .read(danbooruApiServiceProvider)
           .fetchBlacklistRules(cancelToken: cancelToken);
       if (!_isCurrentRemoteOperation(generation, accountKey)) return;
@@ -712,7 +745,7 @@ class OnlineGalleryBlacklistNotifier
       if (target == null) return;
       final (targetTags, targetRevision) = target;
       final targetRules = _mergeRulesPreservingOpaque(latest.rules, targetTags);
-      await _ref
+      await ref
           .read(danbooruApiServiceProvider)
           .updateBlacklistRules(
             targetRules,
@@ -720,7 +753,7 @@ class OnlineGalleryBlacklistNotifier
           );
       if (!_isCurrentRemoteOperation(generation, accountKey)) return;
       state = state.copyWith(syncPhase: GalleryBlacklistSyncPhase.verifying);
-      final verifiedRules = await _ref
+      final verifiedRules = await ref
           .read(danbooruApiServiceProvider)
           .fetchBlacklistRules();
       if (!_isCurrentRemoteOperation(generation, accountKey)) return;
@@ -787,7 +820,7 @@ class OnlineGalleryBlacklistNotifier
       stack,
       'OnlineGalleryBlacklist',
     );
-    if (mounted) {
+    if (ref.mounted) {
       state = state.copyWith(lastSyncError: message);
     }
   }
@@ -800,17 +833,18 @@ class OnlineGalleryBlacklistNotifier
     AppLogger.w('Blacklist sync failed: $error', 'OnlineGalleryBlacklist');
     AppLogger.d('$stack', 'OnlineGalleryBlacklist');
     await _setSyncError('$error');
-    if (!background) {
+    if (!background && ref.mounted) {
       state = state.copyWith(syncPhase: GalleryBlacklistSyncPhase.idle);
     }
   }
 
   Future<void> _setSyncError(String message) async {
+    if (!ref.mounted) return;
     final accountKey = state.currentAccountKey;
     if (accountKey != null) {
       try {
         await _enqueueMutation(() async {
-          if (state.currentAccountKey != accountKey) return;
+          if (!ref.mounted || state.currentAccountKey != accountKey) return;
           final snapshot = _store.remoteSnapshots[accountKey];
           if (snapshot != null) {
             await _persistRemoteSnapshot(snapshot.copyWith(lastError: message));
@@ -825,7 +859,7 @@ class OnlineGalleryBlacklistNotifier
         );
       }
     }
-    if (mounted && state.currentAccountKey == accountKey) {
+    if (ref.mounted && state.currentAccountKey == accountKey) {
       state = state.copyWith(
         syncPhase: GalleryBlacklistSyncPhase.idle,
         lastSyncError: message,
@@ -854,18 +888,13 @@ class OnlineGalleryBlacklistNotifier
 
   void _dispose() {
     _incrementalSyncDebounce?.cancel();
+    _settleIncrementalSync();
     _remoteCancelToken?.cancel('Blacklist notifier disposed');
   }
 }
 
 final onlineGalleryBlacklistNotifierProvider =
-    StateNotifierProvider<
+    NotifierProvider<
       OnlineGalleryBlacklistNotifier,
       OnlineGalleryBlacklistState
-    >((ref) {
-      return OnlineGalleryBlacklistNotifier(
-        ref,
-        ref.read(localStorageServiceProvider),
-        ref.read(onlineGalleryBlacklistRepositoryProvider),
-      );
-    });
+    >(OnlineGalleryBlacklistNotifier.new);

@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/cache/online_gallery_image_cache_manager.dart';
 import '../../../core/services/file_export_service.dart';
+import '../../../core/utils/app_logger.dart';
 import '../../../core/utils/localization_extension.dart';
 import '../../../core/utils/media_mime_type.dart';
 import '../../../data/models/online_gallery/danbooru_post.dart';
@@ -17,7 +18,9 @@ import '../../providers/replication_queue_provider.dart';
 import '../../providers/selection_mode_provider.dart';
 import '../../services/gallery_prompt_projection_service.dart';
 import '../../widgets/common/app_toast.dart';
+import '../../widgets/queue/enqueue_result_toast.dart';
 import '../../widgets/common/image_card_action.dart';
+import 'online_gallery_download_plan.dart';
 import 'online_gallery_utils.dart';
 
 class OnlineGallerySelectionActions {
@@ -59,7 +62,7 @@ class OnlineGallerySelectionActions {
           enabled: complete,
           invoke: () => favoriteSelected(posts),
         ),
-      if (posts.every((post) => post.hasValidPreview))
+      if (posts.every(canDownloadGalleryItem))
         ImageCardAction(
           id: ImageCardActionId.save,
           icon: Icons.download,
@@ -71,11 +74,6 @@ class OnlineGallerySelectionActions {
         ),
     ];
   }
-
-  OnlineGalleryNotifier get _galleryNotifier =>
-      ref.read(onlineGalleryNotifierProvider.notifier);
-  OnlineGallerySelectionNotifier get _selectionNotifier =>
-      ref.read(onlineGallerySelectionNotifierProvider.notifier);
 
   GallerySourceId _activeSource(OnlineGalleryState state) =>
       switch (state.viewMode) {
@@ -96,12 +94,16 @@ class OnlineGallerySelectionActions {
       );
       return file.path;
     } catch (error) {
-      debugPrint('Failed to cache queue thumbnail $previewUrl: $error');
+      AppLogger.w(
+        'Failed to cache queue thumbnail (${error.runtimeType})',
+        'OnlineGallery',
+      );
       return null;
     }
   }
 
   Future<({ReplicationTask? task, bool failed})> _buildReplicationTask(
+    OnlineGalleryNotifier galleryNotifier,
     GalleryItem post,
     OnlineGalleryPromptTagSettings promptTagSettings,
     OnlineGalleryOutputFilterSettings outputFilter,
@@ -111,7 +113,7 @@ class OnlineGallerySelectionActions {
       if (post.sourceId == GallerySourceId.aiTag ||
           post.sourceId == GallerySourceId.quickTagCloud ||
           post.focusedMediaId != null) {
-        detail = await _galleryNotifier.loadDetail(post);
+        detail = await galleryNotifier.loadDetail(post);
       }
       GalleryMedia? media;
       if (detail != null && detail.media.isNotEmpty) {
@@ -164,7 +166,10 @@ class OnlineGallerySelectionActions {
         failed: false,
       );
     } catch (error) {
-      debugPrint('Failed to resolve ${post.stableKey} for queue: $error');
+      AppLogger.w(
+        'Failed to prepare gallery task (${error.runtimeType})',
+        'OnlineGallery',
+      );
       return (task: null, failed: true);
     }
   }
@@ -174,6 +179,11 @@ class OnlineGallerySelectionActions {
     final galleryState = ref.read(onlineGalleryNotifierProvider);
     final promptTagSettings = ref.read(onlineGalleryPromptTagSettingsProvider);
     final outputFilter = ref.read(onlineGalleryOutputFilterProvider);
+    final galleryNotifier = ref.read(onlineGalleryNotifierProvider.notifier);
+    final selectionNotifier = ref.read(
+      onlineGallerySelectionNotifierProvider.notifier,
+    );
+    final queueNotifier = ref.read(replicationQueueNotifierProvider.notifier);
 
     final selectedPosts =
         targets ??
@@ -184,6 +194,7 @@ class OnlineGallerySelectionActions {
     if (selectedPosts.isEmpty) return;
 
     final tasks = <ReplicationTask>[];
+    final postKeyByTaskId = <String, String>{};
     var preparationFailureCount = 0;
     const concurrency = 4;
     for (var start = 0; start < selectedPosts.length; start += concurrency) {
@@ -193,11 +204,20 @@ class OnlineGallerySelectionActions {
       );
       final resolved = await Future.wait(
         batch.map(
-          (post) =>
-              _buildReplicationTask(post, promptTagSettings, outputFilter),
+          (post) => _buildReplicationTask(
+            galleryNotifier,
+            post,
+            promptTagSettings,
+            outputFilter,
+          ),
         ),
       );
-      tasks.addAll(resolved.map((result) => result.task).whereType());
+      for (var index = 0; index < batch.length; index++) {
+        final task = resolved[index].task;
+        if (task == null) continue;
+        tasks.add(task);
+        postKeyByTaskId[task.id] = batch[index].stableKey;
+      }
       preparationFailureCount += resolved
           .where((result) => result.failed)
           .length;
@@ -213,16 +233,50 @@ class OnlineGallerySelectionActions {
           0,
         ),
       );
-      _selectionNotifier.exit();
+      selectionNotifier.exit();
       return;
     }
 
-    final addedCount = await ref
-        .read(replicationQueueNotifierProvider.notifier)
-        .addAll(tasks);
+    final EnqueueResult result;
+    try {
+      result = await queueNotifier.addAll(tasks);
+    } catch (error, stackTrace) {
+      AppLogger.e(
+        'Failed to add selected posts to the queue',
+        '${error.runtimeType}',
+        stackTrace,
+        'OnlineGallery',
+      );
+      if (context.mounted) showEnqueueErrorToast(context);
+      return;
+    }
 
     if (context.mounted) {
+      final addedCount = result.accepted;
       final queueSkippedCount = tasks.length - addedCount;
+      if (showEnqueueFailureToast(
+        context,
+        result,
+        extraLines: [
+          if (preparationFailureCount > 0 || queueSkippedCount > 0)
+            context.l10n.onlineGallery_queueBatchCompleted(
+              result.queuedTaskIds.length,
+              preparationFailureCount,
+              queueSkippedCount,
+            ),
+        ],
+      )) {
+        // 只留下被撤回的帖子，直接重试不会重复加入已入队或已开始的任务
+        if (result.withdrawnTaskIds.isNotEmpty) {
+          selectionNotifier.replaceSelection([
+            for (final taskId in result.withdrawnTaskIds)
+              postKeyByTaskId[taskId]!,
+          ]);
+        } else {
+          selectionNotifier.exit();
+        }
+        return;
+      }
       if (preparationFailureCount > 0 || queueSkippedCount > 0) {
         AppToast.warning(
           context,
@@ -238,7 +292,7 @@ class OnlineGallerySelectionActions {
           context.l10n.onlineGallery_addedTasksToQueue(addedCount),
         );
       }
-      _selectionNotifier.exit();
+      selectionNotifier.exit();
     }
   }
 
@@ -247,6 +301,10 @@ class OnlineGallerySelectionActions {
     final selectionState = ref.read(onlineGallerySelectionNotifierProvider);
     final galleryState = ref.read(onlineGalleryNotifierProvider);
     final source = _activeSource(galleryState);
+    final galleryNotifier = ref.read(onlineGalleryNotifierProvider.notifier);
+    final selectionNotifier = ref.read(
+      onlineGallerySelectionNotifierProvider.notifier,
+    );
     final selectedPosts =
         targets ??
         galleryState.posts
@@ -263,8 +321,8 @@ class OnlineGallerySelectionActions {
       // 检查widget是否仍然挂载，避免在widget disposed后继续操作
       if (!context.mounted) return;
 
-      if (!_galleryNotifier.isFavorited(post)) {
-        final success = await _galleryNotifier.toggleFavorite(post);
+      if (!galleryNotifier.isFavorited(post)) {
+        final success = await galleryNotifier.toggleFavorite(post);
         if (success) count++;
         if (success && source == GallerySourceId.danbooru) {
           await Future.delayed(const Duration(milliseconds: 100));
@@ -274,7 +332,7 @@ class OnlineGallerySelectionActions {
 
     if (context.mounted) {
       AppToast.info(context, context.l10n.onlineGallery_favoritedImages(count));
-      _selectionNotifier.exit();
+      selectionNotifier.exit();
     }
   }
 
@@ -282,6 +340,10 @@ class OnlineGallerySelectionActions {
   Future<void> downloadSelected([List<GalleryItem>? targets]) async {
     final selectionState = ref.read(onlineGallerySelectionNotifierProvider);
     final galleryState = ref.read(onlineGalleryNotifierProvider);
+    final galleryNotifier = ref.read(onlineGalleryNotifierProvider.notifier);
+    final selectionNotifier = ref.read(
+      onlineGallerySelectionNotifierProvider.notifier,
+    );
 
     final selectedPosts =
         targets ??
@@ -314,10 +376,11 @@ class OnlineGallerySelectionActions {
           selectedPosts.length,
         ),
       );
-      _selectionNotifier.exit();
+      selectionNotifier.exit();
     }
 
     final (successCount, failCount, skippedCount) = await _downloadPosts(
+      galleryNotifier,
       selectedPosts,
       result,
     );
@@ -339,67 +402,21 @@ class OnlineGallerySelectionActions {
     }
   }
 
-  /// AI TAG 普通卡按作品下载全部媒体；媒体焦点卡只下载目标图片。
   Future<(int success, int fail, int skipped)> _downloadPosts(
+    OnlineGalleryNotifier galleryNotifier,
     List<DanbooruPost> posts,
     String destinationDir,
   ) async {
-    final jobs = <_GalleryDownloadJob>[];
     const concurrency = 4;
-    for (var start = 0; start < posts.length; start += concurrency) {
-      final batch = posts.sublist(
-        start,
-        min(start + concurrency, posts.length),
-      );
-      final resolved = await Future.wait(
-        batch.map((post) async {
-          if (!post.hasValidPreview) return <_GalleryDownloadJob>[];
-          if (!post.sourceId.capabilities.supportsMultipleMedia ||
-              post.mediaCount <= 1) {
-            return [
-              _GalleryDownloadJob(post: post, media: post.cover, mediaIndex: 1),
-            ];
-          }
-          if (post.focusedMediaId != null) {
-            return [
-              _GalleryDownloadJob(
-                post: post,
-                media: post.cover,
-                mediaIndex: (post.focusedMediaIndex ?? 0) + 1,
-              ),
-            ];
-          }
-          try {
-            final detail = await _galleryNotifier.loadDetail(post);
-            return [
-              for (var index = 0; index < detail.media.length; index++)
-                _GalleryDownloadJob(
-                  post: detail.item,
-                  media: detail.media[index],
-                  mediaIndex: index + 1,
-                ),
-            ];
-          } catch (error) {
-            debugPrint(
-              'Failed to resolve gallery work ${post.sourceWorkId}: $error',
-            );
-            return <_GalleryDownloadJob>[];
-          }
-        }),
-      );
-      jobs.addAll(resolved.expand((batchJobs) => batchJobs));
-    }
-
+    final plan = await planGalleryDownloads(
+      posts,
+      loadDetail: galleryNotifier.loadDetail,
+      concurrency: concurrency,
+    );
+    final jobs = plan.jobs;
     var successCount = 0;
-    final skippedCount = posts.where((post) => !post.hasValidPreview).length;
-    var failCount = posts
-        .where(
-          (post) =>
-              post.hasValidPreview &&
-              post.sourceId.capabilities.supportsMultipleMedia &&
-              !jobs.any((job) => job.post.stableKey == post.stableKey),
-        )
-        .length;
+    final skippedCount = plan.skippedCount;
+    var failCount = plan.unresolvedCount;
     final progress = ValueNotifier<int>(0);
     BuildContext? progressPanelContext;
     Future<void>? progressPresentation;
@@ -515,16 +532,4 @@ class _GalleryDownloadProgressPanel extends StatelessWidget {
       ),
     );
   }
-}
-
-class _GalleryDownloadJob {
-  const _GalleryDownloadJob({
-    required this.post,
-    required this.media,
-    required this.mediaIndex,
-  });
-
-  final GalleryItem post;
-  final GalleryMedia media;
-  final int mediaIndex;
 }

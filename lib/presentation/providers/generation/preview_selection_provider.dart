@@ -1,5 +1,4 @@
 import 'package:flutter/widgets.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../history_click_behavior_provider.dart';
@@ -19,7 +18,13 @@ class GenerationPreviewSelection extends _$GenerationPreviewSelection {
       }
 
       final selectedId = state;
-      if (selectedId == null || next.displayImages.isEmpty) return;
+      if (selectedId == null) return;
+      if (previous?.panelImages != next.panelImages &&
+          next.findImageById(selectedId) == null) {
+        state = null;
+        return;
+      }
+      if (next.displayImages.isEmpty) return;
       final previousDisplayIds = previous?.displayImages
           .map((image) => image.id)
           .toList(growable: false);

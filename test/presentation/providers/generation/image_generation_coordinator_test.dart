@@ -4,8 +4,11 @@ import 'dart:typed_data';
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
+import 'package:nai_launcher/core/utils/focused_inpaint_input_exception.dart';
+import 'package:nai_launcher/core/utils/inpaint_mask_utils.dart';
 import 'package:nai_launcher/data/datasources/remote/nai_image_generation_api_service.dart';
 import 'package:nai_launcher/data/models/image/image_params.dart';
+import 'package:nai_launcher/core/network/request_builders/precise_reference_limit_exception.dart';
 import 'package:nai_launcher/data/models/image/image_stream_chunk.dart';
 import 'package:nai_launcher/presentation/providers/generation/generation_command.dart';
 import 'package:nai_launcher/presentation/providers/generation/image_generation_coordinator.dart';
@@ -904,4 +907,100 @@ void main() {
       expect(completed.indexedVibeEncodings, isEmpty);
     },
   );
+
+  test('empty inpaint masks fail without fallback retries', () async {
+    final apiService = _MockNAIImageGenerationApiService();
+    final delays = <Duration>[];
+    when(
+      () => apiService.generateImage(
+        any(),
+        onProgress: any(named: 'onProgress'),
+        focusedInpaintEnabled: any(named: 'focusedInpaintEnabled'),
+        minimumContextMegaPixels: any(named: 'minimumContextMegaPixels'),
+        focusedSelectionRect: any(named: 'focusedSelectionRect'),
+      ),
+    ).thenThrow(const EmptyInpaintMaskException());
+
+    final coordinator = ImageGenerationCoordinator(
+      apiService: apiService,
+      delay: (duration) async => delays.add(duration),
+    );
+    final command = GenerationCommand(
+      runId: 1,
+      params: const ImageParams(prompt: 'test'),
+      batchCount: 1,
+      batchSize: 1,
+      prepareBatch: (_, params) async => params,
+      streamPreviewEnabled: false,
+    );
+    final handle = coordinator.start(command);
+
+    final events = await coordinator.execute(command, handle).toList();
+
+    expect(events.last, isA<GenerationFailed>());
+    expect(
+      (events.last as GenerationFailed).error,
+      isA<EmptyInpaintMaskException>(),
+    );
+    expect(delays, isEmpty);
+    verify(
+      () => apiService.generateImage(
+        any(),
+        onProgress: any(named: 'onProgress'),
+        focusedInpaintEnabled: any(named: 'focusedInpaintEnabled'),
+        minimumContextMegaPixels: any(named: 'minimumContextMegaPixels'),
+        focusedSelectionRect: any(named: 'focusedSelectionRect'),
+      ),
+    ).called(1);
+  });
+
+  for (final (label, message) in [
+    ('empty inpaint mask', const EmptyInpaintMaskException().toString()),
+    (
+      'precise reference limit',
+      const PreciseReferenceLimitException().toString(),
+    ),
+    ('invalid fixed frame', FocusedInpaintInputException.invalidCropCode),
+    ('unreadable focused image', FocusedInpaintInputException.decodeFailedCode),
+  ]) {
+    test('$label stream errors skip multi-image retries', () async {
+      final apiService = _MockNAIImageGenerationApiService();
+      final delays = <Duration>[];
+      when(
+        () => apiService.generateImageStream(
+          any(),
+          focusedInpaintEnabled: any(named: 'focusedInpaintEnabled'),
+          minimumContextMegaPixels: any(named: 'minimumContextMegaPixels'),
+          focusedSelectionRect: any(named: 'focusedSelectionRect'),
+        ),
+      ).thenAnswer((_) => Stream.value(ImageStreamChunk.error(message)));
+
+      final coordinator = ImageGenerationCoordinator(
+        apiService: apiService,
+        delay: (duration) async => delays.add(duration),
+      );
+      final command = GenerationCommand(
+        runId: 1,
+        params: const ImageParams(prompt: 'test'),
+        batchCount: 1,
+        batchSize: 2,
+        prepareBatch: (_, params) async => params,
+      );
+      final handle = coordinator.start(command);
+
+      final events = await coordinator.execute(command, handle).toList();
+
+      final failed = events.last as GenerationFailed;
+      expect(failed.error.toString(), message);
+      expect(delays, isEmpty);
+      verify(
+        () => apiService.generateImageStream(
+          any(),
+          focusedInpaintEnabled: any(named: 'focusedInpaintEnabled'),
+          minimumContextMegaPixels: any(named: 'minimumContextMegaPixels'),
+          focusedSelectionRect: any(named: 'focusedSelectionRect'),
+        ),
+      ).called(1);
+    });
+  }
 }

@@ -4,13 +4,13 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../data/models/version/release_asset_info.dart';
 import '../../data/models/version/version_info.dart';
+import '../mcp/mcp_cli_path.dart';
 import '../utils/app_logger.dart';
 import 'android_app_installer_service.dart';
 import 'app_installation_service.dart';
@@ -20,15 +20,43 @@ import 'windows_update_script.dart';
 
 part 'update_installer_service.g.dart';
 
+enum UpdateInstallFailure {
+  unsupported,
+  packageNotFound,
+  incompleteMetadata,
+  network,
+  diskFull,
+  fileSystem,
+  verificationFailed,
+  resumeRejected,
+  emptyResponse,
+  downloadFailed,
+  packageMissing,
+  packageCorrupted,
+  invalidAndroidPackage,
+  androidInstallerUnavailable,
+  updaterLaunchFailed,
+  updaterNotStarted,
+  installFailed,
+  installInterrupted,
+  unknown,
+}
+
 class UpdateInstallException implements Exception {
+  /// 供日志使用的简短错误消息；用户文案由 UI 按 [failure] 本地化。
   final String message;
+  final UpdateInstallFailure failure;
   final Object? originalError;
 
-  const UpdateInstallException(this.message, {this.originalError});
+  const UpdateInstallException(
+    this.message, {
+    required this.failure,
+    this.originalError,
+  });
 
   @override
   String toString() =>
-      'UpdateInstallException: $message${originalError != null ? ' ($originalError)' : ''}';
+      'UpdateInstallException(${failure.name}): $message${originalError != null ? ' ($originalError)' : ''}';
 }
 
 /// 更新下载被取消时抛出，调用方应将其与真正的失败区分开。
@@ -46,8 +74,9 @@ typedef UpdateProcessStarter =
     Future<void> Function(
       String executable,
       List<String> arguments,
-      ProcessStartMode mode,
-    );
+      ProcessStartMode mode, {
+      String? workingDirectory,
+    });
 
 /// 一次下载的实时进度快照。
 class UpdateDownloadProgress {
@@ -94,22 +123,24 @@ class RestoredDownloadedUpdate {
 class UpdateExecutionResult {
   final bool success;
   final String version;
-  final String? message;
   final String? logPath;
+
+  /// 脚本写出启动标记后没有留下结果。
+  final bool interrupted;
 
   const UpdateExecutionResult({
     required this.success,
     required this.version,
-    this.message,
     this.logPath,
+    this.interrupted = false,
   });
 }
 
 /// Windows 应用内更新服务。
 ///
 /// 下载使用 `.part` 文件和 HTTP Range 真正续传；完整包必须同时通过
-/// 长度与 SHA256 校验。安装由独立脚本在应用优雅退出后执行，并留下
-/// 可在下次启动读取的结果与日志。
+/// 长度与 SHA256 校验。安装由独立脚本执行，应用确认脚本写出启动标记
+/// 后才退出，并留下可在下次启动读取的结果与日志。
 class UpdateInstallerService {
   final VerifiedResumableDownloader _downloader;
   final AppInstallationService _installationService;
@@ -117,12 +148,16 @@ class UpdateInstallerService {
   final AppShutdownHandler _shutdownHandler;
   final UpdateSha256Calculator _sha256Calculator;
   final UpdateProcessStarter _processStarter;
+  final Duration _updaterStartTimeout;
   final Directory? _updateDirectoryOverride;
 
   static const Duration _staleFileAge = Duration(days: 14);
   static const String _updateDirectoryName = 'nai_launcher_updates';
   static const String _pendingMetadataName = 'pending_update.json';
   static const String _resultMetadataName = 'update_result.json';
+  static const String _startedMarkerName = 'update_started.json';
+  static const Duration _defaultUpdaterStartTimeout = Duration(seconds: 10);
+  static const Duration _updaterStartPollInterval = Duration(milliseconds: 100);
 
   UpdateInstallerService({
     required Dio dio,
@@ -132,6 +167,7 @@ class UpdateInstallerService {
         DesktopAppShutdownService.shutdownAndExit,
     UpdateSha256Calculator? sha256Calculator,
     UpdateProcessStarter processStarter = startUpdateProcess,
+    Duration updaterStartTimeout = _defaultUpdaterStartTimeout,
     Directory? updateDirectory,
   }) : _downloader = VerifiedResumableDownloader(
          dio: dio,
@@ -143,6 +179,7 @@ class UpdateInstallerService {
        _shutdownHandler = shutdownHandler,
        _sha256Calculator = sha256Calculator ?? calculateSha256,
        _processStarter = processStarter,
+       _updaterStartTimeout = updaterStartTimeout,
        _updateDirectoryOverride = updateDirectory;
 
   bool get supportsInAppInstall => _installationService.supportsInAppInstall;
@@ -156,20 +193,32 @@ class UpdateInstallerService {
     CancelToken? cancelToken,
   }) async {
     if (!_installationService.supportsInAppInstall) {
-      throw const UpdateInstallException('当前版本不支持应用内自动安装更新');
+      throw const UpdateInstallException(
+        '当前版本不支持应用内自动安装更新',
+        failure: UpdateInstallFailure.unsupported,
+      );
     }
 
-    final asset = versionInfo.primaryAsset;
+    final asset = await _resolveTargetAsset(versionInfo);
     if (asset == null || !asset.supportsInAppInstall) {
-      throw const UpdateInstallException('未找到可自动安装的更新包');
+      throw const UpdateInstallException(
+        '未找到可自动安装的更新包',
+        failure: UpdateInstallFailure.packageNotFound,
+      );
     }
     final expectedSha256 = asset.sha256;
     if (expectedSha256 == null || expectedSha256.isEmpty) {
-      throw const UpdateInstallException('更新包缺少 SHA256 校验信息');
+      throw const UpdateInstallException(
+        '更新包缺少 SHA256 校验信息',
+        failure: UpdateInstallFailure.incompleteMetadata,
+      );
     }
     final expectedSize = asset.size;
     if (expectedSize == null || expectedSize <= 0) {
-      throw const UpdateInstallException('更新包缺少大小校验信息');
+      throw const UpdateInstallException(
+        '更新包缺少大小校验信息',
+        failure: UpdateInstallFailure.incompleteMetadata,
+      );
     }
 
     final updateDir = await _ensureUpdateDir();
@@ -215,19 +264,65 @@ class UpdateInstallerService {
     return downloaded;
   }
 
+  Future<ReleaseAssetInfo?> _resolveTargetAsset(VersionInfo versionInfo) async {
+    if (_installationService.getInstallationType() ==
+        AppInstallationType.androidApk) {
+      final hasAndroidAssets = versionInfo.assets.any(
+        (asset) => asset.type == ReleaseAssetType.androidApk,
+      );
+      if (hasAndroidAssets) {
+        final supportedAbis = await _installationService
+            .getAndroidSupportedAbis();
+        return ReleaseAssetInfo.selectAndroidAsset(
+              versionInfo.assets,
+              supportedAbis: supportedAbis,
+            ) ??
+            versionInfo.primaryAsset;
+      }
+    }
+    return versionInfo.primaryAsset;
+  }
+
   static UpdateInstallException _mapDownloadError(
     VerifiedDownloadException error,
   ) {
-    final message = switch (error.failure) {
-      VerifiedDownloadFailure.diskFull => '磁盘空间不足，无法保存更新包',
-      VerifiedDownloadFailure.fileSystem => '写入更新包失败',
-      VerifiedDownloadFailure.sizeMismatch => '更新包大小校验失败',
-      VerifiedDownloadFailure.checksumMismatch => '更新包校验失败',
-      VerifiedDownloadFailure.rangeRejected => '服务器拒绝了更新包续传请求',
-      VerifiedDownloadFailure.emptyResponse => '更新服务器返回了空响应',
-      _ => '下载更新包失败',
+    final (message, failure) = switch (error.failure) {
+      VerifiedDownloadFailure.diskFull => (
+        '磁盘空间不足，无法保存更新包',
+        UpdateInstallFailure.diskFull,
+      ),
+      VerifiedDownloadFailure.fileSystem => (
+        '写入更新包失败',
+        UpdateInstallFailure.fileSystem,
+      ),
+      VerifiedDownloadFailure.sizeMismatch => (
+        '更新包大小校验失败',
+        UpdateInstallFailure.verificationFailed,
+      ),
+      VerifiedDownloadFailure.checksumMismatch => (
+        '更新包校验失败',
+        UpdateInstallFailure.verificationFailed,
+      ),
+      VerifiedDownloadFailure.rangeRejected => (
+        '服务器拒绝了更新包续传请求',
+        UpdateInstallFailure.resumeRejected,
+      ),
+      VerifiedDownloadFailure.emptyResponse => (
+        '更新服务器返回了空响应',
+        UpdateInstallFailure.emptyResponse,
+      ),
+      VerifiedDownloadFailure.network => (
+        '连接更新服务器失败',
+        UpdateInstallFailure.network,
+      ),
+      VerifiedDownloadFailure.invalidRequest || VerifiedDownloadFailure.http =>
+        ('下载更新包失败', UpdateInstallFailure.downloadFailed),
     };
-    return UpdateInstallException(message, originalError: error);
+    return UpdateInstallException(
+      message,
+      failure: failure,
+      originalError: error,
+    );
   }
 
   /// 恢复上次已经校验完成、但尚未安装的更新包。
@@ -246,11 +341,19 @@ class UpdateInstallerService {
         throw const FormatException('Missing pending update asset');
       }
       final type = ReleaseAssetInfo.parseType(assetData['type'] as String?);
+      final resolvedType = type ?? ReleaseAssetType.unknown;
+      final fileName = assetData['fileName'] as String? ?? '';
+      final abi =
+          ReleaseAssetInfo.normalizeAbi(assetData['abi']) ??
+          (resolvedType == ReleaseAssetType.androidApk
+              ? ReleaseAssetInfo.inferAbi(fileName: fileName)
+              : null);
       final asset = ReleaseAssetInfo(
-        type: type ?? ReleaseAssetType.unknown,
+        type: resolvedType,
         platform: assetData['platform'] as String? ?? 'unknown',
-        fileName: assetData['fileName'] as String? ?? '',
+        fileName: fileName,
         downloadUrl: assetData['downloadUrl'] as String? ?? '',
+        abi: abi,
         sha256: assetData['sha256'] as String?,
         size: (assetData['size'] as num?)?.toInt(),
         label: assetData['label'] as String?,
@@ -303,52 +406,90 @@ class UpdateInstallerService {
   }
 
   /// 读取并消费独立更新脚本的结果。
+  ///
+  /// 返回 `null` 只表示这台设备没有执行过安装。脚本启动后被中断的情况
+  /// 归一化成失败结果，否则调用方会把中断当成"更新包还等着安装"。
   Future<UpdateExecutionResult?> consumeExecutionResult() async {
     final resultFile = await _resultMetadataFile();
-    if (!await resultFile.exists()) return null;
+    if (!await resultFile.exists()) return _consumeInterruptedStart();
 
     try {
       final data = jsonDecode(await resultFile.readAsString());
       if (data is! Map<String, dynamic>) return null;
-      return UpdateExecutionResult(
+      final result = UpdateExecutionResult(
         success: data['success'] == true,
         version: data['version'] as String? ?? '',
-        message: data['message'] as String?,
         logPath: data['logPath'] as String?,
       );
+      if (!result.success) {
+        AppLogger.w(
+          'Updater reported failure for ${result.version}: ${data['message']}',
+          'UpdateInstaller',
+        );
+      }
+      return result;
     } catch (error) {
       AppLogger.w('Unable to read update result: $error', 'UpdateInstaller');
       return null;
     } finally {
       await _deleteQuietly(resultFile);
+      await _deleteQuietly(await _startedMarkerFile());
     }
+  }
+
+  Future<UpdateExecutionResult?> _consumeInterruptedStart() async {
+    final marker = await _startedMarkerFile();
+    final version = await _readStartedVersion(marker);
+    if (version == null) return null;
+
+    await _deleteQuietly(marker);
+    AppLogger.w(
+      'Updater script started for $version but left no result',
+      'UpdateInstaller',
+    );
+    return UpdateExecutionResult(
+      success: false,
+      version: version,
+      interrupted: true,
+    );
   }
 
   /// 启动平台更新流程。Windows 交给独立脚本并退出；Android 交给系统
   /// Package Installer 确认，应用不会自行绕过系统安装权限。
   Future<void> installAndRestart(DownloadedUpdate update) async {
     if (!await update.file.exists()) {
-      throw const UpdateInstallException('更新包已被清理，请重新下载');
+      throw const UpdateInstallException(
+        '更新包已被清理，请重新下载',
+        failure: UpdateInstallFailure.packageMissing,
+      );
     }
     if (!await _isPackageValid(update.file, update.asset)) {
-      throw const UpdateInstallException('更新包已损坏，请重新下载');
+      throw const UpdateInstallException(
+        '更新包已损坏，请重新下载',
+        failure: UpdateInstallFailure.packageCorrupted,
+      );
     }
 
     final installationType = _installationService.getInstallationType();
     if (installationType == AppInstallationType.androidApk) {
       if (update.asset.type != ReleaseAssetType.androidApk) {
-        throw const UpdateInstallException('Android 更新包格式不正确');
+        throw const UpdateInstallException(
+          'Android 更新包格式不正确',
+          failure: UpdateInstallFailure.invalidAndroidPackage,
+        );
       }
       try {
         await _androidApkInstaller(update.file.path);
       } on AndroidAppInstallException catch (error) {
         throw UpdateInstallException(
           '打开 Android 系统安装界面失败',
+          failure: UpdateInstallFailure.androidInstallerUnavailable,
           originalError: error,
         );
       } catch (error) {
         throw UpdateInstallException(
           '打开 Android 系统安装界面失败',
+          failure: UpdateInstallFailure.androidInstallerUnavailable,
           originalError: error,
         );
       }
@@ -356,8 +497,15 @@ class UpdateInstallerService {
     }
     if (installationType != AppInstallationType.windowsInstaller &&
         installationType != AppInstallationType.windowsPortable) {
-      throw const UpdateInstallException('当前平台不支持应用内自动更新');
+      throw const UpdateInstallException(
+        '当前平台不支持应用内自动更新',
+        failure: UpdateInstallFailure.unsupported,
+      );
     }
+
+    // 上一轮留下的标记会让这次的启动确认直接通过，必须先清掉。
+    final startedMarker = await _startedMarkerFile();
+    await _deleteQuietly(startedMarker);
 
     final scriptFile = await _writeUpdateScript(update);
     AppLogger.i(
@@ -382,12 +530,57 @@ class UpdateInstallerService {
         // Windows 下 detached 模式可能在当前进程退出时让隐藏的 PowerShell
         // 尚未执行脚本就一并消失；normal 模式仍允许子进程在应用退出后继续。
         ProcessStartMode.normal,
+        // 不能继承应用目录作为工作目录，否则便携版更新脚本会锁住自身待移动的目录。
+        workingDirectory: Directory.systemTemp.path,
       );
     } catch (error) {
-      throw UpdateInstallException('启动更新程序失败', originalError: error);
+      throw UpdateInstallException(
+        '启动更新程序失败',
+        failure: UpdateInstallFailure.updaterLaunchFailed,
+        originalError: error,
+      );
+    }
+
+    if (!await _awaitUpdaterStart(startedMarker, update.version)) {
+      AppLogger.e(
+        'Updater script did not start within $_updaterStartTimeout',
+        null,
+        null,
+        'UpdateInstaller',
+      );
+      throw const UpdateInstallException(
+        '更新程序未能启动',
+        failure: UpdateInstallFailure.updaterNotStarted,
+      );
     }
 
     await _shutdownHandler(0);
+  }
+
+  /// 等待脚本写出启动标记。
+  ///
+  /// 进程创建成功不代表脚本被执行：组策略锁定的 ExecutionPolicy、安全
+  /// 软件拦截、AppLocker 或脚本解析失败都会让 PowerShell 直接退出。确认
+  /// 不到就不能退出应用，否则用户只会看到应用关闭后版本原样不变。
+  Future<bool> _awaitUpdaterStart(File marker, String version) async {
+    final deadline = DateTime.now().add(_updaterStartTimeout);
+    while (true) {
+      if (await _readStartedVersion(marker) == version) return true;
+      if (!DateTime.now().isBefore(deadline)) return false;
+      await Future<void>.delayed(_updaterStartPollInterval);
+    }
+  }
+
+  Future<String?> _readStartedVersion(File marker) async {
+    try {
+      if (!await marker.exists()) return null;
+      final data = jsonDecode(await marker.readAsString());
+      if (data is! Map<String, dynamic>) return null;
+      return data['version'] as String?;
+    } catch (_) {
+      // 标记可能正在写入，下一轮重读即可。
+      return null;
+    }
   }
 
   Future<File> _writeUpdateScript(DownloadedUpdate update) async {
@@ -397,6 +590,7 @@ class UpdateInstallerService {
     );
     final resultFile = await _resultMetadataFile();
     final pendingFile = await _pendingMetadataFile();
+    final startedFile = await _startedMarkerFile();
     final logFile = File(
       p.join(updateDir.path, 'update_${update.version}.log'),
     );
@@ -415,6 +609,9 @@ class UpdateInstallerService {
             zipPath: update.file.path,
             appDirectory: appDirectory,
             executableName: p.basename(executablePath),
+            proxyExecutableName: p.basename(
+              resolveBundledMcpCliPath(executablePath: executablePath),
+            ),
             extractDirectory: p.join(
               parentDirectory,
               '.nai_update_$safeVersion',
@@ -425,6 +622,7 @@ class UpdateInstallerService {
             ),
             resultPath: resultFile.path,
             pendingMetadataPath: pendingFile.path,
+            startedMarkerPath: startedFile.path,
             logPath: logFile.path,
           )
         : WindowsUpdateScript.buildInstallerScript(
@@ -434,10 +632,14 @@ class UpdateInstallerService {
             executablePath: executablePath,
             resultPath: resultFile.path,
             pendingMetadataPath: pendingFile.path,
+            startedMarkerPath: startedFile.path,
             logPath: logFile.path,
           );
 
-    await scriptFile.writeAsString(script, flush: true);
+    await scriptFile.writeAsBytes(
+      WindowsUpdateScript.encode(script),
+      flush: true,
+    );
     return scriptFile;
   }
 
@@ -460,6 +662,7 @@ class UpdateInstallerService {
         'platform': update.asset.platform,
         'fileName': update.asset.fileName,
         'downloadUrl': update.asset.downloadUrl,
+        'abi': update.asset.abi,
         'sha256': update.asset.sha256,
         'size': update.asset.size,
         'label': update.asset.label,
@@ -480,16 +683,19 @@ class UpdateInstallerService {
     return equalsSha256(await _sha256Calculator(file), expected);
   }
 
+  /// 更新包、脚本日志与执行结果所在目录。
+  ///
+  /// 诊断导出要按同一规则定位这批文件，推导逻辑只能有这一处。
+  static Future<Directory> resolveUpdateDirectory() async {
+    final temporaryRoot = Platform.isAndroid
+        ? await getTemporaryDirectory()
+        : Directory.systemTemp;
+    return Directory(p.join(temporaryRoot.path, _updateDirectoryName));
+  }
+
   Future<Directory> _ensureUpdateDir() async {
-    final Directory updateDir;
-    if (_updateDirectoryOverride != null) {
-      updateDir = _updateDirectoryOverride;
-    } else {
-      final temporaryRoot = Platform.isAndroid
-          ? await getTemporaryDirectory()
-          : Directory.systemTemp;
-      updateDir = Directory(p.join(temporaryRoot.path, _updateDirectoryName));
-    }
+    final updateDir =
+        _updateDirectoryOverride ?? await resolveUpdateDirectory();
     await updateDir.create(recursive: true);
     return updateDir;
   }
@@ -502,6 +708,11 @@ class UpdateInstallerService {
   Future<File> _resultMetadataFile() async {
     final directory = await _ensureUpdateDir();
     return File(p.join(directory.path, _resultMetadataName));
+  }
+
+  Future<File> _startedMarkerFile() async {
+    final directory = await _ensureUpdateDir();
+    return File(p.join(directory.path, _startedMarkerName));
   }
 
   Future<void> _cleanupStaleFiles(Directory directory) async {
@@ -549,9 +760,17 @@ class UpdateInstallerService {
 Future<void> startUpdateProcess(
   String executable,
   List<String> arguments,
-  ProcessStartMode mode,
-) async {
-  final process = await Process.start(executable, arguments, mode: mode);
+  ProcessStartMode mode, {
+  String? workingDirectory,
+}) async {
+  final process = await Process.start(
+    executable,
+    arguments,
+    workingDirectory: workingDirectory ?? Directory.systemTemp.path,
+    environment: _updaterEnvironment(),
+    includeParentEnvironment: false,
+    mode: mode,
+  );
   try {
     await process.stdin.close();
   } catch (_) {
@@ -560,6 +779,14 @@ Future<void> startUpdateProcess(
   unawaited(_drainProcessOutput(process.stdout));
   unawaited(_drainProcessOutput(process.stderr));
 }
+
+/// 应用从 PowerShell 7 启动时会继承它的 PSModulePath，Windows PowerShell 5.1
+/// 会因此加载只支持 .NET Core 的 Archive 模块，Expand-Archive 直接失败。
+/// 去掉这个变量，让 5.1 使用自己的默认模块路径。
+Map<String, String> _updaterEnvironment() => {
+  for (final MapEntry(:key, :value) in Platform.environment.entries)
+    if (key.toUpperCase() != 'PSMODULEPATH') key: value,
+};
 
 Future<void> _drainProcessOutput(Stream<List<int>> output) async {
   try {

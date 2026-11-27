@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../../../core/platform/directory_picker.dart';
 import '../../../../core/platform/platform_capabilities.dart';
 import '../../../../core/utils/app_logger.dart';
 import '../../../../core/utils/hive_storage_helper.dart';
@@ -13,11 +14,14 @@ import '../../../../core/utils/localization_extension.dart';
 import '../../../../core/utils/vibe_library_path_helper.dart';
 import '../../../../data/services/local_onnx_model_service.dart';
 import '../../../providers/image_save_settings_provider.dart';
+import '../../../providers/local_onnx_import_provider.dart';
+import '../../../providers/local_tagger_models_provider.dart';
 import '../../../widgets/common/app_toast.dart';
 import '../../../widgets/common/themed_confirm_dialog.dart';
 import '../widgets/cache_statistics_tile.dart';
 import '../widgets/data_source_cache_settings.dart';
 import '../widgets/gallery_cache_actions.dart';
+import '../widgets/save_naming/save_naming_tile.dart';
 import '../widgets/settings_card.dart';
 import '../widgets/settings_page_layout.dart';
 
@@ -34,7 +38,7 @@ class _StorageSettingsSectionState
     extends ConsumerState<StorageSettingsSection> {
   Future<void> _selectSaveDirectory(BuildContext context) async {
     try {
-      final result = await FilePicker.platform.getDirectoryPath(
+      final result = await pickDirectoryPath(
         dialogTitle: context.l10n.settings_selectFolder,
       );
 
@@ -61,12 +65,14 @@ class _StorageSettingsSectionState
     }
 
     try {
-      final result = await FilePicker.platform.getDirectoryPath(
+      final result = await pickDirectoryPath(
         dialogTitle: context.l10n.settings_selectLocalOnnxTaggerFolder,
       );
-      if (result == null) return;
+      if (result == null || !mounted) return;
       final service = ref.read(localOnnxModelServiceProvider);
+      final container = ProviderScope.containerOf(context, listen: false);
       await service.setTaggerDirectory(result);
+      invalidateLocalTaggerCaches(container);
       if (mounted) {
         setState(() {});
         AppToast.success(
@@ -94,7 +100,7 @@ class _StorageSettingsSectionState
         type: FileType.any,
         allowMultiple: true,
       );
-      if (selection == null) return;
+      if (selection == null || !mounted) return;
       final sources = selection.files
           .where((file) => file.path != null)
           .map(
@@ -102,8 +108,8 @@ class _StorageSettingsSectionState
           )
           .toList(growable: false);
       final importedCount = await ref
-          .read(localOnnxModelServiceProvider)
-          .importTaggerSelections(sources);
+          .read(localOnnxImportProvider.notifier)
+          .importSelections(sources);
       if (mounted) {
         setState(() {});
         AppToast.success(
@@ -131,8 +137,24 @@ class _StorageSettingsSectionState
       type: ThemedConfirmDialogType.danger,
       icon: Icons.delete_outline,
     );
-    if (!confirmed) return;
-    await ref.read(localOnnxModelServiceProvider).clearManagedTaggerFiles();
+    if (!confirmed || !mounted) return;
+    final container = ProviderScope.containerOf(context, listen: false);
+    try {
+      await container
+          .read(localOnnxModelServiceProvider)
+          .clearManagedTaggerFiles();
+    } catch (e, stackTrace) {
+      AppLogger.e('Failed to clear local ONNX tagger files', e, stackTrace);
+      if (mounted) {
+        AppToast.error(
+          context,
+          context.l10n.settings_clearLocalOnnxModelsFailed('$e'),
+        );
+      }
+    } finally {
+      // 删除中途失败时目录可能只清了一部分，缓存必须按磁盘现状重扫
+      invalidateLocalTaggerCaches(container);
+    }
     if (mounted) setState(() {});
   }
 
@@ -156,6 +178,7 @@ class _StorageSettingsSectionState
   Widget build(BuildContext context) {
     final saveSettings = ref.watch(imageSaveSettingsNotifierProvider);
     final localOnnxService = ref.watch(localOnnxModelServiceProvider);
+    final importingLocalOnnx = ref.watch(localOnnxImportProvider);
     final localOnnxDirectory = localOnnxService.taggerDirectory;
 
     return SettingsPageLayout(
@@ -240,6 +263,7 @@ class _StorageSettingsSectionState
                     ? () => _selectSaveDirectory(context)
                     : null,
               ),
+              const SaveNamingTile(),
               // 自动保存开关
               SwitchListTile(
                 secondary: const Icon(Icons.save_outlined),
@@ -252,6 +276,20 @@ class _StorageSettingsSectionState
                       .setAutoSave(value);
                 },
               ),
+              if (PlatformCapabilities.current.supportsSystemGalleryExport)
+                SwitchListTile(
+                  secondary: const Icon(Icons.photo_library_outlined),
+                  title: Text(context.l10n.settings_syncToSystemGallery),
+                  subtitle: Text(
+                    context.l10n.settings_syncToSystemGallerySubtitle,
+                  ),
+                  value: saveSettings.syncToSystemGallery,
+                  onChanged: (value) async {
+                    await ref
+                        .read(imageSaveSettingsNotifierProvider.notifier)
+                        .setSyncToSystemGallery(value);
+                  },
+                ),
             ],
           ),
         ),
@@ -266,7 +304,9 @@ class _StorageSettingsSectionState
                 subtitle:
                     PlatformCapabilities.current.supportsManagedFileImports
                     ? FutureBuilder<int>(
-                        future: localOnnxService.managedFileCount(),
+                        future: ref.watch(
+                          localTaggerManagedFileCountProvider.future,
+                        ),
                         builder: (context, snapshot) {
                           final count = snapshot.data ?? 0;
                           return Text(
@@ -299,13 +339,27 @@ class _StorageSettingsSectionState
                         IconButton(
                           icon: const Icon(Icons.delete_outline, size: 20),
                           tooltip: context.l10n.common_delete,
-                          onPressed: _clearLocalOnnxTaggerFiles,
+                          onPressed: importingLocalOnnx
+                              ? null
+                              : _clearLocalOnnxTaggerFiles,
                         ),
                       IconButton(
-                        icon: const Icon(Icons.file_upload_outlined, size: 20),
+                        icon: importingLocalOnnx
+                            ? SizedBox.square(
+                                dimension: 18,
+                                child: CircularProgressIndicator(
+                                  value: MediaQuery.disableAnimationsOf(context)
+                                      ? 0.75
+                                      : null,
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.file_upload_outlined, size: 20),
                         tooltip:
                             context.l10n.settings_importLocalOnnxTaggerFiles,
-                        onPressed: _importLocalOnnxTaggerFiles,
+                        onPressed: importingLocalOnnx
+                            ? null
+                            : _importLocalOnnxTaggerFiles,
                       ),
                     ] else ...[
                       if (localOnnxDirectory.isNotEmpty)
@@ -318,7 +372,7 @@ class _StorageSettingsSectionState
                     ],
                   ],
                 ),
-                onTap: _configureLocalOnnxTagger,
+                onTap: importingLocalOnnx ? null : _configureLocalOnnxTagger,
               ),
               // Vibe库保存路径设置
               const VibeLibraryPathTile(),
@@ -370,7 +424,7 @@ class _VibeLibraryPathTileState extends State<VibeLibraryPathTile> {
 
   Future<void> _selectVibeLibraryDirectory(BuildContext context) async {
     try {
-      final result = await FilePicker.platform.getDirectoryPath(
+      final result = await pickDirectoryPath(
         dialogTitle: context.l10n.settings_selectVibeLibraryFolder,
       );
 
@@ -487,7 +541,7 @@ class _HiveStoragePathTileState extends State<HiveStoragePathTile> {
 
   Future<void> _selectHiveStorageDirectory(BuildContext context) async {
     try {
-      final result = await FilePicker.platform.getDirectoryPath(
+      final result = await pickDirectoryPath(
         dialogTitle: context.l10n.settings_selectHiveFolder,
       );
 

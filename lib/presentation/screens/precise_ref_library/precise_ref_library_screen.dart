@@ -32,6 +32,7 @@ import '../../services/precise_ref_library_batch_sender.dart';
 import '../../router/app_routes.dart';
 import '../../services/image_workflow_launcher.dart';
 import '../../utils/card_drop_reader.dart';
+import '../../utils/native_drop_callback.dart';
 import '../../../core/utils/app_logger.dart';
 import '../../widgets/common/app_toast.dart';
 import '../../widgets/common/pagination_bar.dart';
@@ -277,8 +278,7 @@ class _PreciseRefLibraryScreenState
         policy: _dropPolicy,
       );
       if (!mounted) return;
-      // Native readers must finish here; business work runs after the OS loop.
-      unawaited(Future<void>(() => _importDroppedResources(resources)));
+      await _importDroppedResources(resources);
     } catch (error, stack) {
       AppLogger.e(
         'Precise reference drop read failed',
@@ -331,6 +331,7 @@ class _PreciseRefLibraryScreenState
               name:
                   reference?.name ?? p.basenameWithoutExtension(file.fileName),
               type: reference?.type ?? importType,
+              preferSameOutfit: reference?.preferSameOutfit,
               strength: reference?.strength ?? 1,
               fidelity: reference?.fidelity ?? 1,
               loadBytes: () async => file.bytes,
@@ -373,8 +374,8 @@ class _PreciseRefLibraryScreenState
   Future<void> _sendToPreciseRef(PreciseRefLibraryEntry entry) async {
     final l10n = context.l10n;
     final params = ref.read(generationParamsNotifierProvider);
-    if (!params.isV4Model) {
-      AppToast.warning(context, l10n.preciseRef_v4Only);
+    if (!params.capabilities.preciseReference.supported) {
+      AppToast.warning(context, l10n.preciseRef_supportedModels);
       return;
     }
 
@@ -395,6 +396,7 @@ class _PreciseRefLibraryScreenState
           .addPreciseReferenceFromImage(
             bytes,
             type: entry.type,
+            preferSameOutfit: entry.preferSameOutfit,
             strength: entry.strength,
             fidelity: entry.fidelity,
           ),
@@ -434,8 +436,8 @@ class _PreciseRefLibraryScreenState
     Set<String> selectedIds,
   ) async {
     final params = ref.read(generationParamsNotifierProvider);
-    if (!params.isV4Model) {
-      AppToast.warning(context, context.l10n.preciseRef_v4Only);
+    if (!params.capabilities.preciseReference.supported) {
+      AppToast.warning(context, context.l10n.preciseRef_supportedModels);
       return;
     }
     final storage = ref.read(preciseRefLibraryStorageServiceProvider);
@@ -448,6 +450,7 @@ class _PreciseRefLibraryScreenState
       sendEntry: (bytes, entry) => generation.addPreciseReferenceFromImage(
         bytes,
         type: entry.type,
+        preferSameOutfit: entry.preferSameOutfit,
         strength: entry.strength,
         fidelity: entry.fidelity,
       ),
@@ -475,7 +478,7 @@ class _PreciseRefLibraryScreenState
   }
 
   Future<void> _changeSelectionType(Set<String> selectedIds) async {
-    final type = await PreciseReferenceTypeDialog.show(context);
+    final type = await PreciseReferenceTypeDialog.show(context, outfit: true);
     if (type == null || !mounted) return;
     await ref
         .read(preciseRefLibraryNotifierProvider.notifier)
@@ -539,6 +542,7 @@ class _PreciseRefLibraryScreenState
           entry.id,
           name: result.name,
           type: result.type,
+          preferSameOutfit: result.preferSameOutfit,
           strength: result.strength,
           fidelity: result.fidelity,
         );
@@ -677,9 +681,12 @@ class _PreciseRefLibraryScreenState
                 setState(() => _isDragging = false);
               }
             },
-            onPerformDrop: (event) async {
+            onPerformDrop: (event) {
               setState(() => _isDragging = false);
-              await _handleDrop(event);
+              return releaseNativeDropCallback(
+                () => _handleDrop(event),
+                library: 'PreciseRefLibraryScreen',
+              );
             },
             child: content,
           );
@@ -980,6 +987,7 @@ class _PreciseRefLibraryScreenState
       commands: ref.read(preciseRefLibrarySelectionNotifierProvider.notifier),
       orderedIds: entries.map((e) => e.id).toList(),
       child: CardSelectionShortcuts(
+        reclaimFallbackFocus: true,
         child: GridView.builder(
           key: const PageStorageKey('precise_ref_library_grid'),
           padding: EdgeInsets.all(layout.padding),
@@ -1041,7 +1049,7 @@ class _PreciseRefLibraryScreenState
   }
 
   Future<void> _classifyEntry(PreciseRefLibraryEntry entry) async {
-    final type = await PreciseReferenceTypeDialog.show(context);
+    final type = await PreciseReferenceTypeDialog.show(context, outfit: true);
     if (type == null || !mounted) return;
     await _setEntryType(entry, type);
   }

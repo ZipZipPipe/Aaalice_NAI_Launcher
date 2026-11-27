@@ -19,15 +19,15 @@ class ParameterBarItem {
 
 /// Parameter distribution bar chart widget
 class ParameterDistributionBar extends StatefulWidget {
-  final String title;
   final List<ParameterBarItem> items;
+
+  /// Vertical chart height; horizontal bars size to their rows.
   final double height;
   final bool horizontal;
   final ValueChanged<ParameterBarItem>? onItemTap;
 
   const ParameterDistributionBar({
     super.key,
-    required this.title,
     required this.items,
     this.height = 200,
     this.horizontal = false,
@@ -58,24 +58,12 @@ class _ParameterDistributionBarState extends State<ParameterDistributionBar> {
         .map((e) => e.count.toDouble())
         .reduce((a, b) => a > b ? a : b);
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          widget.title,
-          style: theme.textTheme.titleSmall?.copyWith(
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        const SizedBox(height: 12),
-        SizedBox(
-          height: widget.height,
-          child: widget.horizontal
-              ? _buildHorizontalBars(maxValue, colorScheme, theme)
-              : _buildVerticalBars(maxValue, colorScheme, theme),
-        ),
-      ],
-    );
+    return widget.horizontal
+        ? _buildHorizontalBars(maxValue, colorScheme)
+        : SizedBox(
+            height: widget.height,
+            child: _buildVerticalBars(maxValue, colorScheme, theme),
+          );
   }
 
   Widget _buildVerticalBars(
@@ -201,30 +189,21 @@ class _ParameterDistributionBarState extends State<ParameterDistributionBar> {
     );
   }
 
-  Widget _buildHorizontalBars(
-    double maxValue,
-    ColorScheme colorScheme,
-    ThemeData theme,
-  ) {
-    return Align(
-      alignment: Alignment.topLeft,
-      child: ListView.separated(
-        shrinkWrap: true,
-        physics: const NeverScrollableScrollPhysics(),
-        itemCount: widget.items.length,
-        separatorBuilder: (_, __) => const SizedBox(height: 8),
-        itemBuilder: (context, index) {
-          final item = widget.items[index];
-          return _HorizontalBarRow(
+  Widget _buildHorizontalBars(double maxValue, ColorScheme colorScheme) {
+    final onItemTap = widget.onItemTap;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        for (final (index, item) in widget.items.indexed) ...[
+          if (index > 0) const SizedBox(height: 8),
+          _HorizontalBarRow(
             item: item,
             maxValue: maxValue,
             color: item.color ?? colorScheme.primary,
-            onTap: widget.onItemTap != null
-                ? () => widget.onItemTap!(item)
-                : null,
-          );
-        },
-      ),
+            onTap: onItemTap == null ? null : () => onItemTap(item),
+          ),
+        ],
+      ],
     );
   }
 }
@@ -255,29 +234,25 @@ class _HorizontalBarRow extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Expanded(
-                  child: Tooltip(
-                    message: item.label,
-                    waitDuration: const Duration(milliseconds: 500),
-                    child: Text(
-                      item.label,
-                      style: theme.textTheme.bodySmall,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+            // The count drops below the label when both do not fit; labels
+            // wrap instead of being truncated.
+            SizedBox(
+              width: double.infinity,
+              child: Wrap(
+                alignment: WrapAlignment.spaceBetween,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                spacing: 8,
+                runSpacing: 2,
+                children: [
+                  Text(item.label, style: theme.textTheme.bodySmall),
+                  Text(
+                    '${item.count}',
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  '${item.count}',
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ],
+                ],
+              ),
             ),
             const SizedBox(height: 4),
             Stack(
@@ -292,7 +267,9 @@ class _HorizontalBarRow extends StatelessWidget {
                   ),
                 ),
                 FractionallySizedBox(
-                  widthFactor: (item.count / maxValue).clamp(0.0, 1.0),
+                  widthFactor: maxValue > 0
+                      ? (item.count / maxValue).clamp(0.0, 1.0)
+                      : 0,
                   child: Container(
                     height: 20,
                     decoration: BoxDecoration(

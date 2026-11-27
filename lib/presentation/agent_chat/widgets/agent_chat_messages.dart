@@ -8,7 +8,7 @@ import '../../../core/agent/resources/agent_chat_resource_reference.dart';
 import '../../../core/agent/resources/agent_chat_resource_reference_codec.dart';
 import '../../../core/utils/localization_extension.dart';
 import '../../../core/windowing/agent_chat_layout_contract.dart';
-import '../../../core/windowing/agent_chat_shared_widgets.dart';
+import 'agent_chat_shared_widgets.dart';
 import '../../adaptive/interaction_policy.dart';
 import '../../widgets/common/draggable_memory_image.dart';
 import '../models/agent_chat_prompt_envelope.dart';
@@ -119,12 +119,6 @@ class AgentChatMessages extends StatelessWidget {
           hasEarlier: state.hasEarlierTurns,
           historyLoading: state.historyLoading,
           prependAnchorEntryId: state.prependAnchorEntryId,
-          geometryRevision: (
-            state.messages,
-            state.streamingMessage,
-            state.activities,
-            state.turns,
-          ),
           onLoadEarlier: commands.loadEarlierHistory,
           live: const SizedBox.shrink(),
           turnBuilder: (context, turn, current) => Column(

@@ -9,17 +9,24 @@ import 'package:go_router/go_router.dart';
 import '../../../core/constants/storage_keys.dart';
 import '../../../core/platform/platform_capabilities.dart';
 import '../../../core/storage/local_storage_service.dart';
+import '../../../core/utils/app_logger.dart';
 import '../../../core/utils/localization_extension.dart';
 import '../../../data/models/queue/replication_task.dart';
 import '../../../data/models/queue/replication_task_generation_snapshot.dart';
-import '../../providers/auth_provider.dart';
+import '../../../data/services/auth_provider.dart';
+import '../../providers/generation/image_card_selection_provider.dart';
+import '../../providers/generation/image_workflow_controller.dart';
 import '../../providers/image_generation_provider.dart';
 import '../../providers/krita/krita_bridge_notifier.dart';
+import '../../providers/layout_state_provider.dart';
 import '../../providers/mobile_shell_overlay_provider.dart';
 import '../../providers/prompt_maximize_provider.dart';
 import '../../providers/replication_queue_provider.dart';
-import '../../utils/asset_protection_guard.dart';
 import '../../widgets/common/app_toast.dart';
+import '../../widgets/common/drag_claim_notification.dart';
+import '../../widgets/queue/enqueue_result_toast.dart';
+import 'handlers/generation_action_handlers.dart';
+import 'mobile_generation_view_data.dart';
 
 class MobileGenerationController extends ChangeNotifier
     with WidgetsBindingObserver {
@@ -64,7 +71,7 @@ class MobileGenerationController extends ChangeNotifier
   bool showGestureHint = false;
   bool keyboardVisible = false;
   bool workspacePointerActive = false;
-  bool workspaceChildScrolled = false;
+  bool workspaceChildConsumedDrag = false;
   bool workspaceThresholdHapticSent = false;
   int? workspacePointer;
   Offset? workspacePointerStart;
@@ -119,11 +126,29 @@ class MobileGenerationController extends ChangeNotifier
     notifyListeners();
   }
 
-  void handleBack(bool isPromptMaximized) {
-    if (agentFullScreen) {
+  bool canPopRoute(MobileGenerationViewData data) =>
+      !data.isFixedTagsOverlayVisible &&
+      !agentFullScreen &&
+      !data.isPromptMaximized &&
+      !data.isSelectionMode;
+
+  /// 按层级由上到下逐层退出，每次返回只退一层。
+  void handleBack(MobileGenerationViewData data) {
+    if (data.isFixedTagsOverlayVisible) {
+      unawaited(
+        ref
+            .read(layoutStateNotifierProvider.notifier)
+            .setFixedTagsSidebarExpanded(false),
+      );
+    } else if (agentFullScreen) {
       handleAgentBack();
-    } else if (isPromptMaximized) {
+    } else if (data.isPromptMaximized) {
       closePromptEditor();
+    } else if (scaffoldKey.currentState?.isDrawerOpen ?? false) {
+      // 拦截返回时抽屉自己的历史项不会被弹出，参数抽屉盖住预览，须先由这里关闭
+      closeParameterDrawer();
+    } else if (data.isSelectionMode) {
+      ref.read(generationImageCardSelectionProvider.notifier).exit();
     }
   }
 
@@ -191,7 +216,7 @@ class MobileGenerationController extends ChangeNotifier
     workspacePointerStart = event.position;
     workspaceVelocityTracker = VelocityTracker.withKind(event.kind)
       ..addPosition(event.timeStamp, event.position);
-    workspaceChildScrolled = false;
+    workspaceChildConsumedDrag = false;
     workspaceThresholdHapticSent = false;
     workspacePointerActive = true;
     notifyListeners();
@@ -204,14 +229,14 @@ class MobileGenerationController extends ChangeNotifier
     final vertical = delta.dy.abs();
     final hasVerticalAdvantage =
         vertical >= delta.dx.abs() * verticalAxisAdvantage;
-    final nextFeedback = !workspaceChildScrolled && hasVerticalAdvantage
+    final nextFeedback = !workspaceChildConsumedDrag && hasVerticalAdvantage
         ? (delta.dy / 3).clamp(
             -maximumDragFeedbackOffset,
             maximumDragFeedbackOffset,
           )
         : 0.0;
     final reachedThreshold =
-        !workspaceChildScrolled &&
+        !workspaceChildConsumedDrag &&
         hasVerticalAdvantage &&
         vertical >= verticalShortcutDistance;
     if (reachedThreshold && !workspaceThresholdHapticSent) {
@@ -238,7 +263,7 @@ class MobileGenerationController extends ChangeNotifier
         velocity.abs() >= verticalShortcutVelocity &&
         velocity.sign == delta.dy.sign;
     final committed =
-        !workspaceChildScrolled &&
+        !workspaceChildConsumedDrag &&
         hasVerticalAdvantage &&
         (distanceCommitted || flingCommitted);
     if (committed && !workspaceThresholdHapticSent) {
@@ -266,22 +291,33 @@ class MobileGenerationController extends ChangeNotifier
     workspacePointerStart = null;
     workspaceVelocityTracker = null;
     workspacePointerActive = false;
-    workspaceChildScrolled = false;
+    workspaceChildConsumedDrag = false;
     workspaceThresholdHapticSent = false;
     workspaceDragFeedback = 0;
     if (!_disposed) notifyListeners();
   }
 
   bool handleWorkspaceScrollNotification(ScrollNotification notification) {
-    if (workspacePointerActive &&
-        (notification is ScrollStartNotification ||
-            notification is ScrollUpdateNotification ||
-            notification is OverscrollNotification)) {
-      workspaceChildScrolled = true;
-      workspaceDragFeedback = 0;
-      notifyListeners();
+    if (notification is ScrollStartNotification ||
+        notification is ScrollUpdateNotification ||
+        notification is OverscrollNotification) {
+      _yieldWorkspaceShortcut();
     }
     return false;
+  }
+
+  bool handleWorkspaceDragClaimNotification(
+    DragClaimNotification notification,
+  ) {
+    _yieldWorkspaceShortcut();
+    return false;
+  }
+
+  void _yieldWorkspaceShortcut() {
+    if (!workspacePointerActive || workspaceChildConsumedDrag) return;
+    workspaceChildConsumedDrag = true;
+    workspaceDragFeedback = 0;
+    notifyListeners();
   }
 
   void completeGestureHint() {
@@ -313,17 +349,13 @@ class MobileGenerationController extends ChangeNotifier
       AppToast.info(context, context.l10n.generation_pleaseInputPrompt);
       return;
     }
-    if (ref.read(promptMaximizeNotifierProvider)) {
-      closePromptEditor();
-      await Future<void>.delayed(Duration.zero);
-      if (_disposed || !context.mounted) return;
-    }
-    final confirmed = await AssetProtectionGuard.confirmHighAnlasCost(
-      context: context,
-      ref: ref,
+    await submitGenerationWithProtection(
+      context,
+      ref,
+      closePromptEditor: ref.read(promptMaximizeNotifierProvider)
+          ? closePromptEditor
+          : null,
     );
-    if (!confirmed || _disposed || !context.mounted) return;
-    ref.read(imageGenerationNotifierProvider.notifier).generate(params);
   }
 
   void cancelGeneration() =>
@@ -339,6 +371,22 @@ class MobileGenerationController extends ChangeNotifier
       return;
     }
     final queuedParams = params.copyWith(nSamples: 1);
+    // 与立即生成时读取的聚焦状态一致，任务执行时不再借用生成页届时的状态
+    final workflow = ref.read(imageWorkflowControllerProvider);
+    final focused = QueuedFocusedInpaint(
+      enabled: workflow.focusedInpaintEnabled,
+      contextPadding: workflow.minimumContextMegaPixels,
+      selectionRect: workflow.focusedSelectionRect,
+      contextCrop: workflow.focusedContextCrop,
+    );
+    final batchSize = ref.read(imagesPerRequestProvider);
+    // 编码期间布局切换可能销毁本控制器，入队仍须完成，之后不再读 ref
+    final queue = ref.read(replicationQueueNotifierProvider.notifier);
+    final generationSnapshot = await ReplicationTaskGenerationSnapshot.encode(
+      queuedParams,
+      batchSize: batchSize,
+      focused: focused,
+    );
     final task = ReplicationTask.create(
       prompt: params.prompt,
       negativePrompt: params.negativePrompt,
@@ -353,10 +401,7 @@ class MobileGenerationController extends ChangeNotifier
             ),
           )
           .toList(growable: false),
-      generationSnapshot: ReplicationTaskGenerationSnapshot.encode(
-        queuedParams,
-        batchSize: ref.read(imagesPerRequestProvider),
-      ),
+      generationSnapshot: generationSnapshot,
       source: ReplicationTaskSource.local,
       seed: params.seed,
       sampler: params.sampler,
@@ -366,15 +411,25 @@ class MobileGenerationController extends ChangeNotifier
       width: params.width,
       height: params.height,
     );
-    final added = await ref
-        .read(replicationQueueNotifierProvider.notifier)
-        .add(task);
-    if (_disposed || !context.mounted) return;
-    if (!added) {
-      AppToast.warning(context, context.l10n.onlineGallery_queueFullMax);
+    final EnqueueResult result;
+    try {
+      result = await queue.add(task);
+    } catch (error, stackTrace) {
+      AppLogger.e(
+        'Failed to add the current prompt to the queue',
+        '${error.runtimeType}',
+        stackTrace,
+        'MobileGeneration',
+      );
+      if (!_disposed && context.mounted) showEnqueueErrorToast(context);
       return;
     }
-    AppToast.success(context, context.l10n.queue_taskAdded);
+    if (_disposed || !context.mounted) return;
+    showEnqueueResultToast(
+      context,
+      result,
+      successMessage: context.l10n.queue_taskAdded,
+    );
   }
 
   @override

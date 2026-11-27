@@ -4,11 +4,11 @@ import 'dart:typed_data';
 import 'package:flutter/widgets.dart';
 import 'package:path/path.dart' as p;
 
+import '../../../../core/cache/local_file_image.dart';
 import '../../../../data/models/gallery/local_image_record.dart';
 import '../../../../data/models/gallery/nai_image_metadata.dart';
 import '../../../../data/models/fixed_tag/fixed_tag_usage_snapshot.dart';
 import '../../../../data/services/image_metadata_service.dart';
-import '../../../../data/services/metadata/isolate_metadata_service.dart';
 
 /// 图像详情数据抽象接口
 ///
@@ -40,44 +40,69 @@ abstract class ImageDetailData {
   /// 是否需要显示复制按钮
   bool get showCopyButton;
 
+  /// 是否允许另存为副本；已存入图库的图没有保存按钮但仍可另存为
+  bool get showSaveAsButton;
+
   /// 是否需要显示收藏按钮
   bool get showFavoriteButton;
 
   /// 保存时是否必须保持当前图像字节不变。
   bool get preserveOriginalBytesOnSave;
+
+  /// 按命名规则保存时追加在文件名末尾的后缀。
+  String get fileNameSuffix => '';
+
+  /// 完整元数据，同步读不到时再解析图像；默认就是 [metadata]
+  Future<NaiImageMetadata?> getMetadataAsync() async => metadata;
+
+  /// 切到这张图之前把需要读盘的元数据取进来，首帧的 [metadata] 就能同步读到；默认无需预取
+  Future<void> prefetchMetadata() => Future.value();
+
+  /// 预取仍在读取；等待方先行显示后据此决定读完是否刷新
+  bool get isPrefetchingMetadata => false;
+
+  /// 需要读盘才能补全的文件信息；[fileInfo] 已经完整时返回 null
+  Future<FileInfo?> getFileInfoAsync() async => null;
 }
 
 /// 文件信息
+///
+/// [size] 与 [modifiedAt] 需要磁盘 IO，只有异步取到才有值；未知时留空不展示。
 class FileInfo {
   final String path;
   final String fileName;
-  final int size;
-  final DateTime modifiedAt;
+  final int? size;
+  final DateTime? modifiedAt;
 
   const FileInfo({
     required this.path,
     required this.fileName,
-    required this.size,
-    required this.modifiedAt,
+    this.size,
+    this.modifiedAt,
   });
 }
 
 /// 本地图库图像数据适配器
 ///
 /// 包含大图内存优化：超过阈值的图像会使用 ResizeImage 限制内存占用
-class LocalImageDetailData implements ImageDetailData {
+class LocalImageDetailData extends ImageDetailData {
   final LocalImageRecord record;
   final bool Function(String path)? getFavoriteStatus;
+  final ImageMetadataService _metadataService;
 
   /// 图像最大维度阈值（超过此值会进行缩放优化）
   static const int _maxImageDimension = 4096;
 
-  LocalImageDetailData(this.record, {this.getFavoriteStatus});
+  LocalImageDetailData(
+    this.record, {
+    this.getFavoriteStatus,
+    ImageMetadataService? metadataService,
+  }) : _metadataService = metadataService ?? ImageMetadataService.instance;
 
   @override
   ImageProvider getImageProvider() {
     final meta = metadata;
-    final fileImage = FileImage(File(record.path));
+    final fileImage = LocalFileImage(record.path);
 
     // 无元数据时无法预判尺寸，仍要限制解码上限以避免超大图片撑爆内存。
     if (meta == null) {
@@ -121,26 +146,14 @@ class LocalImageDetailData implements ImageDetailData {
   NaiImageMetadata? get metadata =>
       record.metadata?.upgradeFromRawJsonIfNeeded();
 
-  /// 异步获取元数据（从文件解析）
-  ///
-  /// **前台高优先级调用** - 用户主动打开详情页时使用
-  ///
-  /// 【优化】使用 Isolate 在后台线程解析，避免阻塞 UI
+  /// 图库记录没有元数据时从文件解析
+  @override
   Future<NaiImageMetadata?> getMetadataAsync() async {
-    // 1. 先检查已缓存的元数据
-    final cachedRecordMetadata = metadata;
-    if (cachedRecordMetadata != null) return cachedRecordMetadata;
+    final recordMetadata = metadata;
+    if (recordMetadata != null) return recordMetadata;
 
-    // 2. 在 Isolate 中解析（不阻塞 UI）
-    // 先尝试快速路径（缓存）
-    final cached = await ImageMetadataService().getMetadataImmediate(
-      record.path,
-    );
-    if (cached != null) return cached;
-
-    // 3. 使用 Isolate 深度解析（针对大文件或复杂格式）
-    final isolateService = IsolateMetadataService.instance;
-    return isolateService.parseForDetailView(record.path);
+    // 服务已在后台 isolate 走完整条解析链，这里再兜底解析只会重复同一次整图解码。
+    return _metadataService.getMetadataImmediate(record.path);
   }
 
   @override
@@ -165,6 +178,9 @@ class LocalImageDetailData implements ImageDetailData {
   bool get showCopyButton => true;
 
   @override
+  bool get showSaveAsButton => true;
+
+  @override
   bool get showFavoriteButton => true;
 
   @override
@@ -175,28 +191,37 @@ class LocalImageDetailData implements ImageDetailData {
 ///
 /// 用于未保存到磁盘的图像（内存中的图像数据）
 /// 支持从内存字节异步解析元数据
-class GeneratedImageDetailData implements ImageDetailData {
+class GeneratedImageDetailData extends ImageDetailData {
   final Uint8List imageBytes;
   final NaiImageMetadata? _metadata;
+  final ImageMetadataService _metadataService;
   final String _id;
   final bool _showSaveButton;
   final bool _showCopyButton;
+  final bool _showSaveAsButton;
   final FixedTagUsageSnapshot? fixedTagUsageSnapshot;
   @override
   final bool preserveOriginalBytesOnSave;
+  @override
+  final String fileNameSuffix;
 
   GeneratedImageDetailData({
     required this.imageBytes,
     NaiImageMetadata? metadata,
+    ImageMetadataService? metadataService,
     String? id,
     bool showSaveButton = true,
     bool showCopyButton = true,
+    bool showSaveAsButton = true,
     this.preserveOriginalBytesOnSave = false,
+    this.fileNameSuffix = '',
     this.fixedTagUsageSnapshot,
   }) : _metadata = metadata,
+       _metadataService = metadataService ?? ImageMetadataService.instance,
        _id = id ?? imageBytes.hashCode.toString(),
        _showSaveButton = showSaveButton,
-       _showCopyButton = showCopyButton;
+       _showCopyButton = showCopyButton,
+       _showSaveAsButton = showSaveAsButton;
 
   @override
   ImageProvider getImageProvider() {
@@ -212,16 +237,11 @@ class GeneratedImageDetailData implements ImageDetailData {
   @override
   NaiImageMetadata? get metadata => _metadata;
 
-  /// 异步获取元数据（从内存字节解析）
-  ///
-  /// **前台高优先级调用** - 用户主动打开详情页时使用
-  /// 内存字节直接解析，不受后台队列影响
+  /// 没有传入元数据时从内存字节解析
+  @override
   Future<NaiImageMetadata?> getMetadataAsync() async {
-    // 1. 先检查已缓存的元数据
     if (_metadata != null) return _metadata;
-
-    // 2. 从内存字节直接解析（内存操作，无需排队）
-    return ImageMetadataService().getMetadataFromBytes(imageBytes);
+    return _metadataService.getMetadataFromBytes(imageBytes);
   }
 
   @override
@@ -238,6 +258,9 @@ class GeneratedImageDetailData implements ImageDetailData {
 
   @override
   bool get showCopyButton => _showCopyButton;
+
+  @override
+  bool get showSaveAsButton => _showSaveAsButton;
 
   @override
   bool get showFavoriteButton => false;

@@ -12,7 +12,9 @@ import 'package:nai_launcher/core/storage/local_storage_service.dart';
 import 'package:nai_launcher/core/storage/secure_storage_service.dart';
 import 'package:nai_launcher/data/models/agent/agent_settings.dart';
 import 'package:nai_launcher/presentation/agent_settings/providers/agent_settings_provider.dart';
-import 'package:nai_launcher/presentation/prompt_assistant/models/prompt_assistant_models.dart';
+import 'package:nai_launcher/data/models/prompt_assistant/prompt_assistant_models.dart';
+
+import '../../../helpers/log_capture.dart';
 
 class _MemoryStorage extends LocalStorageService {
   final values = <String, Object?>{};
@@ -156,8 +158,7 @@ void main() {
             _MemorySecureStorage(),
           ),
           agentSettingsProvider.overrideWith(
-            (ref) => AgentSettingsNotifier(
-              ref,
+            () => AgentSettingsNotifier(
               supportDirectory: temp,
               workspaceDirectory: temp,
               environment: const {},
@@ -205,8 +206,7 @@ void main() {
         localStorageServiceProvider.overrideWithValue(storage),
         secureStorageServiceProvider.overrideWithValue(_MemorySecureStorage()),
         agentSettingsProvider.overrideWith(
-          (ref) => AgentSettingsNotifier(
-            ref,
+          () => AgentSettingsNotifier(
             supportDirectory: temp,
             workspaceDirectory: temp,
             environment: const {},
@@ -240,8 +240,7 @@ void main() {
         localStorageServiceProvider.overrideWithValue(storage),
         secureStorageServiceProvider.overrideWithValue(_MemorySecureStorage()),
         agentSettingsProvider.overrideWith(
-          (ref) => AgentSettingsNotifier(
-            ref,
+          () => AgentSettingsNotifier(
             supportDirectory: temp,
             workspaceDirectory: temp,
             environment: const {},
@@ -376,8 +375,7 @@ void main() {
             _MemorySecureStorage(),
           ),
           agentSettingsProvider.overrideWith(
-            (ref) => AgentSettingsNotifier(
-              ref,
+            () => AgentSettingsNotifier(
               supportDirectory: temp,
               workspaceDirectory: temp,
               environment: const {},
@@ -437,8 +435,7 @@ void main() {
         localStorageServiceProvider.overrideWithValue(storage),
         secureStorageServiceProvider.overrideWithValue(_MemorySecureStorage()),
         agentSettingsProvider.overrideWith(
-          (ref) => AgentSettingsNotifier(
-            ref,
+          () => AgentSettingsNotifier(
             supportDirectory: temp,
             workspaceDirectory: temp,
             environment: const {},
@@ -486,8 +483,7 @@ void main() {
             _MemorySecureStorage(),
           ),
           agentSettingsProvider.overrideWith(
-            (ref) => AgentSettingsNotifier(
-              ref,
+            () => AgentSettingsNotifier(
               supportDirectory: temp,
               workspaceDirectory: temp,
               environment: const {},
@@ -535,8 +531,7 @@ void main() {
             _MemorySecureStorage(),
           ),
           agentSettingsProvider.overrideWith(
-            (ref) => AgentSettingsNotifier(
-              ref,
+            () => AgentSettingsNotifier(
               supportDirectory: temp,
               workspaceDirectory: temp,
               environment: const {},
@@ -600,8 +595,7 @@ void main() {
             _MemorySecureStorage(),
           ),
           agentSettingsProvider.overrideWith(
-            (ref) => AgentSettingsNotifier(
-              ref,
+            () => AgentSettingsNotifier(
               supportDirectory: temp,
               environment: {'HOME': home.path},
               workspaceDirectoryResolver: () async => currentProject,
@@ -674,8 +668,7 @@ void main() {
             _MemorySecureStorage(),
           ),
           agentSettingsProvider.overrideWith(
-            (ref) => AgentSettingsNotifier(
-              ref,
+            () => AgentSettingsNotifier(
               supportDirectory: temp,
               environment: const {},
               skillCatalogService: catalog,
@@ -723,8 +716,7 @@ void main() {
             _MemorySecureStorage(),
           ),
           agentSettingsProvider.overrideWith(
-            (ref) => AgentSettingsNotifier(
-              ref,
+            () => AgentSettingsNotifier(
               supportDirectory: temp,
               environment: const {},
               skillCatalogService: catalog,
@@ -765,8 +757,7 @@ void main() {
             _MemorySecureStorage(),
           ),
           agentSettingsProvider.overrideWith(
-            (ref) => AgentSettingsNotifier(
-              ref,
+            () => AgentSettingsNotifier(
               supportDirectory: temp,
               environment: const {},
               skillCatalogService: catalog,
@@ -812,8 +803,7 @@ void main() {
             _MemorySecureStorage(),
           ),
           agentSettingsProvider.overrideWith(
-            (ref) => AgentSettingsNotifier(
-              ref,
+            () => AgentSettingsNotifier(
               supportDirectory: temp,
               workspaceDirectory: temp,
               environment: const {},
@@ -847,8 +837,7 @@ void main() {
         localStorageServiceProvider.overrideWithValue(storage),
         secureStorageServiceProvider.overrideWithValue(_MemorySecureStorage()),
         agentSettingsProvider.overrideWith(
-          (ref) => AgentSettingsNotifier(
-            ref,
+          () => AgentSettingsNotifier(
             supportDirectory: temp,
             workspaceDirectory: temp,
             environment: const {},
@@ -876,8 +865,7 @@ void main() {
         localStorageServiceProvider.overrideWithValue(storage),
         secureStorageServiceProvider.overrideWithValue(_MemorySecureStorage()),
         agentSettingsProvider.overrideWith(
-          (ref) => AgentSettingsNotifier(
-            ref,
+          () => AgentSettingsNotifier(
             supportDirectory: temp,
             workspaceDirectory: temp,
             environment: const {},
@@ -901,8 +889,7 @@ void main() {
         overrides: [
           localStorageServiceProvider.overrideWithValue(storage),
           agentSettingsProvider.overrideWith(
-            (ref) => AgentSettingsNotifier(
-              ref,
+            () => AgentSettingsNotifier(
               supportDirectory: temp,
               workspaceDirectory: temp,
               environment: const {},
@@ -940,8 +927,7 @@ void main() {
             _MemorySecureStorage(),
           ),
           agentSettingsProvider.overrideWith(
-            (ref) => AgentSettingsNotifier(
-              ref,
+            () => AgentSettingsNotifier(
               supportDirectory: temp,
               workspaceDirectory: temp,
               environment: const {},
@@ -1004,8 +990,7 @@ void main() {
             _MemorySecureStorage(),
           ),
           agentSettingsProvider.overrideWith(
-            (ref) => AgentSettingsNotifier(
-              ref,
+            () => AgentSettingsNotifier(
               supportDirectory: temp,
               workspaceDirectory: temp,
               environment: const {},
@@ -1021,6 +1006,56 @@ void main() {
       expect(storage.values[StorageKeys.promptAssistantConfigJson], legacyRaw);
     },
   );
+
+  group('corrupt stored instructions', () {
+    const corrupt = '{"customSystemPrompt":"secret lighthouse keeper",';
+
+    ProviderContainer containerWith(String key) {
+      final container = ProviderContainer(
+        overrides: [
+          localStorageServiceProvider.overrideWithValue(
+            _MemoryStorage()..values[key] = corrupt,
+          ),
+          secureStorageServiceProvider.overrideWithValue(
+            _MemorySecureStorage(),
+          ),
+          agentSettingsProvider.overrideWith(
+            () => AgentSettingsNotifier(
+              supportDirectory: temp,
+              workspaceDirectory: temp,
+              environment: const {},
+            ),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      return container;
+    }
+
+    test('never reach the initialization log', () async {
+      final container = containerWith(StorageKeys.agentSettingsJson);
+
+      final logs = await captureLogs(() => _waitUntilInitialized(container));
+
+      expect(
+        logs.where((line) => line.contains('initialization failed')),
+        hasLength(1),
+      );
+      expect(logs.where((line) => line.contains('lighthouse')), isEmpty);
+    });
+
+    test('never reach the legacy migration error', () async {
+      final container = containerWith(StorageKeys.promptAssistantConfigJson);
+
+      final logs = await captureLogs(() => _waitUntilInitialized(container));
+
+      expect(
+        container.read(agentSettingsProvider).error,
+        allOf(contains('Cannot migrate'), isNot(contains('lighthouse'))),
+      );
+      expect(logs.where((line) => line.contains('lighthouse')), isEmpty);
+    });
+  });
 }
 
 Map<String, bool> _skillStates(ProviderContainer container) => {

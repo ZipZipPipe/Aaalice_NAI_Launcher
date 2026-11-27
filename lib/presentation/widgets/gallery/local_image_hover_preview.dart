@@ -2,11 +2,13 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import '../common/model_family_icon.dart';
 
 import '../../../core/cache/local_gallery_thumbnail_provider.dart';
 import '../../../core/utils/byte_format.dart';
+import '../../../core/utils/encoded_image_dimensions.dart';
 import '../../../data/models/gallery/local_image_record.dart';
 import '../../../data/models/gallery/nai_image_metadata.dart';
 import '../../utils/local_gallery_metadata_resolver.dart';
@@ -99,7 +101,10 @@ class _LocalImageHoverPreviewState extends State<LocalImageHoverPreview> {
     return CompositedTransformTarget(
       link: _layerLink,
       child: MouseRegion(
-        onEnter: (_) => _schedulePreview(),
+        // 只响应鼠标 / 触控板悬停，触控笔悬停不弹预览卡（见 LocalImageCard3D）
+        onEnter: (event) {
+          if (event.kind == PointerDeviceKind.mouse) _schedulePreview();
+        },
         onExit: (_) => _hoverController.dismissFor(widget.record.path),
         child: widget.child,
       ),
@@ -215,15 +220,9 @@ class _LocalImageHoverPreviewCardState
   Future<(int, int)> _loadImageDimensions() async {
     // Generation metadata remains the original recipe after resizing or
     // enhancement. Only the encoded image describes the current pixel size.
-    final buffer = await ui.ImmutableBuffer.fromFilePath(widget.record.path);
-    ui.ImageDescriptor? descriptor;
-    try {
-      descriptor = await ui.ImageDescriptor.encoded(buffer);
-      return (descriptor.width, descriptor.height);
-    } finally {
-      descriptor?.dispose();
-      buffer.dispose();
-    }
+    return readEncodedImageDimensions(
+      await ui.ImmutableBuffer.fromFilePath(widget.record.path),
+    );
   }
 
   @override

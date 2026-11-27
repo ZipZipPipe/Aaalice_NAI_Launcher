@@ -10,7 +10,7 @@ part 'tag_group_sync_config.g.dart';
 /// 管理 Danbooru Tag Group 同步的全局配置
 /// 替代原有的 PoolSyncConfig
 @freezed
-class TagGroupSyncConfig with _$TagGroupSyncConfig {
+abstract class TagGroupSyncConfig with _$TagGroupSyncConfig {
   const TagGroupSyncConfig._();
 
   const factory TagGroupSyncConfig({
@@ -83,30 +83,4 @@ class TagGroupSyncConfig with _$TagGroupSyncConfig {
   /// 获取有效的最小热度阈值
   /// 确保值在合理范围内
   int get effectiveMinPostCount => minPostCount.clamp(0, 100000);
-}
-
-/// 预设的热度阈值选项
-class PostCountThresholds {
-  static const int veryLow = 100;
-  static const int low = 500;
-  static const int medium = 1000;
-  static const int high = 5000;
-  static const int veryHigh = 10000;
-
-  static const List<int> presets = [
-    veryLow,
-    low,
-    medium,
-    high,
-    veryHigh,
-  ];
-
-  /// 获取阈值的描述
-  static String getDescription(int threshold) {
-    if (threshold <= veryLow) return '非常宽松';
-    if (threshold <= low) return '宽松';
-    if (threshold <= medium) return '适中';
-    if (threshold <= high) return '严格';
-    return '非常严格';
-  }
 }

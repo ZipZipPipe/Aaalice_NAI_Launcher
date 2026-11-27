@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -9,52 +10,78 @@ import 'package:nai_launcher/core/storage/secure_storage_service.dart';
 import 'package:nai_launcher/data/datasources/remote/nai_auth_api_service.dart';
 import 'package:nai_launcher/data/models/auth/saved_account.dart';
 import 'package:nai_launcher/data/services/token_refresh_service.dart';
-import 'package:nai_launcher/presentation/providers/account_manager_provider.dart';
+import 'package:nai_launcher/data/services/account_manager_provider.dart';
 
 void main() {
-  test('refreshes current credentials JWT through the image user host', () async {
+  test('concurrent refresh callers share one login and its result', () async {
     final harness = _RefreshHarness.create();
     addTearDown(harness.dispose);
-
-    final refreshed = await harness.container
-        .read(tokenRefreshServiceProvider.notifier)
-        .refreshCurrentToken();
-
-    expect(refreshed, isTrue);
-    expect(harness.storage.savedAccessToken, _RefreshHarness.newToken);
-    expect(harness.storage.savedEmail, harness.account.email);
-    expect(harness.storage.savedExpiry, isNotNull);
-    expect(
-      harness.storage.savedExpiry!.isAfter(
-        DateTime.now().add(const Duration(days: 29)),
-      ),
-      isTrue,
+    final release = Completer<void>();
+    harness.adapter.waitBeforeResponse = release.future;
+    final service = harness.container.read(
+      tokenRefreshServiceProvider.notifier,
     );
-    expect(harness.accountManager.accountToken, _RefreshHarness.newToken);
-    expect(harness.adapter.requests, hasLength(1));
-    expect(
-      harness.adapter.requests.single.uri.toString(),
-      '${ApiConstants.imageBaseUrl}${ApiConstants.loginEndpoint}',
-    );
-    expect(
-      harness.adapter.requests.single.data,
-      {'key': _RefreshHarness.accessKey},
-    );
-  });
 
-  test('refreshes a selected credentials account and returns its new JWT', () async {
-    final harness = _RefreshHarness.create();
-    addTearDown(harness.dispose);
+    final first = service.refreshCurrentToken();
+    final second = service.refreshCurrentToken();
+    expect(second, same(first));
+    release.complete();
 
-    final token = await harness.container
-        .read(tokenRefreshServiceProvider.notifier)
-        .refreshTokenForAccount(harness.account.id);
-
-    expect(token, _RefreshHarness.newToken);
-    expect(harness.storage.savedAccessToken, _RefreshHarness.newToken);
-    expect(harness.accountManager.accountToken, _RefreshHarness.newToken);
+    expect(await Future.wait([first, second]), [
+      TokenRefreshOutcome.refreshed,
+      TokenRefreshOutcome.refreshed,
+    ]);
     expect(harness.adapter.requests, hasLength(1));
   });
+
+  test(
+    'refreshes current credentials JWT through the image user host',
+    () async {
+      final harness = _RefreshHarness.create();
+      addTearDown(harness.dispose);
+
+      final outcome = await harness.container
+          .read(tokenRefreshServiceProvider.notifier)
+          .refreshCurrentToken();
+
+      expect(outcome, TokenRefreshOutcome.refreshed);
+      expect(harness.storage.savedAccessToken, _RefreshHarness.newToken);
+      expect(harness.storage.savedEmail, harness.account.email);
+      expect(harness.storage.savedExpiry, isNotNull);
+      expect(
+        harness.storage.savedExpiry!.isAfter(
+          DateTime.now().add(const Duration(days: 29)),
+        ),
+        isTrue,
+      );
+      expect(harness.accountManager.accountToken, _RefreshHarness.newToken);
+      expect(harness.adapter.requests, hasLength(1));
+      expect(
+        harness.adapter.requests.single.uri.toString(),
+        '${ApiConstants.imageBaseUrl}${ApiConstants.loginEndpoint}',
+      );
+      expect(harness.adapter.requests.single.data, {
+        'key': _RefreshHarness.accessKey,
+      });
+    },
+  );
+
+  test(
+    'refreshes a selected credentials account and returns its new JWT',
+    () async {
+      final harness = _RefreshHarness.create();
+      addTearDown(harness.dispose);
+
+      final token = await harness.container
+          .read(tokenRefreshServiceProvider.notifier)
+          .refreshTokenForAccount(harness.account.id);
+
+      expect(token, _RefreshHarness.newToken);
+      expect(harness.storage.savedAccessToken, _RefreshHarness.newToken);
+      expect(harness.accountManager.accountToken, _RefreshHarness.newToken);
+      expect(harness.adapter.requests, hasLength(1));
+    },
+  );
 }
 
 class _RefreshHarness {
@@ -151,6 +178,18 @@ class _FakeSecureStorageService extends SecureStorageService {
     savedEmail = email;
     currentToken = accessToken;
   }
+
+  @override
+  Future<bool> replaceAuthIfCurrent({
+    required String expectedToken,
+    required String accessToken,
+    required DateTime expiry,
+    required String email,
+  }) async {
+    if (currentToken != expectedToken) return false;
+    await saveAuth(accessToken: accessToken, expiry: expiry, email: email);
+    return true;
+  }
 }
 
 class _FakeAccountManagerNotifier extends AccountManagerNotifier {
@@ -179,6 +218,7 @@ class _FakeAccountManagerNotifier extends AccountManagerNotifier {
 
 class _LoginDioAdapter implements HttpClientAdapter {
   final List<RequestOptions> requests = [];
+  Future<void>? waitBeforeResponse;
 
   @override
   Future<ResponseBody> fetch(
@@ -187,6 +227,7 @@ class _LoginDioAdapter implements HttpClientAdapter {
     Future<void>? cancelFuture,
   ) async {
     requests.add(options);
+    await waitBeforeResponse;
     return ResponseBody.fromString(
       jsonEncode({'accessToken': _RefreshHarness.newToken}),
       201,

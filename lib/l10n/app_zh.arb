@@ -62,6 +62,7 @@
   "common_import": "导入",
   "common_loading": "加载中...",
   "common_error": "错误",
+  "common_secureStorageUnavailable": "安全存储暂时无法访问，可能正被杀毒或同步软件占用，请稍后重试",
   "promptAssistant_completed": "提示词助手处理完成",
   "common_success": "成功",
   "common_retry": "重试",
@@ -199,13 +200,23 @@
   "auth_switchAccount": "切换账号",
   "auth_currentAccount": "当前账号",
   "auth_selectAccount": "选择账号",
-  "auth_deleteAccount": "删除账号",
-  "auth_deleteAccountConfirm": "确定要删除账号 \"{name}\" 吗？此操作不可撤销。",
-  "@auth_deleteAccountConfirm": {
+  "auth_manageAccounts": "管理账号",
+  "auth_removeSavedAccount": "移除账号",
+  "auth_removeSavedAccountAction": "移除",
+  "auth_removeSavedAccountConfirm": "将从本机移除「{name}」保存的登录凭据和头像。NovelAI 账号本身不受影响，之后可以重新登录。",
+  "@auth_removeSavedAccountConfirm": {
     "placeholders": {
       "name": {}
     }
   },
+  "auth_removeSessionAccountNotice": "你当前正在使用此账号，确认后会先退出登录。",
+  "auth_removeSavedAccountSuccess": "已移除「{name}」",
+  "@auth_removeSavedAccountSuccess": {
+    "placeholders": {
+      "name": {}
+    }
+  },
+  "auth_removeSavedAccountFailed": "移除账号失败，请稍后重试",
   "auth_removeAvatar": "移除头像",
   "auth_selectFromGallery": "从相册选择",
   "auth_quickLogin": "一键登录",
@@ -247,7 +258,6 @@
   "settings_title": "设置",
   "settings_account": "账户",
   "settings_appearance": "外观",
-  "settings_style": "风格",
   "settings_font": "字体",
   "settings_language": "语言",
   "settings_languageChinese": "简体中文",
@@ -284,7 +294,6 @@
   "settings_alphaModePremultipliedDescription": "RGB 已乘 Alpha，适合要求预乘输入的合成与渲染流程。",
   "settings_promptAssistant": "提示词助手",
   "settings_comfyUiDesktopOnly": "仅桌面端可用",
-  "settings_selectStyle": "选择风格",
   "settings_defaultPreset": "默认",
   "settings_selectFont": "选择字体",
   "settings_selectLanguage": "选择语言",
@@ -292,6 +301,88 @@
   "settings_imageSavePath": "图片保存位置",
   "settings_autoSave": "自动保存",
   "settings_autoSaveSubtitle": "生成后自动保存图片",
+  "settings_syncToSystemGallery": "同步到系统相册",
+  "settings_syncToSystemGallerySubtitle": "关闭后仅保存到应用图库，不再出现在系统相册；已同步的图片不受影响",
+  "settings_saveNaming": "文件夹与文件名",
+  "settings_saveNamingSubtitle": "示例：{example}",
+  "@settings_saveNamingSubtitle": {"placeholders":{"example":{}}},
+  "settings_saveNamingFolderSection": "子文件夹",
+  "settings_saveNamingFileNameSection": "文件名",
+  "settings_saveNamingFolderByDate": "按日期",
+  "settings_saveNamingFolderByMonth": "按月份",
+  "settings_saveNamingFolderByYearMonth": "按年、月两级",
+  "settings_saveNamingFolderNone": "不建子文件夹",
+  "settings_saveNamingFolderNoneExample": "直接保存在图片保存位置",
+  "settings_saveNamingFileTimeSeed": "时间 + 种子",
+  "settings_saveNamingFileDateTimeSeed": "日期时间 + 种子",
+  "settings_saveNamingFilePromptSeed": "提示词 + 种子",
+  "settings_saveNamingCustom": "自定义",
+  "settings_saveNamingFolderTemplate": "子文件夹模板",
+  "settings_saveNamingFolderTemplateHelper": "用 / 分隔多级文件夹；留空则不建子文件夹",
+  "settings_saveNamingFileNameTemplate": "文件名模板",
+  "settings_saveNamingFileNameTemplateHelper": "自动添加 .png 扩展名",
+  "settings_saveNamingFileNameEmpty": "文件名模板不能为空",
+  "settings_saveNamingInsertField": "插入字段",
+  "settings_saveNamingPreview": "预览",
+  "settings_saveNamingPreviewLatest": "示例取自最近一张生成图",
+  "settings_saveNamingPreviewSample": "示例使用内置样例数据",
+  "settings_saveNamingOmitsDateHint": "路径里没有日期，不同日期的图片会混在一起；需要按日期区分时，请在子文件夹或文件名中加入日期。",
+  "settings_saveNamingAppliesToNewHint": "只影响之后保存的图片，已有文件不会重命名或移动。",
+  "settings_saveNamingRestoreDefaults": "恢复默认",
+  "settings_saveNamingSyntaxHelp": "模板语法",
+  "settings_saveNamingSyntaxIntro": "用字段插入图片信息，过滤器从左到右依次生效；字段没有值时，它的 pre 和 suf 也一并省略。连写两个左花括号可输出一个左花括号。",
+  "settings_saveNamingSyntaxFields": "字段",
+  "settings_saveNamingSyntaxFilters": "过滤器",
+  "settings_saveNamingSyntaxCharacterFilters": "角色过滤器（仅限 characters，写在其他过滤器之前）",
+  "settings_saveNamingSyntaxExamples": "示例",
+  "settings_saveNamingFieldPrompt": "提示词（未使用长度过滤器时截取前 80 个字符）",
+  "settings_saveNamingFieldSeed": "种子",
+  "settings_saveNamingFieldDate": "生成日期，如 2026-10-12",
+  "settings_saveNamingFieldTime": "生成时刻，如 14-30-05",
+  "settings_saveNamingFieldYear": "年份，如 2026",
+  "settings_saveNamingFieldMonth": "月份，如 10",
+  "settings_saveNamingFieldDay": "日，如 12",
+  "settings_saveNamingFieldModel": "模型 ID",
+  "settings_saveNamingFieldModelName": "模型名称",
+  "settings_saveNamingFieldResolution": "分辨率，如 832x1216",
+  "settings_saveNamingFieldWidth": "宽度",
+  "settings_saveNamingFieldHeight": "高度",
+  "settings_saveNamingFieldIndex": "同一次保存中的序号，从 1 开始",
+  "settings_saveNamingFieldId": "图片 ID",
+  "settings_saveNamingFieldType": "生成方式：inpaint、image2image 或 vibe-transfer，文生图为空",
+  "settings_saveNamingFieldCharacters": "角色名，默认取前 3 个并用 + 连接",
+  "settings_saveNamingFilterFirst": "保留前 N 个字符",
+  "settings_saveNamingFilterLast": "保留后 N 个字符",
+  "settings_saveNamingFilterWords": "保留前 N 个词，负数保留末尾几个",
+  "settings_saveNamingFilterTags": "保留前 N 个逗号分隔的标签，负数保留末尾几个",
+  "settings_saveNamingFilterPre": "值非空时在前面加上 X",
+  "settings_saveNamingFilterSuf": "值非空时在后面加上 X",
+  "settings_saveNamingFilterPad": "数字左侧补 0 到 N 位",
+  "settings_saveNamingFilterLower": "转为小写",
+  "settings_saveNamingFilterUpper": "转为大写",
+  "settings_saveNamingFilterMax": "最多取 N 个角色（默认 3）",
+  "settings_saveNamingFilterAt": "只取第 N 个角色",
+  "settings_saveNamingFilterEach": "每个角色名保留前 N 个字符",
+  "settings_saveNamingFilterJoin": "用 X 连接角色名（默认 +）",
+  "settings_saveNamingFilterFull": "使用完整角色提示词而不是角色名",
+  "settings_saveNamingErrorUnclosedBrace": "第 {position} 个字符处的左花括号没有闭合",
+  "@settings_saveNamingErrorUnclosedBrace": {"placeholders":{"position":{"type":"int"}}},
+  "settings_saveNamingErrorUnknownField": "未知字段“{name}”",
+  "@settings_saveNamingErrorUnknownField": {"placeholders":{"name":{}}},
+  "settings_saveNamingErrorUnknownFilter": "未知过滤器“{name}”",
+  "@settings_saveNamingErrorUnknownFilter": {"placeholders":{"name":{}}},
+  "settings_saveNamingErrorFilterOnlyForCharacters": "过滤器“{name}”只能用于 characters",
+  "@settings_saveNamingErrorFilterOnlyForCharacters": {"placeholders":{"name":{}}},
+  "settings_saveNamingErrorCharacterFilterOrder": "过滤器“{name}”必须写在 first、pre 等过滤器之前",
+  "@settings_saveNamingErrorCharacterFilterOrder": {"placeholders":{"name":{}}},
+  "settings_saveNamingErrorFilterTakesNoValue": "过滤器“{name}”不需要参数",
+  "@settings_saveNamingErrorFilterTakesNoValue": {"placeholders":{"name":{}}},
+  "settings_saveNamingErrorFilterNeedsValue": "过滤器“{name}”需要参数，例如 {name}:-",
+  "@settings_saveNamingErrorFilterNeedsValue": {"placeholders":{"name":{}}},
+  "settings_saveNamingErrorFilterNeedsPositiveNumber": "过滤器“{name}”需要正整数",
+  "@settings_saveNamingErrorFilterNeedsPositiveNumber": {"placeholders":{"name":{}}},
+  "settings_saveNamingErrorFilterNeedsNonZeroNumber": "过滤器“{name}”需要非零整数",
+  "@settings_saveNamingErrorFilterNeedsNonZeroNumber": {"placeholders":{"name":{}}},
   "settings_about": "关于",
   "settings_version": "版本 {version}",
   "settings_openSource": "开源项目",
@@ -370,6 +461,10 @@
   "generation_history": "历史",
   "generation_historyRecord": "历史记录",
   "agentChat_tab": "聊天",
+  "agentChat_popOutFloating": "弹出为浮窗",
+  "agentChat_dockToSidePanel": "停靠回侧栏",
+  "agentChat_hideFloating": "隐藏浮窗",
+  "agentChat_resizeDockSplit": "调整聊天与历史的分隔",
   "nav_agent": "智能体",
   "agentChat_inputHint": "给 AI 助手发消息…",
   "agentChat_inputHintWithSlash": "给 AI 助手发消息，输入 / 引用技能…",
@@ -401,6 +496,7 @@
       "fileName": {}
     }
   },
+  "agentChat_dropHint": "松开以添加到对话",
   "agentChat_newChat": "新建聊天",
   "agentChat_searchSessions": "搜索聊天",
   "agentChat_send": "发送",
@@ -482,6 +578,7 @@
   "agentChat_toolUpdateGeneration": "修改生成草稿",
   "agentChat_toolCancelGeneration": "取消生成草稿",
   "agentChat_toolSubmitGeneration": "提交生成任务",
+  "agentChat_toolUpscaleImage": "放大图像",
   "agentChat_toolCreateInpaint": "创建手动局部重绘草稿",
   "agentChat_toolListInpaint": "查看局部重绘草稿列表",
   "agentChat_toolInspectInpaint": "查看局部重绘草稿",
@@ -500,6 +597,8 @@
   "@agentChat_addResourceFailed": {"placeholders":{"error":{"type":"String"}}},
   "agentChat_approvalEstimatedAnlas": "预计消耗：{cost} Anlas",
   "@agentChat_approvalEstimatedAnlas": {"placeholders": {"cost": {"type": "int"}}},
+  "agentChat_approvalFileTarget": "将写入文件：{path}",
+  "@agentChat_approvalFileTarget": {"placeholders": {"path": {"type": "String"}}},
   "agentChat_needSetup": "未配置聊天模型。请先在设置中添加支持工具调用的供应商。",
   "agentChat_heroTitle": "今天想做什么？",
   "agentChat_heroSubtitle": "准备生成角色提示词、整理灵感或优化设置。",
@@ -515,6 +614,12 @@
   "@agentChat_compactFailed": {"placeholders":{"error":{"type":"String"}}},
   "agentChat_requestFailed": "请求失败，请重试。",
   "agentChat_errorDetails": "错误详情",
+  "agentChat_autoRetryCountdown": "第 {attempt}/{maxAttempts} 次自动重试，{seconds} 秒后开始",
+  "@agentChat_autoRetryCountdown": {"placeholders": {"attempt": {"type": "int"}, "maxAttempts": {"type": "int"}, "seconds": {"type": "int"}}},
+  "agentChat_autoRetryStarting": "正在进行第 {attempt}/{maxAttempts} 次自动重试",
+  "@agentChat_autoRetryStarting": {"placeholders": {"attempt": {"type": "int"}, "maxAttempts": {"type": "int"}}},
+  "agentChat_autoRetryExhausted": "已自动重试 {count} 次",
+  "@agentChat_autoRetryExhausted": {"placeholders": {"count": {"type": "int"}}},
   "agentChat_modelLabel": "模型",
   "agentChat_modelPickerTitle": "选择模型",
   "agentChat_searchModels": "搜索模型",
@@ -533,7 +638,9 @@
   "agentChat_permissionAsk": "询问模式",
   "agentChat_permissionAskDescription": "敏感操作执行前询问",
   "agentChat_permissionFull": "完全访问",
-  "agentChat_permissionFullDescription": "不询问并允许访问工作区外文件",
+  "agentChat_permissionFullDescription": "仅删除已存数据或消耗 Anlas 时询问，可访问工作区外文件",
+  "agentChat_permissionAutopilot": "全自动",
+  "agentChat_permissionAutopilotDescription": "消耗 Anlas 不再询问，仅删除已存数据或达到高消耗阈值时询问",
   "agentChat_approvalTitle": "允许执行 {toolName}？",
   "@agentChat_approvalTitle": {
     "placeholders": {
@@ -543,22 +650,84 @@
   "agentChat_approvalDescription": "此工具会读取本地数据、修改应用状态或产生费用。",
   "agentChat_approvalAllow": "允许一次",
   "agentChat_approvalDeny": "拒绝",
+  "mcpApproval_title": "外部智能体 {client} 请求授权",
+  "@mcpApproval_title": {
+    "placeholders": {
+      "client": {}
+    }
+  },
+  "mcpApproval_expiresIn": "{seconds} 秒后自动拒绝",
+  "@mcpApproval_expiresIn": {
+    "placeholders": {
+      "seconds": {}
+    }
+  },
+  "mcpApproval_unknownClient": "未知客户端",
   "generation_failedStreamSnapshot": "失败快照",
   "generation_failedStreamSnapshotHint": "生成未完成，仅保留最后一帧预览；不可保存、收藏或用于图生图",
   "generation_noHistory": "暂无历史记录",
   "generation_clearHistory": "清除历史记录",
   "generation_clearHistoryConfirm": "确定要清除所有历史记录吗？此操作不可撤销。",
+  "generation_deleteImageConfirm": "从历史记录中删除这张图片？此操作不可撤销。",
+  "generation_deleteImageWithFileConfirm": "从历史记录中删除这张图片，并永久删除本地图库中的文件「{fileName}」？此操作不可撤销。",
+  "@generation_deleteImageWithFileConfirm": {
+    "placeholders": {
+      "fileName": {}
+    }
+  },
+  "generation_deleteImagesConfirm": "从历史记录中删除选中的 {count} 张图片？此操作不可撤销。",
+  "@generation_deleteImagesConfirm": {
+    "placeholders": {
+      "count": {}
+    }
+  },
+  "generation_deleteImagesWithFilesConfirm": "从历史记录中删除选中的 {count} 张图片，并永久删除其中 {fileCount} 个已保存到本地图库的文件？此操作不可撤销。",
+  "@generation_deleteImagesWithFilesConfirm": {
+    "placeholders": {
+      "count": {},
+      "fileCount": {}
+    }
+  },
+  "generation_deleteConfirmSkipForSession": "本次运行期间不再询问",
+  "generation_deleteImageFilesFailed": "图片已从历史记录移除，但有 {count} 个本地文件删除失败：{error}",
+  "@generation_deleteImageFilesFailed": {
+    "placeholders": {
+      "count": {},
+      "error": {}
+    }
+  },
   "generation_model": "模型",
+  "generation_modelMode": "模式",
+  "generation_modelModeAnime": "动漫",
+  "generation_modelModeFurry": "兽人",
+  "generation_effort": "生成档位",
+  "generation_effortMedium": "节约",
+  "generation_effortHigh": "标准",
+  "generation_effortUnavailableHint": "节约档不使用此项",
+  "generation_effortNegativeLocked": "节约档不发送",
+  "generation_effortNegativeLockedHint": "节约档不发送负向提示词，只使用「{ucPreset}」负面预设。已填写的内容会保留，切回标准档后继续生效",
+  "@generation_effortNegativeLockedHint": {
+    "placeholders": {
+      "ucPreset": {}
+    }
+  },
   "generation_opusUsageRemaining": "Opus 免费生成剩余 {percent}%",
   "generation_opusUsageEstimate": "约可再生成 {count} 张",
-  "generation_opusUsageRefill": "额度会随时间自动恢复",
+  "generation_opusUsageRefillRate": "当前每天恢复 {percent}%（约 {count} 张）",
+  "generation_opusUsageRefillPaused": "超过 100% 时暂停恢复",
   "generation_opusUsageExhausted": "Opus 免费额度已用完，V5 生成将消耗 Anlas，额度会随时间自动恢复",
+  "generation_opusUsagePoolsTitle": "Opus 免费生成剩余额度",
+  "generation_opusUsageRegularPool": "常规额度 {percent}%",
+  "generation_opusUsageExtraPool": "额外用量 +{percent}%（不会自动恢复）",
+  "generation_opusUsageCombinedEstimate": "两项合计约可再生成 {count} 张",
   "generation_imageSize": "图像尺寸",
   "generation_transparentBackground": "透明背景",
   "generation_e2eUpscaleHint": "服务端输出 {size}",
   "generation_sampler": "采样器",
   "generation_steps": "步数: {steps}",
+  "generation_stepsLabel": "步数",
   "generation_cfgScale": "CFG 强度：{scale}",
+  "generation_cfgScaleLabel": "CFG 强度",
   "generation_seed": "种子",
   "generation_previewApplySeed": "使用当前图片的种子",
   "generation_imageComparison": "对比",
@@ -585,6 +754,7 @@
   "generation_smeaDyn": "SMEA DYN",
   "generation_smeaDescription": "高分辨率采样器会在超过一定图像尺寸时自动使用",
   "generation_cfgRescale": "CFG 重缩放：{value}",
+  "generation_cfgRescaleLabel": "CFG 重缩放",
   "generation_noiseSchedule": "噪声调度",
   "prompt_positive": "正面",
   "prompt_negative": "负面",
@@ -661,13 +831,19 @@
   "prompt_smartAutocomplete": "智能补全",
   "prompt_smartAutocompleteSubtitle": "输入时显示标签建议",
   "prompt_autoFormat": "自动格式化",
-  "prompt_autoFormatSubtitle": "中文逗号转英文、标签内空格转下划线（保留换行）",
+  "prompt_autoFormatSubtitle": "按空格偏好整理逗号与标签，保留换行与引号内文字",
+  "prompt_replaceUnderscores": "标签用空格代替下划线",
+  "prompt_replaceUnderscoresSubtitle": "补全插入与自动格式化共用此偏好，颜文字保留下划线",
   "prompt_highlightEmphasis": "高亮强调",
   "prompt_highlightEmphasisSubtitle": "括号和权重语法高亮显示",
   "prompt_sdSyntaxAutoConvert": "SD语法自动转换",
   "prompt_sdSyntaxAutoConvertSubtitle": "失焦时将SD权重语法转换为NAI格式",
+  "prompt_separateNumericWeightClosing": "数字结尾标签补空格",
+  "prompt_separateNumericWeightClosingSubtitle": "在 :: 前补空格，避免 year_2025:: 被读成新权重",
   "prompt_resolveAliasOnCopy": "复制时展开词库",
   "prompt_resolveAliasOnCopySubtitle": "复制或剪切时把 <词库名> 替换为词库内容",
+  "prompt_detectMultiCharacterOnPaste": "粘贴时识别多角色",
+  "prompt_detectMultiCharacterOnPasteSubtitle": "粘贴含 | 或 COUPLE 等多角色语法时提示导入角色",
   "prompt_regexRulesManage": "正则替换规则…",
   "prompt_regexRulesCount": "已配置 {count} 条规则",
   "@prompt_regexRulesCount": {
@@ -725,6 +901,7 @@
   "regexRules_testNoChange": "无变化",
   "regexRules_testNoRules": "没有启用中的规则",
   "prompt_formatted": "已格式化",
+  "prompt_numericWeightClosingSeparated": "已补权重空格",
   "prompt_cooccurrenceRecommendation": "共现标签推荐",
   "prompt_cooccurrenceRecommendationSubtitle": "选中标签后自动推荐，也可按 Ctrl+Shift+Space 或 Ctrl+单击",
 
@@ -764,7 +941,7 @@
   "img2img_directorTools": "导演工具",
   "img2img_directorToolsHint": "将当前源图送入导演工具处理。处理完成后，可以把结果回填为新的源图继续生成。",
   "img2img_directorPrompt": "附加提示词",
-  "img2img_directorPromptHint": "需要时补充描述，例如目标情绪或上色方向",
+  "img2img_directorPromptHint": "可选，补充想要的效果描述",
   "img2img_directorRun": "运行 {tool}",
   "@img2img_directorRun": {
     "placeholders": {
@@ -787,12 +964,88 @@
       "tool": {}
     }
   },
+  "img2img_directorResultSaveFailed": "{tool} 处理完成，但结果保存失败",
+  "@img2img_directorResultSaveFailed": {
+    "placeholders": {
+      "tool": {}
+    }
+  },
+  "img2img_directorResultSelectedSaveFailed": "{tool} 处理完成，但当前选中的结果保存失败（{failed}/{total} 张失败）",
+  "@img2img_directorResultSelectedSaveFailed": {
+    "placeholders": {
+      "tool": {},
+      "failed": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "img2img_directorResultPartiallySaved": "{tool} 处理完成，{failed}/{total} 张结果保存失败",
+  "@img2img_directorResultPartiallySaved": {
+    "placeholders": {
+      "tool": {},
+      "failed": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
   "img2img_directorApplied": "已将导演工具结果设为新的源图",
+  "img2img_directorResultMasked": "蒙版抠图",
+  "img2img_directorResultGenerated": "生成",
+  "img2img_directorResultBlend": "混合",
+  "img2img_directorResultNumbered": "结果 {index}",
+  "@img2img_directorResultNumbered": {
+    "placeholders": {
+      "index": {
+        "type": "int"
+      }
+    }
+  },
+  "img2img_directorResultWithVariant": "{result} · {variant}",
+  "@img2img_directorResultWithVariant": {
+    "placeholders": {
+      "result": {
+        "type": "String"
+      },
+      "variant": {
+        "type": "String"
+      }
+    }
+  },
   "img2img_directorDefry": "Defry",
   "img2img_directorDefryHint": "降低结果中的噪声或过饱和程度（0 = 关闭，5 = 最强）",
-  "img2img_directorEmotionLevel": "表情强度",
-  "img2img_directorEmotionLevelHint": "AI 改变表情的力度（0 = 轻微，5 = 强烈）",
-  "img2img_directorEmotionPresets": "快速预设",
+  "img2img_directorEmotionLevel": "表情等级",
+  "img2img_directorEmotionLevelHint": "数值越大，表情越弱（0 = 正常，5 = 最弱）",
+  "img2img_directorEmotionMood": "情绪",
+  "img2img_directorEmotionNeutral": "平静",
+  "img2img_directorEmotionHappy": "开心",
+  "img2img_directorEmotionSad": "悲伤",
+  "img2img_directorEmotionAngry": "生气",
+  "img2img_directorEmotionScared": "害怕",
+  "img2img_directorEmotionSurprised": "惊讶",
+  "img2img_directorEmotionTired": "疲惫",
+  "img2img_directorEmotionExcited": "兴奋",
+  "img2img_directorEmotionNervous": "紧张",
+  "img2img_directorEmotionThinking": "思考",
+  "img2img_directorEmotionConfused": "困惑",
+  "img2img_directorEmotionShy": "害羞",
+  "img2img_directorEmotionDisgusted": "厌恶",
+  "img2img_directorEmotionSmug": "得意",
+  "img2img_directorEmotionBored": "无聊",
+  "img2img_directorEmotionLaughing": "大笑",
+  "img2img_directorEmotionIrritated": "烦躁",
+  "img2img_directorEmotionAroused": "情动",
+  "img2img_directorEmotionEmbarrassed": "尴尬",
+  "img2img_directorEmotionWorried": "担心",
+  "img2img_directorEmotionLove": "爱意",
+  "img2img_directorEmotionDetermined": "坚定",
+  "img2img_directorEmotionHurt": "受伤/难过",
+  "img2img_directorEmotionPlayful": "调皮",
   "img2img_directorApplyAsSource": "设为源图",
   "img2img_directorSourceImage": "源图",
   "img2img_variationsStarted": "正在生成变体...",
@@ -802,6 +1055,42 @@
   "img2img_directorColorize": "上色",
   "img2img_directorEmotion": "表情修复",
   "img2img_directorDeclutter": "杂线清理",
+  "img2img_directorPixelSnap": "像素对齐",
+  "img2img_directorPixelSnapHint": "完全在本机计算，不消耗 Anlas、不联网。大图可能要几秒到十几秒。",
+  "img2img_directorPixelSnapPalette": "调色板",
+  "img2img_directorPixelSnapPaletteOff": "关闭",
+  "img2img_directorPixelSnapPaletteAuto": "自动",
+  "img2img_directorPixelSnapPaletteCustom": "自定义",
+  "img2img_directorPixelSnapColors": "色数",
+  "img2img_directorPixelSnapAvoidOverRefining": "不过度细化",
+  "img2img_directorPixelSnapAvoidOverRefiningOn": "始终保留检测到的像素尺寸。",
+  "img2img_directorPixelSnapAvoidOverRefiningOff": "更细的像素尺寸更贴合原图时会改用它。",
+  "img2img_directorPixelSnapUpscale": "放大回原尺寸",
+  "img2img_directorPixelSnapUpscaleOn": "结果会放大到接近原图的大小。",
+  "img2img_directorPixelSnapUpscaleOff": "结果保持对齐后的像素尺寸。",
+  "img2img_directorPixelSnapSummary": "{width}×{height} 像素 · {colors} 色",
+  "@img2img_directorPixelSnapSummary": {
+    "placeholders": {
+      "width": {"type": "int"},
+      "height": {"type": "int"},
+      "colors": {"type": "int"}
+    }
+  },
+  "img2img_directorPixelSnapSummaryNoPalette": "{width}×{height} 像素",
+  "@img2img_directorPixelSnapSummaryNoPalette": {
+    "placeholders": {
+      "width": {"type": "int"},
+      "height": {"type": "int"}
+    }
+  },
+  "img2img_directorPixelSnapNoGrid": "这张图里找不到重复的像素网格。",
+  "img2img_directorPixelSnapBlank": "这张图整幅都是透明的。",
+  "img2img_directorPixelSnapDownscaled": "图片超过尺寸上限，已先降采样再分析。",
+  "img2img_directorCancel": "取消",
+  "img2img_directorStageAnalyzing": "分析图像",
+  "img2img_directorStageSearchingPitch": "搜索像素尺寸",
+  "img2img_directorStageRefiningGrid": "细化网格",
+  "img2img_directorStageFinishing": "生成结果",
   "img2img_enhance": "增强",
   "img2img_enhanceHint": "增强会继续参考当前提示词，对源图进行潜空间放大与再生成。",
   "img2img_enhanceMagnitude": "幅度",
@@ -874,7 +1163,17 @@
 
   "editor_tolerance": "容差",
   "editor_intensity": "强度",
-  "editor_sourcePoint": "Alt+点击设置源点",
+  "editor_cloneStampSetSource": "设置源点",
+  "editor_cloneStampSetSourceTooltip": "开启后，下一次点击画布的位置设为源点；也可以按住 Alt 点击画布",
+  "editor_cloneStampPickingHint": "点击画布选取仿制源点",
+  "editor_cloneStampNoSourceHint": "尚未设置源点，开启「设置源点」后点击画布",
+  "editor_cloneStampSourceReadout": "源点: X {x}, Y {y}",
+  "@editor_cloneStampSourceReadout": {
+    "placeholders": {
+      "x": {"type": "int"},
+      "y": {"type": "int"}
+    }
+  },
 
   "editor_brushPresets": "笔刷预设",
   "editor_size": "大小",
@@ -890,8 +1189,8 @@
   "editor_toolFill": "填充",
   "editor_toolMagicWand": "魔棒",
   "editor_magicWandMode": "选择方式",
-  "editor_magicWandSmartObject": "智能对象（EfficientViT）",
-  "editor_magicWandColorArea": "颜色区域（洪水填充）",
+  "editor_magicWandSmartObject": "智能对象",
+  "editor_magicWandColorArea": "颜色区域",
   "editor_magicWandSmartHelp": "点击要选择的对象。首次使用会从 MIT Han Lab 下载约 133 MiB 的 EfficientViT-SAM L0 模型（Apache-2.0），之后保存在本地。",
   "editor_magicWandColorHelp": "点击颜色相近的连续区域。适合边界清晰的纯色图像，无需下载模型。",
   "editor_magicWandInvert": "反选结果",
@@ -915,6 +1214,9 @@
   "editor_zoomIn": "放大",
   "editor_zoomOut": "缩小",
   "editor_fitToWindow": "适应窗口",
+  "editor_viewOptions": "视图选项",
+  "editor_menuGroupView": "视图",
+  "editor_menuGroupCanvas": "画布",
   "editor_tempColorPickerShortcut": "Alt+点击: 临时取色",
   "editor_shortcutHelpTitle": "快捷键帮助",
   "editor_shortcutPaintTools": "绘画工具",
@@ -926,6 +1228,7 @@
   "editor_shortcutHistoryActions": "历史操作",
   "editor_shortcutSelectionActions": "选区操作",
   "editor_shortcutTemporaryColorPicker": "临时拾色器",
+  "editor_shortcutCloneStampSource": "设置仿制图章源点",
   "editor_shortcutRectSelection": "矩形选区",
   "editor_shortcutEllipseSelection": "椭圆选区",
   "editor_shortcutLassoSelection": "套索选区",
@@ -981,6 +1284,7 @@
   "editor_effectBlur": "高斯模糊",
   "editor_effectSharpen": "锐化",
   "editor_effectCropToSelection": "裁剪到选区",
+  "editor_cropNeedsSelection": "请先建立选区；裁剪会原位保留选区外接矩形内的像素。",
   "editor_effectRotateLeft": "向左旋转 90°",
   "editor_effectRotateRight": "向右旋转 90°",
   "editor_effectFlipHorizontal": "水平翻转",
@@ -1189,6 +1493,7 @@
       "value": {}
     }
   },
+  "editor_focusMinimumContextAreaLabel": "最小上下文区域",
   "editor_canvasSizeTitle": "画布尺寸",
   "editor_presetSize": "预设尺寸",
   "editor_customSize": "自定义",
@@ -1324,8 +1629,6 @@
     }
   },
   "gallery_upscale": "放大",
-  "gallery_sentToImg2Img": "图片已发送到图生图",
-  "gallery_sentToReversePrompt": "图片已发送到反推模块",
   "gallery_sendFailed": "发送失败: {error}",
   "@gallery_sendFailed": {
     "placeholders": {
@@ -1483,6 +1786,14 @@
   "onlineGallery_blacklistMenuHint": "隐藏包含此标签的画廊图片",
   "onlineGallery_outputFilteredTagTooltip": "此标签会在复制、发送和加入队列时被剔除；右键可管理",
   "onlineGallery_tagContextMenuTooltip": "右键可加入黑名单或输出过滤",
+  "onlineGallery_outputFilteredTagTooltipTouch": "此标签会在复制、发送和加入队列时被剔除；长按可管理",
+  "@onlineGallery_outputFilteredTagTooltipTouch": {
+    "description": "Tooltip for an output-filtered tag chip on touch devices; mirrors onlineGallery_outputFilteredTagTooltip."
+  },
+  "onlineGallery_tagContextMenuTooltipTouch": "长按可加入黑名单或输出过滤",
+  "@onlineGallery_tagContextMenuTooltipTouch": {
+    "description": "Tooltip for a tag chip on touch devices, where there is no right-click; mirrors onlineGallery_tagContextMenuTooltip."
+  },
   "onlineGallery_outputFilterTagAdded": "已将 {tag} 加入输出过滤",
   "@onlineGallery_outputFilterTagAdded": {
     "placeholders": {
@@ -1696,11 +2007,7 @@
   "tooltip_fullscreenEdit": "全屏编辑",
   "tooltip_decreaseWeight": "减少权重 [-5%]",
   "tooltip_increaseWeight": "增加权重 [+5%]",
-  "tooltip_edit": "编辑",
   "tooltip_copy": "复制",
-  "tooltip_delete": "删除",
-  "tooltip_enable": "启用",
-  "tooltip_disable": "禁用",
   "tooltip_resetWeight": "点击重置为100%",
 
   "upscale_scale": "放大倍数",
@@ -1735,16 +2042,7 @@
   "gelbooru_unknownError": "Gelbooru 验证失败，请稍后重试。",
 
   "weight_title": "权重",
-  "weight_reset": "重置",
-  "weight_done": "完成",
-  "weight_noBrackets": "无括号",
-  "weight_editTag": "编辑标签",
-  "weight_tagName": "标签名称",
-  "weight_tagNameHint": "输入标签名称...",
 
-  "tag_enable": "启用",
-  "tag_disable": "禁用",
-  "tag_delete": "删除",
   "tag_addTag": "添加标签",
 
   "tagCategory_artist": "艺术家",
@@ -1895,6 +2193,15 @@
       "suggestedHeight": { "type": "int" }
     }
   },
+  "generation_invalidInpaintFrameHint": "请将取景框移到图像范围内，并在框内涂画蒙版，使其缩放到输出尺寸后仍覆盖像素。",
+  "generation_unreadableInpaintImageHint": "无法读取底图或蒙版。请重新载入底图或蒙版后重试。",
+  "generation_emptyInpaintMask": "重绘蒙版采样后为空",
+  "generation_emptyInpaintMaskHint": "蒙版太细或太小，按 {gridSize} 像素网格采样后没有留下可重绘的区域。请加粗或扩大蒙版后重试。",
+  "@generation_emptyInpaintMaskHint": {
+    "placeholders": {
+      "gridSize": { "type": "int" }
+    }
+  },
 
   "api_error_429": "并发限制",
   "api_error_429_hint": "请求过于频繁，请稍后重试（常见于合租账号）",
@@ -2003,10 +2310,16 @@
   "preciseRef_referenceType": "参考类型",
   "preciseRef_strength": "参考强度",
   "preciseRef_fidelity": "保真度",
-  "preciseRef_v4Only": "此功能仅 V4.5 模型支持",
+  "preciseRef_supportedModels": "精准参考适用于 V4.5 和 V5 模型",
   "preciseRef_typeCharacter": "角色",
   "preciseRef_typeStyle": "风格",
   "preciseRef_typeCharacterAndStyle": "角色+风格",
+  "preciseRef_typeOutfit": "服装",
+  "preciseRef_preferSameOutfit": "优先同款服装",
+  "preciseRef_outfitUnsupported": "当前模型不支持服装参考，生成时将跳过。",
+  "preciseRef_inpaintUnsupported": "当前模型局部重绘时不会发送精准参考。",
+  "preciseRef_limitExceeded": "精准参考最多 {max} 个，请移除或禁用多余的参考。",
+  "@preciseRef_limitExceeded": {"placeholders": {"max": {"type": "int"}}},
   "preciseRef_costHint": "使用精准参考会消耗额外点数",
   "preciseRef_costBadge": "消耗点数",
   "preciseRef_dropToAdd": "松开后添加精准参考",
@@ -2232,6 +2545,26 @@
       "name": {}
     }
   },
+  "randomManager_branchOutputBadge": "由「{name}」的条件分支输出",
+  "@randomManager_branchOutputBadge": {
+    "placeholders": {
+      "name": {"type": "String"}
+    }
+  },
+  "randomManager_branchOutputBadgeMultiple": "由「{name}」等 {count} 处条件分支输出",
+  "@randomManager_branchOutputBadgeMultiple": {
+    "placeholders": {
+      "name": {"type": "String"},
+      "count": {"type": "int"}
+    }
+  },
+  "randomManager_branchOutputTooltip": "这个词组不参与类别的常规抽取，只在引用它的分支被选中时输出；停用或删除这些分支后恢复常规抽取。点按可跳转到该分支",
+  "randomManager_deleteBranchTargetWarning": "「{names}」的条件分支引用了这个词组，删除后这些分支里的这一项会显示为已失效",
+  "@randomManager_deleteBranchTargetWarning": {
+    "placeholders": {
+      "names": {"type": "String"}
+    }
+  },
   "randomManager_tagGroupCount": "{count} 个词组",
   "@randomManager_tagGroupCount": {
     "placeholders": {
@@ -2239,10 +2572,7 @@
     }
   },
   "randomManager_categories": "类别",
-  "randomManager_tagGroups": "词组",
-  "randomManager_tags": "标签",
   "randomManager_addTagGroup": "添加词组",
-  "randomManager_locked": "已锁定",
   "randomManager_addCategory": "新增类别",
   "randomManager_noCategories": "暂无类别",
   "randomManager_noCategoriesHint": "点击“新增类别”开始配置",
@@ -2384,12 +2714,8 @@
   },
   "randomManager_previewHint": "尚未生成样例",
   "randomManager_moreActions": "更多操作",
-  "scope_global": "主提示词",
-  "scope_globalTooltip": "提示词将出现在主提示词区域\n适合：背景、场景、画面风格等",
   "scope_character": "角色",
-  "scope_characterTooltip": "提示词将只出现在角色提示词内\n每个角色单独生成\n适合：发色、眵色、服装、表情等",
   "scope_all": "通用",
-  "scope_allTooltip": "提示词同时出现在主提示词和角色提示词\n适合：姿势、互动等通用标签",
 
   "vibeParseFailed": "无法解析 Vibe 文件",
 
@@ -2404,6 +2730,7 @@
   },
   "localGallery_indexingLocalImages": "索引本地图片中...",
   "localGallery_emptyTitle": "暂无本地图片",
+  "localGallery_emptyScopeTitle": "这里还没有图片",
   "localGallery_emptySubtitle": "生成的图片将保存在此处",
   "localGallery_noMatchingResults": "无匹配结果",
   "localGallery_loadingGroupedImages": "加载分组图片中...",
@@ -2447,6 +2774,14 @@
     }
   },
   "localGallery_imageDeleted": "图片已删除",
+  "localGallery_deleteCleanupFailed": "图片文件已不存在，清理图库记录时出错。{error}",
+  "@localGallery_deleteCleanupFailed": {
+    "placeholders": {
+      "error": {}
+    }
+  },
+  "localGallery_deleteRegistryCleanupFailed": "无法清理衍生图片登记。",
+  "localGallery_deleteIndexCleanupFailed": "无法更新图库记录。",
   "localGallery_deleteFailed": "删除失败: {error}",
   "@localGallery_deleteFailed": {
     "placeholders": {
@@ -2461,7 +2796,6 @@
   "localGallery_confirmMoveImageContent": "将把图片移动到目标分类文件夹。请确认不是误拖拽。",
   "localGallery_confirmMove": "确认移动",
   "localGallery_imageMovedToCategory": "图片已移动到分类",
-  "localGallery_categoriesSynced": "分类已与文件夹同步",
   "localGallery_saveDirectoryNotSet": "未设置保存目录",
   "localGallery_folderNotFound": "文件夹不存在",
   "localGallery_openFolderFailed": "打开文件夹失败: {error}",
@@ -2602,12 +2936,12 @@
 
   "statistics_title": "统计仪表盘",
   "statistics_noData": "暂无统计数据",
-  "statistics_noTagData": "暂无标签数据",
   "statistics_generateFirst": "先生成一些图片吧",
   "statistics_totalImages": "总图片数",
   "statistics_totalSize": "总大小",
   "statistics_favorites": "收藏",
-  "statistics_samplerDistribution": "采样器分布",
+  "statistics_parameterDistribution": "参数分布",
+  "statistics_parameterOther": "其他",
   "statistics_additionalStats": "其他统计",
   "statistics_averageFileSize": "平均文件大小",
   "statistics_withMetadata": "有元数据的图片",
@@ -2890,19 +3224,7 @@
       "error": {"type": "String"}
     }
   },
-  "collectionSelect_dialogTitle": "选择集合",
   "collectionSelect_filterHint": "搜索集合...",
-  "collectionSelect_noCollections": "暂无集合",
-  "collectionSelect_createCollectionHint": "请先创建一个集合",
-  "collectionSelect_noFilterResults": "没有找到匹配的集合",
-  "collectionSelect_imageCount": "{count} 张图片",
-  "@collectionSelect_imageCount": {
-    "placeholders": {
-      "count": {
-        "type": "int"
-      }
-    }
-  },
 
   "statistics_chartTopTags": "热门标签",
   "statistics_chartAspectRatio": "宽高比分布",
@@ -3100,7 +3422,8 @@
   "reversePrompt_localTaggerModelHint": "请在设置中配置模型文件夹",
   "reversePrompt_generalThreshold": "通用标签阈值",
   "reversePrompt_characterThreshold": "角色标签阈值",
-  "reversePrompt_taggerFilterHint": "只输出 General / Character 分类标签；Rating、Artist、Copyright、Meta 等分类会被过滤。",
+  "reversePrompt_taggerCategories": "输出分类",
+  "reversePrompt_keepOneTaggerCategory": "至少保留一个输出分类",
   "reversePrompt_replacementEmptyHint": "替换目标角色为空。这里从词库选择一个角色作为替换目标，不会注入到正向提示词。",
   "reversePrompt_selectReplacementCharacter": "从词库选择替换目标角色",
   "reversePrompt_selectReplacementTargetTitle": "选择替换目标角色",
@@ -3211,25 +3534,137 @@
   },
   "promptAssistant_provider": "服务商",
   "promptAssistant_model": "模型",
-  "promptAssistant_noModelsPullFirst": "暂无模型，请先拉取",
-  "promptAssistant_providerManagement": "服务商管理",
-  "promptAssistant_providerManagementSubtitle": "支持 OpenAI Chat / Responses、Anthropic、Gemini、DeepSeek、LM Studio、Ollama、Pollinations 和自定义兼容端点",
-  "promptAssistant_apiKeyConfigured": "API Key: 已配置",
-  "promptAssistant_apiKeyNotConfigured": "API Key: 未配置",
-  "promptAssistant_supportsImageInput": "支持图片输入",
-  "promptAssistant_textOnly": "仅文本",
-  "promptAssistant_connectionConfig": "连接配置",
-  "promptAssistant_pullModelList": "拉取模型列表",
-  "promptAssistant_editProvider": "编辑服务商",
-  "promptAssistant_deleteProvider": "删除服务商",
-  "promptAssistant_pullingModels": "正在拉取模型列表...",
-  "promptAssistant_emptyModelList": "服务返回空模型列表",
-  "promptAssistant_modelsSynced": "已同步 {count} 个模型",
-  "@promptAssistant_modelsSynced": {
+  "promptAssistant_noModelsPullFirst": "暂无模型，请先在模型服务中添加",
+  "settings_modelServices": "模型服务",
+  "modelServices_searchProviders": "搜索服务商",
+  "modelServices_noProviderMatches": "没有匹配的服务商",
+  "modelServices_emptyTitle": "添加第一个服务商",
+  "modelServices_emptyBody": "服务商提供提示词助手和智能体使用的模型。",
+  "modelServices_disabled": "已停用",
+  "modelServices_enableProvider": "启用服务商",
+  "modelServices_moreActions": "更多操作",
+  "modelServices_connection": "连接",
+  "modelServices_apiKey": "API 密钥",
+  "modelServices_apiKeySavedHint": "已保存，输入新密钥即可替换",
+  "modelServices_apiKeyOptional": "此服务商可以不填",
+  "modelServices_showApiKey": "显示密钥",
+  "modelServices_hideApiKey": "隐藏密钥",
+  "modelServices_clearApiKey": "清除已保存的密钥",
+  "modelServices_apiKeyCleared": "API 密钥已清除",
+  "modelServices_vertexCredential": "凭据",
+  "modelServices_vertexCredentialHint": "服务账号 JSON、gcloud ADC JSON 或 API 密钥",
+  "modelServices_vertexCredentialInvalid": "凭据无效：{error}",
+  "@modelServices_vertexCredentialInvalid": {
+    "placeholders": {
+      "error": {}
+    }
+  },
+  "modelServices_vertexImportCredential": "从文件导入",
+  "modelServices_vertexCredentialImported": "凭据已导入",
+  "modelServices_vertexCredentialReadFailed": "无法读取所选文件",
+  "modelServices_vertexCredentialCleared": "凭据已清除",
+  "modelServices_vertexProjectId": "项目 ID",
+  "modelServices_vertexProjectIdHint": "留空则使用凭据中的项目",
+  "modelServices_vertexLocation": "区域",
+  "modelServices_vertexLocationHint": "global、us-central1 等",
+  "modelServices_vertexLocationInvalid": "区域只能包含小写字母、数字和连字符",
+  "modelServices_vertexBaseUrlHint": "留空则按区域自动选择",
+  "modelServices_baseUrl": "API 地址",
+  "modelServices_checkConnection": "检查连接",
+  "modelServices_connectionOk": "连接正常，接口列出了 {count} 个模型",
+  "@modelServices_connectionOk": {
     "placeholders": {
       "count": {}
     }
   },
+  "modelServices_connectionFailed": "连接失败：{error}",
+  "@modelServices_connectionFailed": {
+    "placeholders": {
+      "error": {}
+    }
+  },
+  "modelServices_models": "模型",
+  "modelServices_modelCount": "{count} 个模型",
+  "@modelServices_modelCount": {
+    "placeholders": {
+      "count": {}
+    }
+  },
+  "modelServices_noModels": "还没有模型。可以从接口列表挑选，或手动添加模型 ID。",
+  "modelServices_manageModels": "管理模型",
+  "modelServices_addModel": "手动添加",
+  "modelServices_manageModelsTitle": "{provider} 的模型",
+  "@modelServices_manageModelsTitle": {
+    "placeholders": {
+      "provider": {}
+    }
+  },
+  "modelServices_addGroup": "添加 {group} 整组",
+  "@modelServices_addGroup": {
+    "placeholders": {
+      "group": {}
+    }
+  },
+  "modelServices_removeGroup": "移除 {group} 整组",
+  "@modelServices_removeGroup": {
+    "placeholders": {
+      "group": {}
+    }
+  },
+  "modelServices_notListed": "接口已不再列出",
+  "modelServices_reasoning": "推理",
+  "modelServices_vision": "视觉",
+  "modelServices_contextWindow": "上下文 {size}",
+  "@modelServices_contextWindow": {
+    "placeholders": {
+      "size": {}
+    }
+  },
+  "modelServices_modelId": "模型 ID",
+  "modelServices_modelIdRequired": "请输入模型 ID",
+  "modelServices_modelExists": "这个服务商已经有这个模型",
+  "modelServices_displayName": "显示名称",
+  "modelServices_displayNameHint": "留空则使用 {name}",
+  "@modelServices_displayNameHint": {
+    "placeholders": {
+      "name": {}
+    }
+  },
+  "modelServices_editModel": "编辑模型",
+  "modelServices_removeModel": "移除模型",
+  "modelServices_removeModelConfirm": "从这个服务商移除 {name}？",
+  "@modelServices_removeModelConfirm": {
+    "placeholders": {
+      "name": {}
+    }
+  },
+  "modelServices_removeModelInUse": "{name} 正被{usages}使用。移除后，任务路由会改用这个服务商剩下的模型，智能体需要重新选择模型。",
+  "@modelServices_removeModelInUse": {
+    "placeholders": {
+      "name": {},
+      "usages": {}
+    }
+  },
+  "modelServices_usageSeparator": "、",
+  "modelServices_cleanStaleModels": "清理失效模型",
+  "modelServices_addAllModels": "添加全部模型",
+  "modelServices_staleModelCount": "{count} 个失效模型",
+  "@modelServices_staleModelCount": {
+    "placeholders": {
+      "count": {}
+    }
+  },
+  "modelServices_addAllConfirm": "要向这个服务商添加 {count} 个模型吗？",
+  "@modelServices_addAllConfirm": {
+    "placeholders": {
+      "count": {}
+    }
+  },
+  "promptAssistant_supportsImageInput": "支持图片输入",
+  "promptAssistant_textOnly": "仅文本",
+  "promptAssistant_editProvider": "编辑服务商",
+  "promptAssistant_deleteProvider": "删除服务商",
+  "promptAssistant_emptyModelList": "服务返回空模型列表",
   "promptAssistant_pullModelsFailed": "拉取模型失败: {error}",
   "@promptAssistant_pullModelsFailed": {
     "placeholders": {
@@ -3246,16 +3681,7 @@
   "promptAssistant_allowImageInput": "允许发送图片输入",
   "promptAssistant_allowImageInputSubtitle": "仅在模型和服务商实际支持视觉输入时启用",
   "promptAssistant_apiKeyLeaveEmpty": "API Key (留空不改)",
-  "promptAssistant_connectionTitle": "{name} 连接配置",
-  "@promptAssistant_connectionTitle": {
-    "placeholders": {
-      "name": {}
-    }
-  },
   "promptAssistant_baseUrlHint": "例如: https://api.openai.com/v1",
-  "promptAssistant_clearCurrentApiKey": "清空当前 API Key",
-  "promptAssistant_protocolSupportsImagePayload": "当前协议支持图片载荷，仍需模型本身支持视觉输入",
-  "promptAssistant_protocolTextOnlyWarning": "当前协议默认仅文本，开启后也可能被服务端拒绝",
   "promptAssistant_addRuleTitle": "新增规则",
   "promptAssistant_editRuleTitle": "编辑规则",
   "promptAssistant_taskType": "任务类型",
@@ -3551,7 +3977,7 @@
       "error": {}
     }
   },
-  "settings_proxyRestartHint": "代理设置已更改，建议重启应用",
+  "settings_proxyAppliedHint": "代理设置已应用，新请求立即生效",
 
   "tagLibrary_categoryNameExists": "该分类名称已存在",
   "tagLibrary_addToLibrary": "收藏到词库",
@@ -3580,6 +4006,7 @@
   "queue_noTasksToStart": "队列为空，无法开始",
 
   "queue_executionProgress": "执行进度",
+  "queue_stoppedStorageWriteFailed": "队列写入本地存储失败，已停止。请检查磁盘空间或访问权限后重新开始。",
   "queue_totalTasks": "总数",
   "queue_completedTasks": "已完成",
   "queue_failedTasks": "失败",
@@ -3650,6 +4077,47 @@
   "queue_size": "尺寸",
   "queue_addCurrentTask": "加入当前任务",
   "queue_taskAdded": "已加入队列",
+  "queue_imagesUnavailable": "队列图片暂时无法读取",
+  "queue_imagesUnavailableHint": "图片文件可能正被其他程序占用（例如杀毒软件），请稍后重试",
+  "queue_enqueueStartedUnsaved": "队列保存失败，但已有 {count} 个任务开始执行，请勿重复添加",
+  "@queue_enqueueStartedUnsaved": {
+    "placeholders": {
+      "count": {}
+    }
+  },
+  "queue_enqueueStartedAndWithdrawn": "队列保存失败：{started} 个任务已开始执行，请勿重复添加；另有 {withdrawn} 个任务已撤回，未开始执行",
+  "@queue_enqueueStartedAndWithdrawn": {
+    "placeholders": {
+      "started": {},
+      "withdrawn": {}
+    }
+  },
+  "queue_enqueueQueued": "{count} 个任务已保存到队列",
+  "@queue_enqueueQueued": {
+    "placeholders": {
+      "count": {}
+    }
+  },
+  "queue_enqueueWithdrawn": "队列保存失败，{count} 个任务已撤回，未开始执行",
+  "@queue_enqueueWithdrawn": {
+    "placeholders": {
+      "count": {}
+    }
+  },
+  "queue_enqueueRemoved": "{count} 个任务在保存完成前已被移出，未计为成功加入",
+  "@queue_enqueueRemoved": {
+    "placeholders": {
+      "count": {}
+    }
+  },
+  "queue_enqueueFailedBeforeSaved": "{count} 个任务在保存完成前已失败，未计为成功加入，请检查队列或「失败」列表",
+  "@queue_enqueueFailedBeforeSaved": {
+    "placeholders": {
+      "count": {}
+    }
+  },
+  "queue_enqueueIndexUnsaved": "队列索引仍未保存成功，重启后已撤回或已移出的任务可能仍在队列里，请检查后再重新添加",
+  "queue_enqueueUnexpectedError": "入队时发生意外错误，请检查队列状态后再重试",
   "queue_negativePromptFromMain": "负向提示词将使用主界面设置",
 
   "queue_pinToTop": "置顶",
@@ -3688,6 +4156,18 @@
   "@settings_queueRetryIntervalValue": {
     "placeholders": {
       "seconds": {}
+    }
+  },
+  "settings_decreaseValue": "减少{field}",
+  "@settings_decreaseValue": {
+    "placeholders": {
+      "field": {}
+    }
+  },
+  "settings_increaseValue": "增加{field}",
+  "@settings_increaseValue": {
+    "placeholders": {
+      "field": {}
     }
   },
   "unit_times": "次",
@@ -3807,6 +4287,30 @@
     }
   },
   "metadataImport_negativePrompt": "负向提示词",
+  "metadataImport_characterMode": "角色导入方式",
+  "metadataImport_characterReplace": "覆盖现有角色",
+  "metadataImport_characterAppend": "增添到末尾",
+  "metadataImport_characterAppendResult": "已增添 {added} 个角色，跳过 {skipped} 个（上限 {limit}）",
+  "@metadataImport_characterAppendResult": {
+    "placeholders": {
+      "added": {"type": "int"},
+      "skipped": {"type": "int"},
+      "limit": {"type": "int"}
+    }
+  },
+  "metadataImport_characterModelConflict": "所选模型最多支持 {limit} 个角色。请更换模型或取消角色导入。",
+  "@metadataImport_characterModelConflict": {
+    "placeholders": {
+      "limit": {"type": "int"}
+    }
+  },
+  "metadataImport_characterAppendModelConflict": "当前已有 {count} 个角色，超过所选模型的上限 {limit} 个。请取消勾选「模型」后增添，或改用「覆盖现有角色」。",
+  "@metadataImport_characterAppendModelConflict": {
+    "placeholders": {
+      "count": {"type": "int"},
+      "limit": {"type": "int"}
+    }
+  },
   "metadataImport_characterPromptsCount": "角色提示词 ({count}个)",
   "@metadataImport_characterPromptsCount": {
     "placeholders": {
@@ -3903,6 +4407,8 @@
   "shortcut_action_reuse_params": "复用参数",
   "shortcut_action_previous_image": "上一张",
   "shortcut_action_next_image": "下一张",
+  "shortcut_action_first_image": "第一张",
+  "shortcut_action_last_image": "最后一张",
   "shortcut_action_zoom_in": "放大",
   "shortcut_action_zoom_out": "缩小",
   "shortcut_action_reset_zoom": "重置缩放",
@@ -4153,104 +4659,6 @@
       "error": {"type": "String"}
     }
   },
-  "vibeBulk_errorEntryNotFoundOrDeleteFailed": "未找到 {item} 或删除失败",
-  "@vibeBulk_errorEntryNotFoundOrDeleteFailed": {
-    "placeholders": {
-      "item": {"type": "String"}
-    }
-  },
-  "vibeBulk_errorDeleteFailed": "删除 {item} 失败：{error}",
-  "@vibeBulk_errorDeleteFailed": {
-    "placeholders": {
-      "item": {"type": "String"},
-      "error": {"type": "String"}
-    }
-  },
-  "vibeBulk_errorEntryNotFound": "未找到条目：{item}",
-  "@vibeBulk_errorEntryNotFound": {
-    "placeholders": {
-      "item": {"type": "String"}
-    }
-  },
-  "vibeBulk_errorMoveFailed": "移动 {item} 失败：{error}",
-  "@vibeBulk_errorMoveFailed": {
-    "placeholders": {
-      "item": {"type": "String"},
-      "error": {"type": "String"}
-    }
-  },
-  "vibeBulk_errorFavoriteFailed": "更新收藏状态失败：{item}",
-  "@vibeBulk_errorFavoriteFailed": {
-    "placeholders": {
-      "item": {"type": "String"}
-    }
-  },
-  "vibeBulk_errorFavoriteFailedWithDetails": "更新 {item} 的收藏状态失败：{error}",
-  "@vibeBulk_errorFavoriteFailedWithDetails": {
-    "placeholders": {
-      "item": {"type": "String"},
-      "error": {"type": "String"}
-    }
-  },
-  "vibeBulk_errorAddTagsFailed": "添加标签失败：{item}",
-  "@vibeBulk_errorAddTagsFailed": {
-    "placeholders": {
-      "item": {"type": "String"}
-    }
-  },
-  "vibeBulk_errorAddTagsFailedWithDetails": "为 {item} 添加标签失败：{error}",
-  "@vibeBulk_errorAddTagsFailedWithDetails": {
-    "placeholders": {
-      "item": {"type": "String"},
-      "error": {"type": "String"}
-    }
-  },
-  "vibeBulk_errorRemoveTagsFailed": "移除标签失败：{item}",
-  "@vibeBulk_errorRemoveTagsFailed": {
-    "placeholders": {
-      "item": {"type": "String"}
-    }
-  },
-  "vibeBulk_errorRemoveTagsFailedWithDetails": "从 {item} 移除标签失败：{error}",
-  "@vibeBulk_errorRemoveTagsFailedWithDetails": {
-    "placeholders": {
-      "item": {"type": "String"},
-      "error": {"type": "String"}
-    }
-  },
-  "vibeBulk_errorExportNoFile": "导出失败：未创建文件",
-  "vibeBulk_errorExportFailed": "导出失败：{error}",
-  "@vibeBulk_errorExportFailed": {
-    "placeholders": {
-      "error": {"type": "String"}
-    }
-  },
-  "vibeBulk_errorFileNotFound": "未找到文件：{item}",
-  "@vibeBulk_errorFileNotFound": {
-    "placeholders": {
-      "item": {"type": "String"}
-    }
-  },
-  "vibeBulk_errorNoVibeData": "{item} 中没有有效的 Vibe 数据",
-  "@vibeBulk_errorNoVibeData": {
-    "placeholders": {
-      "item": {"type": "String"}
-    }
-  },
-  "vibeBulk_errorImportFailed": "从 {item} 导入 Vibe 失败：{error}",
-  "@vibeBulk_errorImportFailed": {
-    "placeholders": {
-      "item": {"type": "String"},
-      "error": {"type": "String"}
-    }
-  },
-  "vibeBulk_errorProcessFileFailed": "处理 {item} 失败：{error}",
-  "@vibeBulk_errorProcessFileFailed": {
-    "placeholders": {
-      "item": {"type": "String"},
-      "error": {"type": "String"}
-    }
-  },
   "vibeBulkTag_actionPreview": "操作预览",
   "vibeDetail_strengthDescription": "控制 Vibe 对生成结果的影响强度",
   "vibeDetail_infoExtractedDescription": "控制从原图提取的信息量（消耗 2 Anlas）",
@@ -4439,12 +4847,6 @@
   },
   "vibe_saveToLibrary_tagHint": "输入标签后点击添加",
   "vibe_maxReached": "已达到最大数量 (16张)",
-  "vibe_addedNamed": "已添加 Vibe: {name}",
-  "@vibe_addedNamed": {
-    "placeholders": {
-      "name": {"type": "String"}
-    }
-  },
   "vibe_addedCount": "已添加 {count} 个 vibes",
   "@vibe_addedCount": {
     "placeholders": {
@@ -4532,6 +4934,86 @@
     }
   },
 
+  "settings_mcpServerPermissionSection": "权限",
+  "settings_mcpServerClientsSection": "客户端",
+  "settings_mcpServerEnable": "启用 MCP 服务器",
+  "settings_mcpServerDisabledText": "默认关闭；开启后只监听本机 127.0.0.1",
+  "settings_mcpServerStartingText": "正在启动本地 MCP 服务...",
+  "settings_mcpServerListeningText": "等待 MCP 客户端连接",
+  "settings_mcpServerErrorText": "启动失败，请查看错误信息",
+  "settings_mcpServerDisabled": "已关闭",
+  "settings_mcpServerStarting": "启动中",
+  "settings_mcpServerListening": "监听中",
+  "settings_mcpServerError": "错误",
+  "settings_mcpServerEndpoint": "端点地址",
+  "settings_mcpServerCopyEndpoint": "复制端点地址",
+  "settings_mcpServerPort": "端口",
+  "settings_mcpServerPortHelper": "更改后会断开已连接的客户端",
+  "settings_mcpServerPortInvalid": "端口需在 {min} 到 {max} 之间",
+  "@settings_mcpServerPortInvalid": {
+    "placeholders": {
+      "min": {},
+      "max": {}
+    }
+  },
+  "settings_mcpServerPortInUseHint": "端口 {port} 已被占用，请在下方改用其他端口",
+  "@settings_mcpServerPortInUseHint": {
+    "placeholders": {
+      "port": {}
+    }
+  },
+  "settings_mcpServerDiscoveryFile": "发现文件",
+  "settings_mcpServerToken": "接入令牌",
+  "settings_mcpServerRevealToken": "显示令牌",
+  "settings_mcpServerHideToken": "隐藏令牌",
+  "settings_mcpServerCopyToken": "复制令牌",
+  "settings_mcpServerRegenerateToken": "重新生成令牌",
+  "settings_mcpServerRegenerateTokenTitle": "重新生成接入令牌",
+  "settings_mcpServerRegenerateTokenMessage": "当前令牌会立即失效，已连接的客户端将断开。请在所有客户端配置中更新新令牌。",
+  "settings_mcpServerAnlasNotice": "可能消耗 Anlas 的操作会在启动器内单独确认；全自动模式下，只有单次消耗达到保护模式的高消耗阈值时才确认。",
+  "settings_mcpServerPendingApproval": "{client} 请求调用 {tool}",
+  "@settings_mcpServerPendingApproval": {
+    "placeholders": {
+      "client": {},
+      "tool": {}
+    }
+  },
+  "settings_mcpServerPendingApprovalHint": "请在页面顶部的授权横幅中处理",
+  "settings_mcpServerConnectedClients": "已连接客户端",
+  "settings_mcpServerSessionsEmpty": "尚无客户端连接",
+  "settings_mcpServerSessionConnectedAt": "接入于 {time}",
+  "@settings_mcpServerSessionConnectedAt": {
+    "placeholders": {
+      "time": {}
+    }
+  },
+  "settings_mcpServerSessionLastActivity": "最近活动 {time}",
+  "@settings_mcpServerSessionLastActivity": {
+    "placeholders": {
+      "time": {}
+    }
+  },
+  "settings_mcpServerClientConfigs": "客户端配置",
+  "settings_mcpServerConfigUnavailable": "启用服务器后显示客户端配置",
+  "settings_mcpServerCopyConfig": "复制配置",
+  "settings_mcpServerTokenMaskNotice": "预览中的令牌已打码，复制时写入真实令牌。",
+  "settings_mcpServerCliMissing": "未找到随包 CLI（预期位置：{path}），开发运行时属正常现象",
+  "@settings_mcpServerCliMissing": {
+    "placeholders": {
+      "path": {}
+    }
+  },
+  "settings_mcpServerViewDocs": "查看文档",
+  "settings_mcpServerAgentPromptTitle": "推荐：让智能体自己配置",
+  "settings_mcpServerAgentPromptHint": "把以下提示词发给要接入的智能体，它会读取配置文档并自行完成安装。提示词不含令牌，令牌由随包 CLI 在本机读取。",
+  "settings_mcpServerClaudeCodeHint": "在终端运行以下命令注册服务器。",
+  "settings_mcpServerCodexHint": "先运行命令注册服务器，再把令牌写入下面的环境变量。",
+  "settings_mcpServerCursorHint": "把以下内容合并进 Cursor 的 mcp.json 配置文件。",
+  "settings_mcpServerCherryStudioHint": "在 Cherry Studio 的 MCP 服务器设置中用“从 JSON 导入”粘贴以下内容；timeout 单位为秒，已留足应用内审批时间。",
+  "settings_mcpServerPiHint": "Pi 本体不带 MCP，需先安装 pi-mcp-adapter 包，再把以下内容合并进 ~/.pi/agent/mcp.json。",
+  "settings_mcpServerAntigravityHint": "把以下内容合并进 Antigravity 的全局配置 ~/.gemini/config/mcp_config.json；timeoutSeconds 已留足应用内审批时间。",
+  "settings_mcpServerClaudeDesktopHint": "把以下内容合并进 Claude Desktop 配置；它通过随包 CLI 以 stdio 方式接入。",
+
   "settings_fontScale": "字体大小",
   "settings_fontScale_description": "调整应用全局字体缩放比例",
   "settings_fontScale_previewSmall": "落霞与孤鹜齐飞",
@@ -4613,7 +5095,7 @@
   "settings_copyDragWatermarkTitle": "复制/拖拽时添加水印",
   "settings_copyDragWatermarkSubtitle": "使用已保存的默认水印方案。添加水印不会清除元数据；如需清除，请开启上方“复制/拖拽时移除全部元数据”。",
   "settings_stripMetadataTitle": "复制/拖拽时移除全部元数据",
-  "settings_stripMetadataSubtitle": "生成净化副本，清除 PNG 文本块、EXIF 与 NAI 隐写水印，并避免拖拽暴露原始路径。",
+  "settings_stripMetadataSubtitle": "复制、拖拽及 MCP 图片返回时清除 PNG 文本块、EXIF 与 NAI 隐写水印，不修改本地原图；MCP 保留原分辨率，其 saved_path 指向的图库原图不受影响。",
   "settings_confirmDangerousActionsTitle": "危险资产操作二次确认",
   "settings_confirmDangerousActionsSubtitle": "删除、移动、批量移动等本地资产操作会额外弹出保护确认。",
   "settings_warnExternalImageSendTitle": "发送到外部服务前提示",
@@ -4658,6 +5140,13 @@
   "settings_highAnlasCostTitle": "保护模式：Anlas 消耗较高",
   "settings_highAnlasCostContent": "本次预计消耗 {cost} Anlas，已达到或超过你设置的 {threshold} Anlas 警告阈值。请确认是否继续生成。",
   "@settings_highAnlasCostContent": {
+    "placeholders": {
+      "cost": {},
+      "threshold": {}
+    }
+  },
+  "settings_highAnlasCostUnverifiedContent": "订阅状态尚未核实。如果 Opus 免费额度已用尽，本次最多消耗 {cost} Anlas，已达到或超过你设置的 {threshold} Anlas 警告阈值。请确认是否继续生成。",
+  "@settings_highAnlasCostUnverifiedContent": {
     "placeholders": {
       "cost": {},
       "threshold": {}
@@ -5010,7 +5499,6 @@
   "toast_presetSaved": "预设保存成功",
   "toast_imagePromptCopied": "已复制 Prompt",
   "toast_imageHasNoPrompt": "此图片没有 Prompt",
-  "toast_useDeleteButton": "请使用界面删除按钮",
   "toast_imageHasNoMetadata": "此图片没有元数据",
   "toast_imageDataUnavailable": "图像数据不可用，无法复制",
   "toast_vibeDataCopied": "Vibe 数据已复制",
@@ -5153,6 +5641,8 @@
   "detail_sendToReversePrompt": "发送到反推",
   "detail_loadingImage": "加载图片中...",
   "detail_imageLoadFailed": "无法加载图片",
+  "detail_lockZoom": "锁定缩放",
+  "detail_unlockZoom": "解除缩放锁定",
   "detail_noImage": "无图片",
   "detail_parsingMetadata": "正在解析元数据...",
   "detail_noMetadata": "此图片无元数据",
@@ -5185,6 +5675,8 @@
   "detail_copyCharacterPrompt": "复制角色提示词",
   "detail_copyAllVibeData": "复制全部 Vibe 数据",
   "detail_saveToVibeLibrary": "保存到 Vibe 库",
+  "detail_collapseThumbnails": "收起缩略图",
+  "detail_expandThumbnails": "展开缩略图",
 
   "pagination_firstPage": "首页",
   "pagination_previousPage": "上一页",
@@ -5194,65 +5686,6 @@
   "pagination_jump": "跳转",
   "pagination_itemsPerPage": "每页",
   "pagination_itemUnit": "项",
-
-  "diyGuide_title": "DIY 功能指南",
-  "diyGuide_subtitle": "了解高级功能，创建专属词库",
-  "diyGuide_intro": "本指南介绍了 DIY 系统的核心概念和高级功能，帮助您构建强大的动态提示词库。",
-  "diyGuide_exampleLabel": "示例",
-  "diyGuide_hierarchyTitle": "层级结构 (Hierarchy)",
-  "diyGuide_hierarchyDescription": "DIY 系统采用三级分类结构来组织提示词，便于管理和检索。",
-  "diyGuide_hierarchyExample": "Category (分类): 角色特征\n  -> Group (分组): 发型\n      -> Tag (标签): 长发, 短发, 双马尾",
-  "diyGuide_selectionModeTitle": "选择模式 (Selection Mode)",
-  "diyGuide_selectionModeDescription": "决定从一个分组(Group)中选取多少个标签。",
-  "diyGuide_selectionModeExample": "• Random (随机): 每次随机选取一个 (如：随机发色)\n• All (全选): 选取组内所有标签 (如：固定特征组合)",
-  "diyGuide_weightTitle": "权重控制 (Weight)",
-  "diyGuide_weightDescription": "调整特定提示词在生成过程中的影响力。",
-  "diyGuide_weightExample": "• 增强: 用花括号包裹 masterpiece = 1.05 倍权重\n• 强力增强: 三层花括号包裹 masterpiece = 1.16 倍权重\n• 减弱: [bad hands] = 0.95 倍权重",
-  "diyGuide_genderTitle": "性别限制 (Gender)",
-  "diyGuide_genderDescription": "限制标签仅对特定性别的角色生效，避免生成错误的特征。",
-  "diyGuide_genderExample": "• Female: 仅女性角色可用 (如：裙子)\n• Male: 仅男性角色可用 (如：胡须)\n• Any: 通用 (如：T恤)",
-  "diyGuide_scopeTitle": "作用域 (Scope)",
-  "diyGuide_scopeDescription": "定义标签是作用于角色本身、背景环境还是全局画面。",
-  "diyGuide_scopeExample": "• Character: 角色特征 (眼睛, 头发)\n• Background: 环境描述 (蓝天, 室内)\n• Global: 画风, 质量词 (best quality)",
-  "diyGuide_conditionalTitle": "条件分支 (Conditional)",
-  "diyGuide_conditionalDescription": "基于已选标签或其他条件来动态决定后续标签。",
-  "diyGuide_conditionalExample": "IF (已选 \"下雨\")\n  THEN 添加 \"雨伞\", \"湿衣服\"\n  ELSE 添加 \"晴朗\"",
-  "diyGuide_dependenciesTitle": "依赖引用 (Dependencies)",
-  "diyGuide_dependenciesDescription": "建立标签间的关联，选中一个标签时自动引入相关联的其他标签。",
-  "diyGuide_dependenciesExample": "选中 \"JK制服\" -> 自动引入 \"学校背景\", \"书包\"",
-  "diyGuide_visibilityTitle": "可见性规则 (Visibility)",
-  "diyGuide_visibilityDescription": "控制标签在界面上的显示条件，或在生成时的生效条件。",
-  "diyGuide_visibilityExample": "仅当选中 \"魔法少女\" 分类时，显示 \"魔杖\" 选项组",
-  "diyGuide_timeTitle": "时间条件 (Time)",
-  "diyGuide_timeDescription": "根据现实时间或设定的模拟时间触发特定标签。",
-  "diyGuide_timeExample": "• 06:00-18:00 -> 添加 \"daylight\"\n• 18:00-06:00 -> 添加 \"night\"",
-  "diyGuide_postProcessingTitle": "后处理规则 (Post-processing)",
-  "diyGuide_postProcessingDescription": "在提示词生成最后阶段进行文本替换或清理。",
-  "diyGuide_postProcessingExample": "将所有 \"blue eyes\" 替换为 \"azure eyes\" 以获得更独特的描述",
-  "diyGuide_emphasisTitle": "强调概率 (Emphasis)",
-  "diyGuide_emphasisDescription": "为标签随机添加权重符号的概率，增加结果的多样性。",
-  "diyGuide_emphasisExample": "设置 30% 概率: 约有 1/3 的机会输出加权 tag，2/3 的机会输出普通 tag",
-
-  "naiRules_title": "NAI 随机规则说明",
-  "naiRules_characterCountProbability": "角色数量概率",
-  "naiRules_solo": "1人 (Solo)",
-  "naiRules_duo": "2人 (Duo)",
-  "naiRules_trio": "3人 (Trio)",
-  "naiRules_group": "4人 (Group)",
-  "naiRules_genderRules": "性别规则",
-  "naiRules_female": "女性 (Female)",
-  "naiRules_male": "男性 (Male)",
-  "naiRules_mixed": "混合/其他 (Mixed)",
-  "naiRules_categoryProbability": "类别概率",
-  "naiRules_dynamicTagWeightTitle": "标签权重动态调整",
-  "naiRules_dynamicTagWeightSubtitle": "包含动作、服饰、表情、背景等多个维度的随机组合，根据画面主题动态调整各类别的抽取权重",
-  "naiRules_specialMechanisms": "特殊机制",
-  "naiRules_tagStrengthening": "强调机制 (Tag Strengthening)",
-  "naiRules_seasonalLibraryTitle": "季节词库",
-  "naiRules_seasonalLibrarySubtitle": "自动匹配季节特征，包含季节性服饰、天气、光照效果和环境氛围",
-  "naiRules_v4CharacterPositioning": "V4 多角色位置",
-  "naiRules_smartPositionTitle": "智能位置分配",
-  "naiRules_smartPositionSubtitle": "在 V4 模型下，使用 character positioning 语法精确控制多角色站位",
 
   "comfyImport_detectedTitle": "检测到 ComfyUI 多角色提示词",
   "comfyImport_characterList": "角色列表 ({count})",
@@ -5307,6 +5740,29 @@
   "updateErrorServiceUnavailable": "更新服务器暂时不可用，请稍后重试。",
   "updateErrorInvalidMetadata": "更新信息校验失败，请稍后重试或前往 Release 页面下载。",
   "updateErrorUnknown": "暂时无法检查更新，请稍后重试。",
+  "updateInstallErrorPackageNotFound": "未找到可自动安装的更新包，请前往 Release 页面手动下载。",
+  "updateInstallErrorIncompleteMetadata": "更新包缺少校验信息，无法安全安装，请前往 Release 页面手动下载。",
+  "updateInstallErrorDiskFull": "磁盘空间不足，无法保存更新包。请清理空间后重试。",
+  "updateInstallErrorFileSystem": "写入更新包失败，请检查磁盘后重试。",
+  "updateInstallErrorVerificationFailed": "更新包校验失败，请重新下载。",
+  "updateInstallErrorResumeRejected": "服务器拒绝了更新包续传请求，请稍后重试。",
+  "updateInstallErrorEmptyResponse": "更新服务器返回了空响应，请稍后重试。",
+  "updateInstallErrorDownloadFailed": "下载更新包失败，请稍后重试。",
+  "updateInstallErrorPackageMissing": "更新包已被清理，请重新下载。",
+  "updateInstallErrorPackageCorrupted": "更新包已损坏，请重新下载。",
+  "updateInstallErrorInvalidAndroidPackage": "Android 更新包格式不正确，请前往 Release 页面手动下载。",
+  "updateInstallErrorAndroidInstaller": "打开 Android 系统安装界面失败，请重试。",
+  "updateInstallErrorUpdaterLaunchFailed": "启动更新程序失败，当前版本保持不变；请重试或手动下载新版本。",
+  "updateInstallErrorUpdaterNotStarted": "更新程序未能启动，当前版本保持不变；请手动下载新版本完成更新。",
+  "updateInstallErrorInstallFailed": "上次更新没有安装成功，可以重试或手动下载新版本安装。",
+  "updateInstallErrorInterrupted": "上次更新安装没有执行完成，可以重试或手动下载新版本安装。",
+  "updateInstallErrorUnknown": "更新操作失败，请稍后重试。",
+  "updateInstallLogPath": "日志：{path}",
+  "@updateInstallLogPath": {
+    "placeholders": {
+      "path": {}
+    }
+  },
   "currentVersion": "当前版本",
   "latestVersion": "最新版本",
   "releaseNotes": "更新日志",
@@ -5549,14 +6005,17 @@
     }
   },
 
-  "diy_editDependencyTitle": "编辑依赖配置",
-  "diy_dependencyTitle": "依赖配置",
   "diy_dependencySubtitle": "配置标签选择之间的依赖关系",
   "diy_dependencyType": "依赖类型",
   "diy_sourceCategory": "源类别",
   "diy_selectSourceCategory": "选择源类别",
-  "diy_sourceCategoryId": "源类别 ID",
-  "diy_enterCategoryId": "输入类别 ID",
+  "diy_sourceCharacterCount": "角色数量",
+  "diy_categoryUnavailable": "已失效：{reference}",
+  "@diy_categoryUnavailable": {
+    "placeholders": {
+      "reference": {"type": "String"}
+    }
+  },
   "diy_mappingRules": "映射规则",
   "diy_noMappingRules": "暂无映射规则",
   "diy_deleteRule": "删除规则",
@@ -5577,8 +6036,13 @@
   "diy_dependencyExistsDescription": "仅在源类别中存在已选标签时生效",
   "diy_dependencyValueDescription": "依赖源类别中选定的特定标签值",
   "diy_dependencyExcludesDescription": "源类别中存在已选标签时不生效",
+  "diy_dependencyCountCharacterCountDescription": "根据本次生成的角色数量决定结果数量",
+  "diy_dependencyExistsCharacterCountDescription": "仅在画面中有角色（角色数量大于 0）时生效",
+  "diy_dependencyValueCharacterCountDescription": "依赖本次生成的角色数量取值，如 1、2、3",
+  "diy_dependencyExcludesCharacterCountDescription": "仅在无人画面（角色数量为 0）时生效",
+  "diy_dependencyOverridesSelectionCount": "本词组的选择模式不是“多选数量”，依赖得出的数量会覆盖选择模式的数量：按权重不重复抽取这么多个，可选项不足时全部选取；没有匹配的映射且未设默认值时不抽取",
+  "diy_dependencyOverridesSequentialCount": "本词组的选择模式是顺序轮替，依赖得出的数量会覆盖选择模式的数量：按轮替顺序取这么多个，可选项不足时全部选取；没有匹配的映射且未设默认值时不抽取",
 
-  "diy_editConditionalTitle": "编辑条件分支",
   "diy_conditionalDefaultName": "条件分支配置",
   "diy_branchDefaultName": "分支 {index}",
   "@diy_branchDefaultName": {
@@ -5586,7 +6050,6 @@
       "index": {"type": "int"}
     }
   },
-  "diy_conditionalTitle": "条件分支配置",
   "diy_conditionalSubtitle": "根据概率选择不同分支",
   "diy_branchCount": "{count} 个分支",
   "@diy_branchCount": {
@@ -5613,6 +6076,42 @@
   "diy_branchName": "分支名称",
   "diy_probability": "概率",
   "diy_enableBranch": "启用此分支",
+  "diy_branchTargets": "输出的词组",
+  "diy_branchTargetsHint": "选中的词组只在该分支被选中时输出，并按本词组的选择模式从中抽取；不选时输出本词组自己的标签",
+  "diy_branchTargetsEmpty": "本类别没有其他词组",
+  "diy_branchTargetChild": "子词组：{name}",
+  "@diy_branchTargetChild": {
+    "placeholders": {
+      "name": {"type": "String"}
+    }
+  },
+  "diy_branchTargetCycle": "会形成循环引用",
+  "diy_branchTargetCycleHint": "灰色的词组已经直接或间接输出本词组，选择会形成循环引用",
+  "diy_branchTargetCount": "输出 {count} 个词组",
+  "@diy_branchTargetCount": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "diy_branchConditions": "条件",
+  "diy_branchConditionsHint": "只能引用在本词组之前生成的类别和分支；条件值按标签比较，忽略大小写、下划线与权重写法。没有条件时分支总是可选",
+  "diy_addCondition": "添加条件",
+  "diy_deleteCondition": "删除条件",
+  "diy_conditionSource": "变量",
+  "diy_conditionValueRequired": "请填写条件值",
+  "diy_conditionLogicAll": "全部满足",
+  "diy_conditionLogicAny": "任一满足",
+  "diy_conditionSourceGender": "角色性别",
+  "diy_conditionSourceBranch": "{name} 的分支",
+  "@diy_conditionSourceBranch": {
+    "placeholders": {
+      "name": {"type": "String"}
+    }
+  },
+  "diy_conditionValueHintCategory": "如 blue eyes",
+  "diy_conditionValueHintGender": "如 girl、boy",
+  "diy_conditionValueHintCount": "如 1、2、3",
+  "diy_conditionValueHintBranch": "填写分支名称",
 
   "diy_ruleDefaultName": "规则 {index}",
   "@diy_ruleDefaultName": {
@@ -5630,7 +6129,6 @@
   "diy_editRule": "编辑规则",
   "diy_ruleName": "规则名称",
   "diy_enableRule": "启用此规则",
-  "diy_postProcessTitle": "后处理规则",
   "diy_postProcessSubtitle": "自动处理标签冲突",
   "diy_sleepingRule": "睡眠规则",
   "diy_sleepingRuleDescription": "角色睡眠时移除眼睛颜色描述",
@@ -5643,7 +6141,6 @@
   "diy_triggerTags": "触发标签",
   "diy_commaSeparatedTagsHint": "用逗号分隔标签",
   "diy_targetCategories": "目标类别",
-  "diy_commaSeparatedCategoryIdsHint": "用逗号分隔类别 ID",
   "diy_targetTags": "目标标签",
   "diy_actionRemoveTags": "移除标签",
   "diy_actionReplaceTags": "替换标签",
@@ -5658,26 +6155,6 @@
     }
   },
 
-  "diy_emphasisTitle": "全局强调配置",
-  "diy_emphasisSubtitle": "调整标签强调效果",
-  "diy_emphasisProbability": "强调概率",
-  "diy_emphasisProbabilityHint": "每个选中的标签有 {percent}% 的概率被添加强调括号",
-  "@diy_emphasisProbabilityHint": {
-    "placeholders": {
-      "percent": {"type": "String"}
-    }
-  },
-  "diy_bracketCount": "括号层数",
-  "diy_bracketLayers": "{count} 层",
-  "@diy_bracketLayers": {
-    "placeholders": {
-      "count": {"type": "int"}
-    }
-  },
-  "diy_effectPreview": "效果预览",
-  "diy_exampleTag": "示例标签",
-  "diy_emphasisExplanation": "强调括号会增加标签的权重，层数越多权重越高",
-
   "diy_presetExportFailed": "导出预设失败：{error}",
   "@diy_presetExportFailed": {
     "placeholders": {
@@ -5691,6 +6168,12 @@
       "error": {"type": "String"}
     }
   },
+  "diy_presetVersionTooNew": "该预设由更新版本的应用导出（数据版本 {version}），请更新应用后再导入",
+  "@diy_presetVersionTooNew": {
+    "placeholders": {
+      "version": {"type": "int"}
+    }
+  },
   "diy_presetExportTitle": "导出预设",
   "diy_presetImportTitle": "导入预设",
   "diy_unknown": "未知",
@@ -5702,12 +6185,12 @@
   "diy_categoryCount": "类别数",
   "diy_totalTagCount": "总标签数",
 
-  "diy_visibilityTitle": "可见性规则",
   "diy_visibilitySubtitle": "根据条件控制类别可见性",
   "diy_noVisibilityRules": "暂无可见性规则",
   "diy_noVisibilityRulesHint": "添加规则以根据当前构图控制类别可见性",
   "diy_notSet": "未设置",
   "diy_targetCategory": "目标类别",
+  "diy_targetCurrentGroup": "本词组",
   "diy_conditionType": "条件类型",
   "diy_conditionValue": "条件值",
   "diy_conditionValueHint": "标签名或值",
@@ -5719,9 +6202,7 @@
   "diy_conditionValueInList": "值在列表中",
   "diy_conditionValueNotInList": "值不在列表中",
 
-  "diy_editTimeConditionTitle": "编辑时间条件",
   "diy_timeDefaultName": "时间条件",
-  "diy_timeTitle": "时间条件",
   "diy_timeSubtitle": "在指定日期范围内激活",
   "diy_enableTimeCondition": "启用时间条件",
   "diy_enableTimeConditionHint": "仅在设置的日期范围内生效",
@@ -5742,6 +6223,9 @@
   "diy_conditionNameHint": "输入条件名称",
   "diy_repeatYearly": "每年重复",
   "diy_repeatYearlyHint": "每年在相同日期范围内自动启用",
+  "diy_repeatOnceHint": "只在所选年份的日期范围内启用",
+  "diy_year": "年份",
+  "diy_yearUnsetHint": "尚未选择年份，目前每年都会启用",
   "diy_currentlyActive": "当前激活",
   "diy_inactive": "未激活",
   "diy_daysRemaining": "剩余 {count} 天",
@@ -5782,6 +6266,27 @@
     }
   },
   "@generation_opusUsageEstimate": {
+    "placeholders": {
+      "count": {}
+    }
+  },
+  "@generation_opusUsageRefillRate": {
+    "placeholders": {
+      "percent": {},
+      "count": {}
+    }
+  },
+  "@generation_opusUsageRegularPool": {
+    "placeholders": {
+      "percent": {}
+    }
+  },
+  "@generation_opusUsageExtraPool": {
+    "placeholders": {
+      "percent": {}
+    }
+  },
+  "@generation_opusUsageCombinedEstimate": {
     "placeholders": {
       "count": {}
     }
@@ -6218,6 +6723,122 @@
       "max": {"type": "int"}
     }
   },
+  "editor_toolFrame": "取景框",
+  "editor_toolMove": "移动",
+  "editor_toolGroupInpaint": "重绘",
+  "editor_toolGroupEdit": "编辑",
+  "editor_toolGroupCommon": "通用",
+  "editor_toolbarFlyoutExpand": "展开同组工具",
+  "editor_toolbarFlyoutHint": "悬停、右键或长按可展开同组工具",
+  "editor_toolMaskBrush": "蒙版画笔",
+  "editor_toolMaskEraser": "蒙版橡皮擦",
+  "editor_toolMaskColorFill": "按颜色填充蒙版",
+  "editor_toolMaskMagicWand": "蒙版魔棒",
+  "editor_moveLayerHint": "拖动以移动整个当前图层。",
+  "editor_moveSelectionHint": "拖动以移动当前图层在选区内的像素。",
+  "editor_moveBaseLayerHint": "底图不能整体移动；先框选，再移动选区内的像素。",
+  "editor_moveNoLayer": "没有可移动的图层。",
+  "editor_moveNudgeHint": "方向键移动 1 像素，按住 Shift 移动 10 像素。",
+  "editor_shortcutNudge": "移动 1 像素",
+  "editor_shortcutNudgeFar": "移动 10 像素",
+  "editor_transformSection": "变换",
+  "editor_transformWidth": "宽度",
+  "editor_transformHeight": "高度",
+  "editor_transformAngle": "角度",
+  "editor_transformCenterX": "中心 X",
+  "editor_transformCenterY": "中心 Y",
+  "editor_transformKeepAspect": "锁定比例",
+  "editor_transformFlipHorizontal": "水平翻转",
+  "editor_transformFlipVertical": "垂直翻转",
+  "editor_transformApply": "应用变换",
+  "editor_transformCancel": "取消变换",
+  "editor_transformSizeReadout": "{width} × {height} 像素",
+  "@editor_transformSizeReadout": {
+    "placeholders": {
+      "width": {"type": "int"},
+      "height": {"type": "int"}
+    }
+  },
+  "editor_transformHandlesHint": "拖动四角或边缘缩放，拖动框上方的圆点旋转。",
+  "editor_transformKeysHint": "Shift 吸附 15° 或临时切换锁定比例，Alt 以中心为基准；Ctrl+T 开始变换，Enter 应用，Esc 取消。",
+  "editor_transformTouchHint": "变换时可用双指缩放、旋转和移动，完成后点「应用变换」。",
+  "editor_shortcutFreeTransform": "自由变换",
+  "editor_shortcutApplyTransform": "应用变换",
+  "layer_importImage": "导入图片",
+  "selection_clearPixels": "删除选区内容",
+  "selection_cutLayerName": "{name} 剪切",
+  "@selection_cutLayerName": {
+    "placeholders": {
+      "name": {}
+    }
+  },
+  "layer_duplicateName": "{name} 副本",
+  "@layer_duplicateName": {
+    "placeholders": {
+      "name": {}
+    }
+  },
+  "layer_roleMask": "蒙版",
+  "layer_addImage": "添加图片图层",
+  "layer_addMask": "添加蒙版图层",
+  "img2img_inpaintSourceUpdated": "底图修改已保存，涂上蒙版后即可局部重绘",
+  "editor_frameToolHint": "在框内按住拖动可整体移动取景框，拖动边缘可调整尺寸。框外内容会保留并压暗显示，只有框内部分会送去生成；移动时至少与原图重叠 64 像素。",
+  "editor_frameSizeReadout": "尺寸: {width} x {height}",
+  "@editor_frameSizeReadout": {
+    "placeholders": {
+      "width": {"type": "int"},
+      "height": {"type": "int"}
+    }
+  },
+  "editor_frameOffsetReadout": "相对原图: X {x}, Y {y}",
+  "@editor_frameOffsetReadout": {
+    "placeholders": {
+      "x": {"type": "int"},
+      "y": {"type": "int"}
+    }
+  },
+  "editor_frameMoveLockedByView": "视图旋转或镜像时无法移动取景框，按 R 重置视图后再试。",
+  "editor_resetFrame": "重置取景框",
+  "editor_cropToFrame": "裁切到取景框",
+  "editor_cropToFrameHint": "丢弃取景框外的原图和蒙版，可撤销",
+  "editor_cropToFrameFailed": "裁切到取景框失败: {error}",
+  "@editor_cropToFrameFailed": {
+    "placeholders": {
+      "error": {}
+    }
+  },
+  "editor_changeFrameSize": "调整取景框尺寸",
+  "editor_frameResized": "取景框已调整为 {width} x {height}",
+  "@editor_frameResized": {
+    "placeholders": {
+      "width": {"type": "int"},
+      "height": {"type": "int"}
+    }
+  },
+  "editor_frameToolHintPasteBack": "在框内按住拖动可按 64 像素一格移动取景框，拖动边缘可调整尺寸。只有框内部分会送去生成；框外还有原图时，结果按蒙版贴回整张图，框外内容保持不变。框须与原图重叠至少 64 像素。",
+  "editor_frameRequestReadout": "发送: {width} x {height}",
+  "@editor_frameRequestReadout": {
+    "placeholders": {
+      "width": {"type": "int"},
+      "height": {"type": "int"}
+    }
+  },
+  "editor_frameRequestFree": "免费",
+  "editor_frameRequestCost": "约 {cost} Anlas",
+  "@editor_frameRequestCost": {
+    "placeholders": {
+      "cost": {"type": "int"}
+    }
+  },
+  "editor_frameResizeRejected": "无法调整取景框：框须与原图重叠至少 {overlap} 像素，且与原图合起来每边不超过 {max} 像素。",
+  "@editor_frameResizeRejected": {
+    "placeholders": {
+      "overlap": {"type": "int"},
+      "max": {"type": "int"}
+    }
+  },
+  "editor_compressionFrameLimited": "取景框在更高分辨率下会超过请求面积上限，因此滑条上限已收紧。",
+  "img2img_focusOutpaintHint": "聚焦外扩：只发送取景框内的部分，生成结果按蒙版贴回整张图。可在重绘编辑器里用取景框工具调整位置。",
 
   "savePreset_title": "另存为预设",
   "savePreset_nameHint": "输入预设名称",
@@ -6230,6 +6851,9 @@
   },
 
   "onlineGallery_videoLoadFailed": "视频加载失败",
+  "onlineGallery_videoPositionLabel": "播放进度",
+  "onlineGallery_videoPlay": "播放",
+  "onlineGallery_videoPause": "暂停",
   "vibe_releaseToAddStyleReference": "松开后添加风格参考",
   "router_backAgainToExit": "再滑一次或按返回键退出应用",
   "router_pageNotFound": "页面未找到: {error}",
@@ -6254,7 +6878,7 @@
   "autocomplete_autoComma": "插入后自动添加逗号",
   "autocomplete_openOnTagClick": "点击标签时显示补全",
   "autocomplete_openOnTagClickSubtitle": "开启后，点击已有标签会打开普通补全菜单；Ctrl/Command + 点击仍显示相关标签",
-  "autocomplete_replaceUnderscores": "插入时将下划线替换为空格",
+  "autocomplete_replaceUnderscores": "插入和自动格式化时将下划线替换为空格",
   "autocomplete_dataSourcesTitle": "数据源与缓存",
   "autocomplete_relatedTagsTitle": "共现与相关标签推荐",
   "autocomplete_relatedTagsSubtitle": "选中补全后自动推荐；也可在标签上按 Ctrl+Shift+Space 或 Ctrl+单击",
@@ -6297,6 +6921,7 @@
   "autocomplete_clearAiCache": "清除 AI 汉化缓存",
   "autocomplete_cacheCleared": "已清除 {count} 条缓存",
   "@autocomplete_cacheCleared": {"placeholders": {"count": {"type": "int"}}},
+  "autocomplete_cacheClearFailed": "清除缓存失败；请稍后重试。",
   "autocomplete_baseCatalog": "基础 Danbooru 词库",
   "autocomplete_catalogStatus": "{count} 个标签 · 数据版本 {version}",
   "@autocomplete_catalogStatus": {"placeholders": {"count": {"type": "String"}, "version": {"type": "String"}}},
@@ -6382,6 +7007,20 @@
   "@localGallery_saveToSystemGalleryFailed": {"placeholders":{"error":{}}},
   "image_savedAppOnly": "已保存到应用图库，但无法导出到系统相册：{error}",
   "@image_savedAppOnly": {"placeholders":{"error":{}}},
+  "image_savedToAppGallery": "已保存到应用图库",
+  "image_saveAs": "另存为…",
+  "image_saveAsDialogTitle": "另存为图片",
+  "image_saveAsToFolder": "另存为到文件夹…",
+  "image_saveAsFolderDialogTitle": "选择保存文件夹",
+  "image_savedAs": "已另存为 {path}",
+  "@image_savedAs": {"placeholders":{"path":{}}},
+  "image_savedAsToChosenLocation": "已保存到所选位置",
+  "image_savedAsToFolder": "已保存 {count} 张图片到 {path}",
+  "@image_savedAsToFolder": {"placeholders":{"count":{"type":"int"},"path":{}}},
+  "image_savedAsToChosenFolder": "已保存 {count} 张图片到所选文件夹",
+  "@image_savedAsToChosenFolder": {"placeholders":{"count":{"type":"int"}}},
+  "image_savedAsPartial": "已保存 {saved} 张，{failed} 张失败：{error}",
+  "@image_savedAsPartial": {"placeholders":{"saved":{"type":"int"},"failed":{"type":"int"},"error":{}}},
   "image_shareFailed": "分享失败: {error}",
   "@image_shareFailed": {"placeholders":{"error":{}}},
   "onlineGallery_savedFiles": "已保存 {count} 个文件",
@@ -6400,6 +7039,8 @@
   "@settings_localOnnxManagedFiles": {"placeholders":{"count":{"type":"int"}}},
   "settings_clearLocalOnnxModelsTitle": "清除本地 ONNX 模型？",
   "settings_clearLocalOnnxModelsContent": "将删除导入到此设备的 ONNX 模型及标签文件。",
+  "settings_clearLocalOnnxModelsFailed": "清除本地 ONNX 模型失败：{error}",
+  "@settings_clearLocalOnnxModelsFailed": {"placeholders":{"error":{}}},
   "updateAndroidDownloadedHint": "新版本 v{version} 已下载并通过校验。可以打开 Android 系统安装界面继续更新。",
   "@updateAndroidDownloadedHint": {"placeholders":{"version":{}}},
   "updateAndroidInstallingHint": "正在打开 Android 系统安装界面，请按系统提示确认更新。",
@@ -6461,6 +7102,8 @@
   "cloudSync_onlineGalleryFavoritesDescription": "仅保存来源 ID 与恢复所需信息，不保存原图",
   "cloudSync_galleryAlbums": "本地画廊相册",
   "cloudSync_galleryAlbumsDescription": "只保存相册结构与图片引用，不上传原图",
+  "cloudSync_fixedTagUsage": "固定词使用记录",
+  "cloudSync_fixedTagUsageDescription": "只保存每张图用了哪些固定词的轻量记录，不上传图片",
   "cloudSync_optionalResources": "可选资源（默认关闭）",
   "cloudSync_vibes": "Vibe",
   "cloudSync_preciseReferences": "精准参考",
@@ -6612,11 +7255,20 @@
   "agentSettings_densityDescription": "舒适模式优先保证触控与留白；紧凑模式适合桌面高信息密度。",
   "agentSettings_densityComfortable": "舒适",
   "agentSettings_densityCompact": "紧凑",
+  "agentSettings_chatPlacement": "聊天位置",
+  "agentSettings_chatPlacementDescription": "仅在宽屏生效；窄屏保持全屏聊天。",
+  "agentSettings_dockLayout": "右栏布局",
+  "agentSettings_dockLayoutDescription": "独占切换时右栏一次只显示聊天或历史；分栏则同时显示两者。",
+  "agentSettings_dockExclusive": "独占切换",
+  "agentSettings_dockStacked": "上下分栏",
+  "agentSettings_dockSideBySide": "左右分栏",
+  "agentSettings_floatingWindow": "以浮窗显示聊天",
+  "agentSettings_floatingWindowDescription": "浮窗常驻所有页面，可拖动和调整大小；开启后右栏只显示历史。",
   "agentSettings_chatModel": "聊天模型",
   "agentSettings_providerModel": "供应商 / 模型",
-  "agentSettings_modelManagedInIntegrations": "供应商、API Key 与模型发现仍在“集成”中统一管理。",
+  "agentSettings_modelManagedInIntegrations": "服务商、API 密钥和模型在“集成 → 模型服务”中管理。",
   "agentSettings_manageProviders": "管理服务商",
-  "agentSettings_noModel": "没有可用聊天模型。请先在“集成”中添加供应商并发现模型。",
+  "agentSettings_noModel": "没有可用的聊天模型。请先在“集成 → 模型服务”中添加服务商和模型。",
   "agentSettings_pendingMatch": "待匹配",
   "agentSettings_contextWindow": "上下文窗口（token）",
   "agentSettings_contextWindowKnown": "留空使用内置值 {value}。第三方中转站或自定义部署的实际窗口不同时，在此填写覆盖。",
@@ -6642,7 +7294,18 @@
   "agentSettings_permissionAsk": "敏感操作前询问",
   "agentSettings_permissionAskDescription": "默认模式。写文件、执行生成等敏感操作前先请求确认。",
   "agentSettings_permissionFull": "完全访问",
-  "agentSettings_permissionFullDescription": "允许访问工作区外文件并直接执行工具。仅在信任当前任务时使用。",
+  "agentSettings_permissionFullDescription": "允许访问工作区外文件并直接执行工具；删除已保存的数据或消耗 Anlas 前仍会确认。仅在信任当前任务时使用。",
+  "agentSettings_permissionAutopilot": "全自动",
+  "agentSettings_permissionAutopilotDescription": "包含完全访问的全部权限，生成等消耗 Anlas 的操作也直接执行；仅在单次消耗达到保护模式的高消耗阈值或删除已保存的数据时确认。适合无人值守的批量任务。",
+  "agentSettings_autopilotConfirmTitle": "开启全自动？",
+  "agentSettings_autopilotConfirmThreshold": "生成、重绘、启动队列等消耗 Anlas 的操作将直接执行，不再逐次确认。单次预计消耗达到 {threshold} Anlas（保护模式的高消耗阈值）时仍会确认，删除已保存的数据也仍会确认。",
+  "@agentSettings_autopilotConfirmThreshold": {
+    "placeholders": {
+      "threshold": {}
+    }
+  },
+  "agentSettings_autopilotConfirmUnlimited": "生成、重绘、启动队列等消耗 Anlas 的操作将直接执行，不再逐次确认。保护模式的高消耗警告当前未开启，任何金额都会直接扣除；删除已保存的数据仍会确认。",
+  "agentSettings_autopilotConfirmAction": "开启",
   "agentSettings_webPreference": "联网偏好",
   "agentSettings_webEnabled": "允许智能体使用 Web 工具",
   "agentSettings_webDescription": "开启后模型可搜索并读取公开网页；关闭后相关工具会从运行时工具表移除。",
@@ -6792,7 +7455,6 @@
   "watermark_undo": "撤销",
   "watermark_reset": "重置",
   "watermark_noLayer": "保存前请启用文字或 Logo。",
-  "watermark_cancelled": "已取消水印渲染",
   "watermark_failed": "无法创建水印副本：{error}",
   "@watermark_failed": {"placeholders":{"error":{}}},
   "watermark_failedGeneric": "无法创建水印副本，请检查图片后重试。",
@@ -6806,6 +7468,19 @@
   "watermark_moveUp": "向上移动图层",
   "watermark_moveDown": "向下移动图层",
   "watermark_sourceLoadFailed": "无法打开此图片。请确认文件是有效的静态 PNG、JPEG、WebP 或 BMP 图片后重试。",
+  "watermark_autoPlacement": "自动选位",
+  "watermark_autoPlacementHint": "以设定的锚点为首选位置；其他角明显更干净时，整套水印镜像过去。",
+  "watermark_autoPlacementKept": "自动选位：保持首选位置",
+  "watermark_autoPlacementMirroredHorizontal": "自动选位：已左右镜像",
+  "watermark_autoPlacementMirroredVertical": "自动选位：已上下镜像",
+  "watermark_autoPlacementMirroredBoth": "自动选位：已镜像到对角",
+  "watermark_autoAnalyzing": "正在分析画面…",
+  "watermark_autoAnalysisFailed": "无法分析画面，预览未应用自动调整；保存时会重新分析。",
+  "watermark_autoTone": "自动灰阶",
+  "watermark_autoToneTextHint": "按文字下方的背景亮度取灰，描边和阴影向相反方向取灰。",
+  "watermark_autoToneLogoHint": "按 Logo 下方的背景亮度去色调灰，保留 Logo 自身的明暗层次。",
+  "watermark_toneContrast": "明暗差",
+  "watermark_colorFromAutoTone": "颜色由自动灰阶决定",
   "promptAssistant_responseTimeoutTitle": "响应等待超时",
   "promptAssistant_responseTimeoutDescription": "反推、优化、翻译、角色替换和自定义改写共用。默认 5 分钟；模型思考较慢时可调长，仍可随时取消。不影响连接超时和智能体聊天。",
   "tagMode_label": "标签模式",
@@ -6891,7 +7566,6 @@
   "mosaic_saved": "打码副本已保存",
   "mosaic_open": "打开",
   "mosaic_share": "分享",
-  "mosaic_cancelled": "已取消打码渲染。",
   "mosaic_failedGeneric": "无法创建打码副本。",
   "mosaic_galleryRefreshFailed": "文件已保存，但本地图库刷新失败。",
   "mosaic_systemGalleryExportFailed": "应用内副本已保存，但导出到系统相册失败。",
@@ -6906,6 +7580,12 @@
   "promptAssistant_concurrencyAutoDescription": "从 5 个并发开始，根据请求结果自动升降；该提供商的所有提示词助手任务共享额度。",
   "promptAssistant_thinkingLevel": "思考等级",
   "promptAssistant_thinkingDefault": "模型默认",
+  "promptAssistant_configureReasoning": "配置推理",
+  "promptAssistant_reasoningFormat": "推理参数格式",
+  "promptAssistant_reasoningLevelFormat": "等级",
+  "promptAssistant_reasoningBudgetFormat": "Token 预算",
+  "promptAssistant_reasoningAdaptiveFormat": "自适应",
+  "promptAssistant_reasoningRejectedHint": "请切回“模型默认”后重试。",
   "promptAssistant_thinkingUnavailable": "未识别到可调思考等级，使用模型默认行为。",
   "promptAssistant_thinkingReset": "原思考等级不适用于当前模型，本次使用模型默认。",
   "promptAssistant_thinkingEnabled": "开启",
@@ -7050,5 +7730,15 @@
         "format": "yMMMd"
       }
     }
-  }
+  },
+  "nav_switchToLightMode": "切换浅色模式",
+  "nav_switchToDarkMode": "切换深色模式",
+  "settings_themeMode": "主题模式",
+  "settings_themeModeLight": "浅色",
+  "settings_themeModeDark": "深色",
+  "settings_themeModeSystem": "跟随系统",
+  "settings_lightTheme": "浅色主题",
+  "settings_darkTheme": "深色主题",
+  "settings_selectLightTheme": "选择浅色主题",
+  "settings_selectDarkTheme": "选择深色主题"
 }

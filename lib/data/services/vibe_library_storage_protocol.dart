@@ -6,12 +6,17 @@ import '../models/vibe/vibe_library_entry.dart';
 /// Persistence contract used by the Vibe library application service.
 abstract interface class VibeLibraryRepositoryProtocol {
   Future<void> init();
-  Future<void> ensureInit();
   Future<VibeLibraryEntry?> readEntry(String id);
   Future<void> putEntry(VibeLibraryEntry entry);
   Future<void> deleteEntry(String id);
   Future<void> clearEntries();
+
+  /// Ids of every source entry, read without deserializing any entry.
+  Future<Set<String>> readEntryIds();
+
+  /// Deserializes every source entry; prefer display entries for listings.
   Future<List<VibeLibraryEntry>> readAllEntries();
+  Stream<VibeLibraryEntry> streamEntries();
   Future<void> forEachEntry(
     Future<void> Function(VibeLibraryEntry entry) visit,
   );
@@ -19,6 +24,7 @@ abstract interface class VibeLibraryRepositoryProtocol {
     bool Function(VibeLibraryEntry entry) test,
   );
   Future<bool> containsEntry(String id);
+  Future<Set<String>> readDisplayEntryIds();
   Future<List<VibeLibraryEntry>> readDisplayEntries();
   Future<void> replaceDisplayEntries(Iterable<VibeLibraryEntry> entries);
   Future<void> upsertDisplayEntryIfReady(VibeLibraryEntry entry);
@@ -39,7 +45,9 @@ abstract interface class VibeLibraryRepositoryProtocol {
 }
 
 abstract interface class VibeGenerationStateRepositoryProtocol {
-  Future<void> saveJson(String stateJson);
+  Future<void> saveUtf8Json(Uint8List stateJson);
+
+  /// Decoding as text keeps invalid UTF-8 falling back to the legacy copy.
   Future<String?> loadJson();
   Future<void> clear();
 }

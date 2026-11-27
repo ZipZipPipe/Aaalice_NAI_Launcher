@@ -4,22 +4,11 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import '../../data/models/gallery/local_image_record.dart';
+import '../cache/local_file_image.dart';
 
 const protectedDragFeedbackMarkerKey = ValueKey<String>(
   'protected-drag-feedback-marker',
 );
-
-/// 拖拽数据格式常量
-class DragDropFormats {
-  /// PNG 图像格式
-  static const String png = 'image/png';
-
-  /// 文件 URI 格式
-  static const String fileUri = 'text/uri-list';
-
-  /// 自定义本地图像记录格式
-  static const String localImageRecord = 'application/x-local-image-record';
-}
 
 /// 图像拖拽数据包装类
 ///
@@ -359,8 +348,8 @@ Widget _buildImageSection(ThemeData theme, ImageDragData dragData) {
   if (dragData.path.isNotEmpty) {
     final file = File(dragData.path);
     if (file.existsSync()) {
-      return Image.file(
-        file,
+      return Image(
+        image: LocalFileImage(file.path),
         fit: BoxFit.contain,
         filterQuality: FilterQuality.high,
         errorBuilder: (_, __, ___) => _buildPlaceholder(theme, dragData),

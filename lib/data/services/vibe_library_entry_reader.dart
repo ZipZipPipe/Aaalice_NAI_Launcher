@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import '../../core/utils/app_logger.dart';
+import '../../core/utils/byte_content.dart';
 import '../../core/utils/vibe_performance_diagnostics.dart';
 import '../models/vibe/vibe_library_entry.dart';
 import '../models/vibe/vibe_reference.dart';
@@ -8,6 +9,15 @@ import 'vibe_display_cache_repository.dart';
 import 'vibe_file_storage_service.dart';
 import 'vibe_library_storage_protocol.dart';
 import 'vibe_library_storage_types.dart';
+
+/// Whether saving [vibe] to the library may overwrite [entry] as its original.
+///
+/// Raw image bytes are only compared once the name matches and the encodings
+/// differ; two entries without raw images count as the same source.
+bool isVibeOverwriteCandidate(VibeLibraryEntry entry, VibeReference vibe) =>
+    entry.displayName == vibe.displayName &&
+    (entry.vibeEncoding == vibe.vibeEncoding ||
+        ByteContent.equals(entry.rawImageData, vibe.rawImageData));
 
 /// Read/query boundary for full entries, detail documents, and display views.
 class VibeLibraryEntryReader {
@@ -31,7 +41,7 @@ class VibeLibraryEntryReader {
     final thumbnail = vibe.thumbnail;
     if (thumbnail == null || thumbnail.isEmpty) return null;
     return _repository.firstEntryWhere(
-      (entry) => _bytesEqual(entry.thumbnail, thumbnail),
+      (entry) => ByteContent.equals(entry.thumbnail, thumbnail),
     );
   }
 
@@ -39,10 +49,7 @@ class VibeLibraryEntryReader {
     if (vibes.length != 1) return Future.value();
     final vibe = vibes.single;
     return _repository.firstEntryWhere(
-      (entry) =>
-          entry.displayName == vibe.displayName &&
-          (entry.vibeEncoding == vibe.vibeEncoding ||
-              _bytesEqual(entry.rawImageData, vibe.rawImageData)),
+      (entry) => isVibeOverwriteCandidate(entry, vibe),
     );
   }
 
@@ -97,19 +104,7 @@ class VibeLibraryEntryReader {
       fileLoaded = true;
 
       var merged = stored
-          .updateVibeData(
-            fileVibe.copyWith(
-              vibeEncoding: fileVibe.vibeEncoding.isNotEmpty
-                  ? fileVibe.vibeEncoding
-                  : stored.vibeEncoding,
-              thumbnail:
-                  fileVibe.thumbnail ??
-                  stored.vibeThumbnail ??
-                  stored.thumbnail,
-              rawImageData: fileVibe.rawImageData ?? stored.rawImageData,
-              encodingModel: fileVibe.encodingModel ?? stored.encodingModel,
-            ),
-          )
+          .updateVibeData(stored.mergeFileVibeData(fileVibe))
           .copyWith(filePath: path);
       if (children.isNotEmpty) {
         final previews = children
@@ -167,6 +162,7 @@ class VibeLibraryEntryReader {
     return _files.extractVibeFromBundle(path, index);
   }
 
+  /// Full entries with file-backed params; deserializes the whole library.
   Future<List<VibeLibraryEntry>> all() => _readList(
     'read all entries',
     () async =>
@@ -176,13 +172,18 @@ class VibeLibraryEntryReader {
   Future<List<VibeLibraryEntry>> display() =>
       _readList('read display entries', _displayCache.getEntries);
 
+  // The queries below only filter on fields kept by toDisplayEntry, so they
+  // return display entries; load full data per id through [get].
+
   Future<List<VibeLibraryEntry>> byCategory(String? categoryId) async =>
-      (await all()).where((entry) => entry.categoryId == categoryId).toList();
+      (await _displayCache.getEntries())
+          .where((entry) => entry.categoryId == categoryId)
+          .toList();
 
   Future<List<VibeLibraryEntry>> search(String query) => _readList(
     'search entries',
     () async {
-      final entries = await _repository.readAllEntries();
+      final entries = await _displayCache.getEntries();
       final normalized = query.toLowerCase();
       if (normalized.isEmpty) return entries;
       return entries
@@ -198,44 +199,70 @@ class VibeLibraryEntryReader {
 
   Future<List<VibeLibraryEntry>> favorites() => _readList(
     'read favorite entries',
-    () async => (await _repository.readAllEntries())
+    () async => (await _displayCache.getEntries())
         .where((entry) => entry.isFavorite)
         .toList(),
   );
 
-  Future<List<VibeLibraryEntry>> recent({int limit = 20}) =>
-      _readList('read recent entries', () async {
-        final entries = (await _repository.readAllEntries())
-            .where((entry) => entry.lastUsedAt != null)
-            .toList();
-        entries.sort((a, b) => b.lastUsedAt!.compareTo(a.lastUsedAt!));
+  Future<List<VibeLibraryEntry>> recent({int limit = 20}) => _readList(
+    'read recent entries',
+    () async => _mostRecent(await _displayCache.getEntries(), limit),
+  );
+
+  Future<List<VibeLibraryEntry>> recentDisplay({int limit = 20}) async =>
+      _mostRecent(await display(), limit);
+
+  Future<Set<String>> tags() => _readOr(
+    'get all tags',
+    () async => {
+      for (final entry in await _displayCache.getEntries()) ...entry.tags,
+    },
+    <String>{},
+  );
+
+  Future<List<VibeLibraryEntry>> byTag(String tag) => _readList(
+    'get entries by tag',
+    () async => (await _displayCache.getEntries())
+        .where((entry) => entry.tags.contains(tag))
+        .toList(),
+  );
+
+  Future<List<VibeLibraryEntry>> byUsage({int limit = 20}) =>
+      _readList('get entries by usage', () async {
+        final entries = (await _displayCache.getEntries()).toList();
+        entries.sort((a, b) => b.usedCount.compareTo(a.usedCount));
         return entries.take(limit).toList();
       });
 
-  Future<List<VibeLibraryEntry>> recentDisplay({int limit = 20}) async {
-    final entries = (await display())
-        .where((entry) => entry.lastUsedAt != null)
-        .toList();
-    entries.sort((a, b) => b.lastUsedAt!.compareTo(a.lastUsedAt!));
-    return entries.take(limit).toList();
-  }
-
-  Future<int> count() async => (await _repository.readAllEntries()).length;
+  Future<int> count() async => (await _repository.readEntryIds()).length;
   Future<int> countByCategory(String? id) async =>
-      (await _repository.readAllEntries())
-          .where((entry) => entry.categoryId == id)
-          .length;
+      (await byCategory(id)).length;
   Future<bool> exists(String id) => _repository.containsEntry(id);
+
+  static List<VibeLibraryEntry> _mostRecent(
+    List<VibeLibraryEntry> entries,
+    int limit,
+  ) {
+    final used = entries.where((entry) => entry.lastUsedAt != null).toList();
+    used.sort((a, b) => b.lastUsedAt!.compareTo(a.lastUsedAt!));
+    return used.take(limit).toList();
+  }
 
   Future<List<VibeLibraryEntry>> _readList(
     String operation,
     Future<List<VibeLibraryEntry>> Function() read,
+  ) => _readOr(operation, read, const <VibeLibraryEntry>[]);
+
+  Future<T> _readOr<T>(
+    String operation,
+    Future<T> Function() read,
+    T fallback,
   ) async {
     try {
       return await read();
     } catch (error, stackTrace) {
       AppLogger.e('Failed to $operation', error, stackTrace, 'VibeLibrary');
-      return const [];
+      return fallback;
     }
   }
 
@@ -248,16 +275,5 @@ class VibeLibraryEntryReader {
       strength: params.strength,
       infoExtracted: params.infoExtracted,
     );
-  }
-
-  bool _bytesEqual(Uint8List? left, Uint8List? right) {
-    if (identical(left, right)) return true;
-    if (left == null || right == null || left.length != right.length) {
-      return false;
-    }
-    for (var index = 0; index < left.length; index++) {
-      if (left[index] != right[index]) return false;
-    }
-    return true;
   }
 }

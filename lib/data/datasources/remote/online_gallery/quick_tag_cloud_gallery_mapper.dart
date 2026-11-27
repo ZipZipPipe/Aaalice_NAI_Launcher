@@ -4,6 +4,7 @@ import 'package:path/path.dart' as p;
 
 import '../../../models/online_gallery/gallery_item.dart';
 import '../../../models/online_gallery/gallery_source.dart';
+import '../../../services/online_gallery/gallery_prompt_tags.dart';
 import '../../../services/online_gallery/quick_tag_cloud_access.dart';
 import '../../../services/online_gallery/quick_tag_cloud_media_resolver.dart';
 import 'quick_tag_cloud_gallery_repository.dart';
@@ -13,9 +14,7 @@ class QuickTagCloudGalleryMapper {
 
   GalleryItem toGalleryItem(QuickTagCloudGalleryRecord record) {
     final media = mediaFor(record);
-    final cover = media.isEmpty
-        ? const GalleryMedia(id: 'no-image')
-        : media.first;
+    final cover = media.isEmpty ? GalleryMedia.noImage : media.first;
     final entry = record.entry;
     return GalleryItem(
       id: _stableNumericId(record.workId),
@@ -32,6 +31,10 @@ class QuickTagCloudGalleryMapper {
       imageHeight: cover.height,
       tagString: entry.tags,
       tags: record.promptTags,
+      positiveCharacterTags: [
+        for (final character in entry.characterPrompts)
+          ...parseGalleryPromptTags(character.prompt),
+      ],
       tagsComplete: true,
       fileExt: cover.extension,
       fileUrl: cover.downloadUrl.isEmpty ? null : cover.downloadUrl,

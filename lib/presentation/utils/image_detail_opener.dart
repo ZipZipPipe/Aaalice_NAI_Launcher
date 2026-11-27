@@ -69,7 +69,7 @@ class ImageDetailOpener {
       images: images,
       initialIndex: initialIndex,
       showMetadataPanel: showMetadataPanel,
-      showThumbnails: showThumbnails && images.length > 1,
+      showThumbnails: showThumbnails,
       callbacks: callbacks,
     );
   }
@@ -108,6 +108,7 @@ class ImageDetailOpener {
     bool showMetadataPanel = true,
     bool showThumbnails = true,
     ImageDetailCallbacks? callbacks,
+    ImageDetailPageNavigator? pageNavigator,
   }) {
     // 使用 microtask 确保不阻塞当前帧
     Future.microtask(() {
@@ -118,8 +119,9 @@ class ImageDetailOpener {
         images: images,
         initialIndex: initialIndex,
         showMetadataPanel: showMetadataPanel,
-        showThumbnails: showThumbnails && images.length > 1,
+        showThumbnails: showThumbnails,
         callbacks: callbacks,
+        pageNavigator: pageNavigator,
       );
     });
   }

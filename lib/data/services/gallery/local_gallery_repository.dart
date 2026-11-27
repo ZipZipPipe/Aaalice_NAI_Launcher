@@ -3,6 +3,7 @@ import 'dart:math';
 
 import 'package:path/path.dart' as p;
 
+import '../../../core/cache/gallery_cache_manager.dart';
 import '../../../core/database/datasources/gallery_data_source.dart';
 import '../../../core/exceptions/gallery_exceptions.dart';
 import '../../../core/utils/app_logger.dart';
@@ -10,7 +11,7 @@ import '../../models/gallery/local_image_record.dart';
 import '../../models/gallery/nai_image_metadata.dart';
 import '../../repositories/gallery_folder_repository.dart';
 import '../image_metadata_service.dart';
-import 'scan_config.dart';
+import 'gallery_image_files.dart';
 
 /// File-system and persistence boundary for the local gallery.
 class LocalGalleryRepository {
@@ -19,8 +20,8 @@ class LocalGalleryRepository {
 
   final GalleryDataSource _dataSource;
 
-  Future<List<File>> findGalleryFiles() async {
-    final rootPath = await GalleryFolderRepository.instance.getRootPath();
+  Future<List<File>> findGalleryFiles([String? rootPath]) async {
+    rootPath ??= await GalleryFolderRepository.instance.getRootPath();
     if (rootPath == null || rootPath.isEmpty) {
       throw GalleryPermissionDeniedException(
         path: rootPath,
@@ -36,17 +37,8 @@ class LocalGalleryRepository {
       );
     }
 
-    var files = <File>[];
-    const scanConfig = ScanConfig();
     try {
-      await for (final entity in rootDir.list(
-        recursive: true,
-        followLinks: false,
-      )) {
-        if (entity is File && scanConfig.acceptsGalleryImagePath(entity.path)) {
-          files.add(entity);
-        }
-      }
+      final files = await const GalleryImageFiles().list(rootDir);
 
       const statBatchSize = 32;
       final validStats = <({File file, FileStat stat})>[];
@@ -65,8 +57,8 @@ class LocalGalleryRepository {
         await Future<void>.delayed(Duration.zero);
       }
       validStats.sort((a, b) => b.stat.modified.compareTo(a.stat.modified));
-      files = validStats.map((entry) => entry.file).toList();
-    } catch (error) {
+      return validStats.map((entry) => entry.file).toList();
+    } on FileSystemException catch (error) {
       AppLogger.e(
         'Failed to get image files',
         error,
@@ -80,7 +72,6 @@ class LocalGalleryRepository {
         cause: error,
       );
     }
-    return files;
   }
 
   Future<List<LocalImageRecord>> loadRecords(
@@ -166,6 +157,9 @@ class LocalGalleryRepository {
   Future<int?> getImageIdByPath(String filePath) =>
       _dataSource.getImageIdByPath(filePath);
 
+  Future<void> markAsDeleted(List<String> filePaths) =>
+      _dataSource.batchMarkAsDeleted(filePaths);
+
   Future<bool> toggleFavorite(String filePath) async {
     final file = File(filePath);
     var imageId = await _dataSource.getImageIdByPath(filePath);
@@ -179,6 +173,7 @@ class LocalGalleryRepository {
         createdAt: stat.changed,
         modifiedAt: stat.modified,
       );
+      GalleryCacheManager().invalidateStatistics();
     }
     return _dataSource.toggleFavorite(imageId);
   }
@@ -202,33 +197,17 @@ class LocalGalleryRepository {
         ? metadata
         : await getMetadata(file.path);
     final hasMetadata = resolvedMetadata?.hasData == true;
-    final imageId = await _dataSource.upsertImage(
+    // Leave unparsed rows unscanned so ordinary scans parse them again.
+    final imageId = await _dataSource.upsertImageWithMetadata(
       filePath: file.path,
       fileName: p.basename(file.path),
       fileSize: stat.size,
-      width: resolvedMetadata?.width,
-      height: resolvedMetadata?.height,
-      aspectRatio:
-          resolvedMetadata?.width != null &&
-              resolvedMetadata?.height != null &&
-              resolvedMetadata!.height! > 0
-          ? resolvedMetadata.width! / resolvedMetadata.height!
-          : null,
       createdAt: stat.modified,
       modifiedAt: stat.modified,
-      resolutionKey:
-          resolvedMetadata?.width != null && resolvedMetadata?.height != null
-          ? '${resolvedMetadata!.width}x${resolvedMetadata.height}'
-          : null,
+      metadata: resolvedMetadata,
+      statusWithoutMetadata: MetadataStatus.none,
       lastScannedAt: hasMetadata ? DateTime.now() : null,
-      metadataStatus: hasMetadata
-          ? MetadataStatus.success
-          : MetadataStatus.none,
     );
-    if (hasMetadata) {
-      await _dataSource.upsertMetadata(imageId, resolvedMetadata!);
-      ImageMetadataService().cacheMetadata(file.path, resolvedMetadata);
-    }
     AppLogger.i(
       '[AddNewImage] Added new image immediately: ${p.basename(file.path)} '
           '(ID: $imageId)',

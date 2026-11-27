@@ -1,13 +1,14 @@
 import 'dart:convert';
 
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:hive_flutter/hive_flutter.dart';
+import 'package:hive_ce_flutter/hive_ce_flutter.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../constants/storage_keys.dart';
 import '../utils/app_logger.dart';
 import '../../data/models/queue/replication_task.dart';
+
 import 'base_hive_storage.dart';
+import 'replication_queue_startup_gate.dart';
 
 part 'replication_queue_storage.g.dart';
 
@@ -22,6 +23,11 @@ class ReplicationQueueStorage extends BaseHiveStorage<void> {
   Box<String> get _queueBox =>
       Hive.box<String>(StorageKeys.replicationQueueBox);
 
+  bool _lastLoadUnreadable = false;
+
+  /// 上一次 [load] 读到了非空索引却解析失败。
+  bool get lastLoadUnreadable => _lastLoadUnreadable;
+
   /// 保存队列到本地存储
   Future<void> save(List<ReplicationTask> tasks) async {
     final taskList = ReplicationTaskList(tasks: tasks);
@@ -31,6 +37,8 @@ class ReplicationQueueStorage extends BaseHiveStorage<void> {
 
   /// 从本地存储加载队列（同步加载）
   List<ReplicationTask> load() {
+    ReplicationQueueStartupGate.checkReadable('ReplicationQueueStorage.load');
+    _lastLoadUnreadable = false;
     try {
       final jsonString = _queueBox.get(StorageKeys.replicationQueueData);
 
@@ -42,7 +50,12 @@ class ReplicationQueueStorage extends BaseHiveStorage<void> {
       final taskList = ReplicationTaskList.fromJson(json);
       return taskList.tasks;
     } catch (error, stackTrace) {
-      AppLogger.e('Failed to restore replication queue', error, stackTrace);
+      _lastLoadUnreadable = true;
+      AppLogger.e(
+        'Failed to restore replication queue',
+        '${error.runtimeType}',
+        stackTrace,
+      );
       return [];
     }
   }

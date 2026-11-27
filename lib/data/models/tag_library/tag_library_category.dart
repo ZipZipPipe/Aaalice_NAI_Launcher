@@ -1,5 +1,9 @@
+import 'dart:math';
+
 import 'package:freezed_annotation/freezed_annotation.dart';
 import 'package:uuid/uuid.dart';
+
+import '../../../core/extensions/list_sort_extensions.dart';
 
 part 'tag_library_category.freezed.dart';
 part 'tag_library_category.g.dart';
@@ -8,7 +12,7 @@ part 'tag_library_category.g.dart';
 ///
 /// 用于组织词库条目，支持无限层级嵌套
 @freezed
-class TagLibraryCategory with _$TagLibraryCategory {
+abstract class TagLibraryCategory with _$TagLibraryCategory {
   const TagLibraryCategory._();
 
   const factory TagLibraryCategory({
@@ -73,31 +77,47 @@ extension TagLibraryCategoryListExtension on List<TagLibraryCategory> {
   List<TagLibraryCategory> getChildren(String parentId) =>
       where((c) => c.parentId == parentId).toList();
 
-  /// 按排序顺序排列
-  List<TagLibraryCategory> sortedByOrder() {
-    final sorted = [...this];
-    sorted.sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
-    return sorted;
-  }
+  /// 按排序顺序排列，序号相同按 id，与侧栏树一致
+  List<TagLibraryCategory> sortedByOrder() => [...this]..sort((a, b) {
+    final byOrder = a.sortOrder.compareTo(b.sortOrder);
+    return byOrder != 0 ? byOrder : a.id.compareTo(b.id);
+  });
+
+  /// 排到现有分类之后的序号
+  int get nextSortOrder =>
+      fold(-1, (latest, c) => max(latest, c.sortOrder)) + 1;
+
+  /// 排到 [parentId] 现有子分类之后的序号
+  int nextSortOrderUnder(String? parentId) =>
+      where((c) => c.parentId == parentId).toList().nextSortOrder;
 
   /// 按名称排序
   List<TagLibraryCategory> sortedByName() {
-    final sorted = [...this];
-    sorted.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
-    return sorted;
+    return [...this]..sortByKey((category) => category.name.toLowerCase());
   }
 
-  /// 构建分类树
+  /// 构建分类树，同级按 [sortedByOrder] 排列
   Map<String?, List<TagLibraryCategory>> buildTree() {
     final tree = <String?, List<TagLibraryCategory>>{};
-    for (final category in this) {
-      final parentId = category.parentId;
-      tree.putIfAbsent(parentId, () => []).add(category);
-    }
-    for (final children in tree.values) {
-      children.sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+    for (final category in sortedByOrder()) {
+      tree.putIfAbsent(category.parentId, () => []).add(category);
     }
     return tree;
+  }
+
+  /// 按侧栏树的展示顺序平铺：父分类在前，子分类紧随其后
+  List<TagLibraryCategory> inTreeOrder() {
+    final tree = buildTree();
+    final ordered = <TagLibraryCategory>[];
+    void visit(String? parentId) {
+      for (final category in tree[parentId] ?? const <TagLibraryCategory>[]) {
+        ordered.add(category);
+        visit(category.id);
+      }
+    }
+
+    visit(null);
+    return ordered;
   }
 
   /// 获取分类路径
@@ -157,14 +177,6 @@ extension TagLibraryCategoryListExtension on List<TagLibraryCategory> {
     }
 
     return descendants;
-  }
-
-  /// 更新排序顺序
-  List<TagLibraryCategory> reindex() {
-    return asMap()
-        .entries
-        .map((e) => e.value.copyWith(sortOrder: e.key))
-        .toList();
   }
 
   /// 搜索分类

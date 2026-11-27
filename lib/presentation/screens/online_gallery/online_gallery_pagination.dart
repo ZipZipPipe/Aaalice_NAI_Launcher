@@ -99,7 +99,7 @@ class OnlineGalleryPagination extends StatelessWidget {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   IconButton(
-                    onPressed: state.page > 1
+                    onPressed: state.canGoToPreviousPage
                         ? () => onGoToPage(state.page - 1)
                         : null,
                     icon: const Icon(Icons.chevron_left, size: 24),
@@ -111,10 +111,7 @@ class OnlineGalleryPagination extends StatelessWidget {
                       : _buildPageDisplay(context, theme),
                   SizedBox(width: isCompact ? 4 : 8),
                   IconButton(
-                    onPressed:
-                        (state.currentCache.boundaryForPage(state.page + 1) !=
-                                null ||
-                            state.hasMore)
+                    onPressed: state.canGoToNextPage
                         ? () => onGoToPage(state.page + 1)
                         : null,
                     icon: const Icon(Icons.chevron_right, size: 24),
@@ -208,13 +205,9 @@ class OnlineGalleryPagination extends StatelessWidget {
         style: theme.textTheme.labelLarge?.copyWith(
           fontWeight: FontWeight.w500,
         ),
-        decoration: InputDecoration(
+        decoration: const InputDecoration(
           isDense: true,
-          contentPadding: const EdgeInsets.symmetric(
-            horizontal: 8,
-            vertical: 8,
-          ),
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
+          contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
         ),
         inputFormatters: [
           FilteringTextInputFormatter.digitsOnly,

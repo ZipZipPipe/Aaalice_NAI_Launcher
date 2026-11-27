@@ -10,7 +10,6 @@ import 'generation_preparation_service.dart';
 import 'generation_preparation_schema.dart';
 import 'generation_settings_service.dart';
 import 'generation_status_service.dart';
-import 'generation_tool_results.dart';
 import 'generation_tool_limits.dart';
 
 class GenerationToolDefinitions {
@@ -75,6 +74,8 @@ class GenerationToolDefinitions {
             'Prepare an image generation transaction without submitting it. '
             'Returns a persistent preparation_id and the exact estimated '
             'Anlas cost. operation is generate (synchronous) or queue. '
+            'With source_ref or source_image, add enhance to run NovelAI '
+            'Enhance instead of plain img2img. '
             'Submit exact zero-cost preparations directly. Paid submissions '
             'use confirmed=true and the application permission approval UI.',
         parameters: {
@@ -150,8 +151,11 @@ class GenerationToolDefinitions {
         name: 'generate_image',
         label: 'Generate Image',
         description:
-            'SYNCHRONOUS image generation (the default): waits for the '
-            'images to finish and shows them as thumbnails in the chat. '
+            'Compatibility two-phase generation: without preparation_id this '
+            'only prepares, even at zero Anlas cost. Submit the returned ID '
+            'with submit_generation; do not poll status or history while '
+            'prepared. With preparation_id this submits the stored request '
+            'and waits for the images; prompt is then unnecessary. '
             'Uses the current generation page settings, overriding prompt '
             '/ negative_prompt / width / height / count / seed. '
             'Important: "count" generates N variations of the SAME prompt '
@@ -171,8 +175,8 @@ class GenerationToolDefinitions {
             '1920x1088; Small 512x768 / 768x512 / 640x640. Custom sizes '
             'are allowed but limited: width and height MUST be multiples '
             'of 64 (minimum 64), each side at most 4096, total pixels at '
-            'most 3145728. Omit to reuse the generation '
-            'page size. '
+            'most 3145728. Omit to reuse the generation page size, or the '
+            'source image import resolution when source_image is given. '
             '(4) "seed": omit or -1 for random. A fixed seed is honored '
             'only when count = 1; with count > 1 every image gets an '
             'independent random seed (identical to the generation page). '
@@ -183,7 +187,9 @@ class GenerationToolDefinitions {
             'switch to inpaint with "inpaint_strength" (0-0.99); "noise" '
             '(0-0.99) adds variation. Without "source_image" this is plain '
             'text-to-image regardless of the generation page img2img '
-            'state. These arguments apply to this single transaction only and '
+            'state. Add "enhance" with source_image to run NovelAI Enhance; '
+            'width and height then derive from the source and scale. '
+            'These arguments apply to this single transaction only and '
             'never change the generation page Image2Image panel; use '
             'set_generation_source_image when the user should see the image '
             'loaded there. '
@@ -192,13 +198,14 @@ class GenerationToolDefinitions {
             'workspace-relative argument for read plus an application-owned '
             'resource_ref; never derive one from the other. Thumbnails appear '
             'in the chat. For normal "draw/generate" requests '
-            'always use this tool instead of queue_image_task.',
+            'prefer prepare_generation then submit_generation, not queue_image_task.',
         parameters: const {
           'type': 'object',
           'properties': {
             'prompt': {
               'type': 'string',
-              'description': 'Positive prompt; English danbooru-style tags.',
+              'description':
+                  'Positive prompt required only when no preparation_id is supplied.',
             },
             'negative_prompt': {
               'type': 'string',
@@ -272,6 +279,7 @@ class GenerationToolDefinitions {
                   'Inpaint strength 0-0.99 (only with '
                   'mask_image).',
             },
+            'enhance': generationEnhanceProperty,
             'preparation_id': {
               'type': 'string',
               'description': 'ID returned by the first unconfirmed call.',
@@ -282,7 +290,7 @@ class GenerationToolDefinitions {
                   'Required only for paid preparations; exact zero-cost submissions omit this.',
             },
           },
-          'required': ['prompt'],
+          'required': <String>[],
         },
         executeWithControl: _preparation.generateLegacy,
       ),
@@ -290,7 +298,9 @@ class GenerationToolDefinitions {
         name: 'queue_image_task',
         label: 'Queue Image Task',
         description:
-            'ASYNCHRONOUS queueing: enqueues N IDENTICAL tasks (same '
+            'Compatibility two-phase queueing: without preparation_id this '
+            'only prepares. Submit the returned ID with submit_generation. '
+            'With preparation_id, enqueues N IDENTICAL tasks (same '
             'prompt) into the generation queue and returns immediately '
             'WITHOUT producing images in the chat. "count" only creates '
             'N copies of the SAME prompt; for DIFFERENT prompts call this '
@@ -338,7 +348,7 @@ class GenerationToolDefinitions {
                   'Required only for paid preparations; exact zero-cost submissions omit this.',
             },
           },
-          'required': ['prompt'],
+          'required': <String>[],
         },
         executeWithControl: _preparation.queueLegacy,
       ),
@@ -353,7 +363,7 @@ class GenerationToolDefinitions {
           'properties': <String, dynamic>{},
           'required': <String>[],
         },
-        executeFn: (_, __) async => generationTextResult(_status.statusJson()),
+        executeFn: (_, __) async => agentToolJsonResult(_status.statusJson()),
       ),
       DefinedAgentTool(
         name: 'get_recent_images',
@@ -387,30 +397,39 @@ class GenerationToolDefinitions {
         name: 'get_generation_settings',
         label: 'Get Generation Settings',
         description:
-            'Read all image generation settings: model, sampler, '
+            'Read all image generation settings: model, effort, '
+            'model_mode, sampler, '
             'steps, scale (CFG), cfg_rescale, noise_schedule, uc_preset, '
             'quality_toggle, variety_plus, decrisp, smea flags, '
             'transparent_background, width/height, seed, generation count, '
             'action (generate/img2img/infill) and strength values. Call '
             'this before update_generation_settings to learn current values '
-            'and valid model ids.',
+            'and valid model ids. steps and sampler report what is actually '
+            'sent; locked_by_effort lists fields Medium effort ignores.',
         parameters: const {
           'type': 'object',
           'properties': <String, dynamic>{},
           'required': <String>[],
         },
         executeFn: (_, __) async =>
-            generationTextResult(_settings.settingsJson()),
+            agentToolJsonResult(_settings.settingsJson()),
       ),
       DefinedAgentTool(
         name: 'update_generation_settings',
         label: 'Update Generation Settings',
         description:
-            'Persistently change generation page settings. Only '
-            'provided fields are changed. Requirements: "model" accepts an '
-            'exact model id OR a friendly name like "v5", "v5 curated", '
-            '"v4.5 full", "v3" (get_generation_settings lists all); '
-            'switching model may auto-adjust scale/steps defaults. '
+            'Persistently change generation page settings. Switching models '
+            'restores the target model\'s last-used sampling parameters when '
+            'available. Explicitly provided fields in the same call take '
+            'precedence. Requirements: "model" accepts an exact model id '
+            'OR a friendly name like "v5", "v5 curated", "v4.5 full", "v3" '
+            '(get_generation_settings lists all). '
+            '"effort" (V5 Full only): "medium" costs fewer Anlas and less '
+            'V5 quota but always uses 14 steps, Euler Ancestral and the '
+            'Heavy UC preset and does not send negative prompts, '
+            'cfg_rescale or Variety+; "high" is the full model. '
+            '"model_mode" (V4+): "furry" prepends the "fur dataset" tag to '
+            'the prompt, "anime" does not. '
             '"sampler" examples: k_euler_ancestral, k_euler, k_dpmpp_2m, '
             'k_dpmpp_2m_sde. "steps" clamped to 1-50; "scale" 0-10; '
             '"cfg_rescale" 0-1; "noise_schedule" one of '
@@ -426,6 +445,14 @@ class GenerationToolDefinitions {
           'type': 'object',
           'properties': {
             'model': {'type': 'string'},
+            'effort': {
+              'type': 'string',
+              'enum': ['medium', 'high'],
+            },
+            'model_mode': {
+              'type': 'string',
+              'enum': ['anime', 'furry'],
+            },
             'sampler': {'type': 'string', 'enum': Samplers.allSamplers},
             'steps': {'type': 'integer', 'minimum': 1, 'maximum': 50},
             'scale': {'type': 'number', 'minimum': 0, 'maximum': 10},

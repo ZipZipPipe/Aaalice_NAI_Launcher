@@ -2,11 +2,82 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nai_launcher/l10n/app_localizations.dart';
 import 'package:nai_launcher/presentation/themes/core/layered_surface_style.dart';
+import 'package:nai_launcher/presentation/widgets/common/themed_input.dart';
 import 'package:nai_launcher/presentation/widgets/prompt/new_preset_dialog.dart';
 
+import '../../../helpers/reachability_expectations.dart';
+import '../../../helpers/viewport_scenarios.dart';
+
+Finder _ancestorOfText(String text, bool Function(Widget) matches) =>
+    find.ancestor(
+      of: find.text(text, skipOffstage: false),
+      matching: find.byWidgetPredicate(matches, skipOffstage: false),
+    );
+
 void main() {
+  for (final locale in ['zh', 'en']) {
+    for (final textScale in [1.0, 3.0]) {
+      testWidgets(
+        '新建预设在各宽度、短横屏、安全区与键盘下不溢出，$locale ${textScale}x 时标题、字段、选项与操作都可达',
+        (tester) async {
+          for (final viewport in formViewports) {
+            applyViewport(tester, viewport);
+            await _pumpLauncher(
+              tester,
+              textScale: textScale,
+              locale: Locale(locale),
+            );
+            await tester.tap(find.text('打开'));
+            await tester.pumpAndSettle();
+            final reason =
+                '${describeViewport(viewport)} $locale ${textScale}x';
+            expect(tester.takeException(), isNull, reason: reason);
+            final l10n = AppLocalizations.of(
+              tester.element(find.byType(NewPresetDialog)),
+            )!;
+            bool isInk(Widget widget) => widget is InkWell;
+            for (final (label, target) in [
+              (
+                '关闭',
+                find.ancestor(
+                  of: find.byIcon(Icons.close, skipOffstage: false),
+                  matching: find.byType(IconButton, skipOffstage: false),
+                ),
+              ),
+              ('名称', find.byType(TextField, skipOffstage: false)),
+              (
+                '基于默认预设',
+                _ancestorOfText(l10n.newPresetDialog_template, isInk).first,
+              ),
+              (
+                '完全空白',
+                _ancestorOfText(l10n.newPresetDialog_blank, isInk).first,
+              ),
+              ('取消', buttonLabeled(l10n.common_cancel)),
+              ('创建', buttonLabeled(l10n.common_create)),
+            ]) {
+              await scrollUntilBuilt(
+                tester,
+                target,
+                find.byKey(
+                  const ValueKey('new-preset-dialog-scroll'),
+                  skipOffstage: false,
+                ),
+              );
+              await revealOnScreen(tester, target);
+              expectReachable(tester, target, reason: '$reason $label');
+            }
+            expect(tester.takeException(), isNull, reason: reason);
+            await tester.binding.handlePopRoute();
+            await tester.pumpAndSettle();
+          }
+        },
+      );
+    }
+  }
+
   testWidgets('320 宽紧凑窗格以全屏长表单呈现', (tester) async {
-    await _setView(tester, size: const Size(320, 640));
+    applyViewport(tester, plainViewport(const Size(320, 640)));
 
     await _pumpLauncher(tester);
     await tester.tap(find.text('打开'));
@@ -26,7 +97,7 @@ void main() {
   });
 
   testWidgets('Medium 与 Expanded 窗格紧凑有界且操作区贴底', (tester) async {
-    await _setView(tester, size: const Size(700, 900));
+    applyViewport(tester, plainViewport(const Size(700, 900)));
     await _pumpLauncher(tester);
     await tester.tap(find.text('打开'));
     await tester.pumpAndSettle();
@@ -39,6 +110,21 @@ void main() {
     expect(
       find.byKey(const ValueKey('adaptive-panel-header-divider')),
       findsNothing,
+    );
+    final nameField = find.descendant(
+      of: find.byType(NewPresetDialog),
+      matching: find.byType(ThemedInput),
+    );
+    expect(nameField, findsOneWidget, reason: '名称框复用共享输入色面，不另画整圈描边');
+    expect(
+      tester
+          .widget<EditableText>(
+            find.descendant(of: nameField, matching: find.byType(EditableText)),
+          )
+          .focusNode
+          .hasFocus,
+      isTrue,
+      reason: '打开后名称框获得焦点',
     );
     final headerSurface = tester.widget<ColoredBox>(
       find.byKey(const ValueKey('adaptive-panel-header-surface')),
@@ -53,7 +139,7 @@ void main() {
 
     await tester.tap(find.byTooltip('关闭'));
     await tester.pumpAndSettle();
-    await _setView(tester, size: const Size(1200, 900));
+    applyViewport(tester, plainViewport(const Size(1200, 900)));
     await tester.pump();
     await tester.tap(find.text('打开'));
     await tester.pumpAndSettle();
@@ -66,43 +152,8 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('3x 字体、IME 与 SafeArea 下可滚动且动作可达', (tester) async {
-    await _setView(
-      tester,
-      size: const Size(320, 800),
-      padding: const FakeViewPadding(left: 12, top: 32, right: 20, bottom: 28),
-      viewInsets: const FakeViewPadding(bottom: 280),
-    );
-
-    await _pumpLauncher(tester, textScale: 3);
-    await tester.tap(find.text('打开'));
-    await tester.pumpAndSettle();
-
-    final surfaceRect = tester.getRect(
-      find.byKey(const ValueKey('adaptive-bottom-sheet')),
-    );
-    expect(surfaceRect.left, greaterThanOrEqualTo(12));
-    expect(surfaceRect.right, lessThanOrEqualTo(300));
-    expect(surfaceRect.top, greaterThanOrEqualTo(32));
-    expect(surfaceRect.bottom, lessThanOrEqualTo(520));
-
-    final scrollable = find.byKey(const ValueKey('new-preset-dialog-scroll'));
-    expect(scrollable, findsOneWidget);
-    await tester.drag(scrollable, const Offset(0, -400));
-    await tester.pumpAndSettle();
-
-    for (final label in ['取消', '创建']) {
-      final rect = tester.getRect(find.text(label));
-      expect(rect.left, greaterThanOrEqualTo(12));
-      expect(rect.right, lessThanOrEqualTo(300));
-      expect(rect.top, greaterThanOrEqualTo(32));
-      expect(rect.bottom, lessThanOrEqualTo(492));
-    }
-    expect(tester.takeException(), isNull);
-  });
-
   testWidgets('选择创建方式后返回完整结果，系统返回则取消', (tester) async {
-    await _setView(tester, size: const Size(360, 700));
+    applyViewport(tester, plainViewport(const Size(360, 700)));
 
     NewPresetResult? result;
     var completed = false;
@@ -167,53 +218,20 @@ void _expectBoundedDialog(WidgetTester tester, {required String surfaceKey}) {
   expect(createRect.bottom, greaterThan(frameRect.bottom - 64));
 }
 
-Future<void> _setView(
-  WidgetTester tester, {
-  required Size size,
-  FakeViewPadding padding = FakeViewPadding.zero,
-  FakeViewPadding viewInsets = FakeViewPadding.zero,
-}) async {
-  tester.view.physicalSize = size;
-  tester.view.devicePixelRatio = 1;
-  tester.view.padding = padding;
-  tester.view.viewInsets = viewInsets;
-  addTearDown(() {
-    tester.view.resetPhysicalSize();
-    tester.view.resetDevicePixelRatio();
-    tester.view.resetPadding();
-    tester.view.resetViewInsets();
-  });
-}
-
 Future<void> _pumpLauncher(
   WidgetTester tester, {
   double textScale = 1,
+  Locale locale = const Locale('zh'),
   ValueChanged<NewPresetResult?>? onResult,
 }) async {
   await tester.pumpWidget(
-    MaterialApp(
-      locale: const Locale('zh'),
-      localizationsDelegates: AppLocalizations.localizationsDelegates,
-      supportedLocales: AppLocalizations.supportedLocales,
-      builder: (context, child) => MediaQuery(
-        data: MediaQuery.of(
-          context,
-        ).copyWith(textScaler: TextScaler.linear(textScale)),
-        child: child!,
-      ),
-      home: Scaffold(
-        body: Builder(
-          builder: (context) => Center(
-            child: FilledButton(
-              onPressed: () async {
-                final result = await NewPresetDialog.show(context);
-                onResult?.call(result);
-              },
-              child: const Text('打开'),
-            ),
-          ),
-        ),
-      ),
+    localizedTestApp(
+      locale: locale,
+      textScale: textScale,
+      home: panelLauncher('打开', (context) async {
+        final result = await NewPresetDialog.show(context);
+        onResult?.call(result);
+      }),
     ),
   );
 }

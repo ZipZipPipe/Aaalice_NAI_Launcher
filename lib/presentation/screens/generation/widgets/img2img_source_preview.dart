@@ -2,6 +2,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../widgets/common/image_viewport_surface.dart';
 import '../../../../core/utils/focused_inpaint_utils.dart';
@@ -16,15 +17,21 @@ class Img2ImgSourcePreview extends StatefulWidget {
     required this.imageWidth,
     required this.imageHeight,
     this.maskBytes,
+    this.maskExtent = const AsyncData(null),
     this.focusedInpaintEnabled = false,
     this.focusedSelectionRect,
+    this.focusedContextCrop,
     this.minimumContextMegaPixels = 88.0,
   });
 
   final Uint8List sourceBytes;
   final Uint8List? maskBytes;
+
+  /// [maskBytes] 的外接矩形，聚焦框取自蒙版时使用。
+  final AsyncValue<FocusedInpaintMaskExtent?> maskExtent;
   final bool focusedInpaintEnabled;
   final Rect? focusedSelectionRect;
+  final Rect? focusedContextCrop;
   final double minimumContextMegaPixels;
   final int imageWidth;
   final int imageHeight;
@@ -34,7 +41,9 @@ class Img2ImgSourcePreview extends StatefulWidget {
 }
 
 class _Img2ImgSourcePreviewState extends State<Img2ImgSourcePreview> {
-  final Img2ImgPreviewCache _cache = Img2ImgPreviewCache();
+  late final Img2ImgPreviewCache _cache = Img2ImgPreviewCache(
+    onUpdated: _handleDerivedDataReady,
+  );
   Img2ImgPreviewDerivedData _data = const Img2ImgPreviewDerivedData();
 
   @override
@@ -49,12 +58,25 @@ class _Img2ImgSourcePreviewState extends State<Img2ImgSourcePreview> {
     _resolve();
   }
 
+  @override
+  void dispose() {
+    _cache.dispose();
+    super.dispose();
+  }
+
+  void _handleDerivedDataReady() {
+    if (!mounted) return;
+    setState(_resolve);
+  }
+
   void _resolve() {
     _data = _cache.resolve(
       sourceImage: widget.sourceBytes,
       maskImage: widget.maskBytes,
+      maskExtent: widget.maskExtent,
       focusedInpaintEnabled: widget.focusedInpaintEnabled,
       focusedSelectionRect: widget.focusedSelectionRect,
+      focusedContextCrop: widget.focusedContextCrop,
       minContextMegaPixels: widget.minimumContextMegaPixels,
       sourceWidth: widget.imageWidth,
       sourceHeight: widget.imageHeight,

@@ -68,18 +68,30 @@ class AutocompleteSettings {
 }
 
 final autocompleteSettingsProvider =
-    StateNotifierProvider<AutocompleteSettingsNotifier, AutocompleteSettings>((
-      ref,
-    ) {
-      return AutocompleteSettingsNotifier(
-        ref.read(localStorageServiceProvider),
-      );
-    });
+    NotifierProvider<AutocompleteSettingsNotifier, AutocompleteSettings>(
+      AutocompleteSettingsNotifier.new,
+    );
 
-class AutocompleteSettingsNotifier extends StateNotifier<AutocompleteSettings> {
-  AutocompleteSettingsNotifier(this._storage) : super(_load(_storage));
+/// 补全插入与自动格式化共用的标签空格偏好。
+final replaceUnderscoresPreferenceProvider = Provider<bool>(
+  (ref) => ref.watch(
+    autocompleteSettingsProvider.select(
+      (settings) => settings.replaceUnderscores,
+    ),
+  ),
+);
 
-  final LocalStorageService _storage;
+class AutocompleteSettingsNotifier extends Notifier<AutocompleteSettings> {
+  AutocompleteSettingsNotifier([this._injectedStorage]);
+
+  final LocalStorageService? _injectedStorage;
+  late LocalStorageService _storage;
+
+  @override
+  AutocompleteSettings build() {
+    _storage = _injectedStorage ?? ref.read(localStorageServiceProvider);
+    return _load(_storage);
+  }
 
   static AutocompleteSettings _load(LocalStorageService storage) {
     try {

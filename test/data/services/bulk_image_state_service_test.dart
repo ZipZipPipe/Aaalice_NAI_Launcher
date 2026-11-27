@@ -7,6 +7,8 @@ import 'package:nai_launcher/data/services/bulk_gallery_store.dart';
 import 'package:nai_launcher/data/services/bulk_image_state_service.dart';
 import 'package:nai_launcher/data/services/bulk_operation_types.dart';
 
+import '../../helpers/gallery_statistics_probe.dart';
+
 void main() {
   setUp(() => AppLogger.debugSetMinimumLevelForTesting(Level.off));
   tearDown(() => AppLogger.debugSetMinimumLevelForTesting(null));
@@ -140,6 +142,7 @@ void main() {
   });
 
   group('未索引图片', () {
+    final statistics = useGalleryStatisticsProbe();
     late Directory tempDir;
 
     setUp(() {
@@ -186,6 +189,31 @@ void main() {
       expect(outcome.result.failed, 1);
       expect(outcome.result.errors.single, contains('File not found'));
       expect(store.upserts, isEmpty);
+    });
+
+    test('一批新建记录只让缓存统计失效一次，未建记录时不失效', () async {
+      final first = File('${tempDir.path}${Platform.pathSeparator}first.png')
+        ..writeAsBytesSync([1]);
+      final second = File('${tempDir.path}${Platform.pathSeparator}second.png')
+        ..writeAsBytesSync([2]);
+      final store = _CountingBulkGalleryStore()..indexImages(['/a.png']);
+      final service = BulkImageStateService(store);
+
+      await service.editTags(
+        ['/a.png'],
+        tagsToAdd: const ['added'],
+        tagsToRemove: const [],
+      );
+      expect(statistics.invalidations, 0);
+
+      await service.editTags(
+        [first.path, second.path],
+        tagsToAdd: const ['added'],
+        tagsToRemove: const [],
+      );
+
+      expect(store.upserts, hasLength(2));
+      expect(statistics.invalidations, 1);
     });
 
     test('重新建立记录的图片仍读回真实收藏状态', () async {

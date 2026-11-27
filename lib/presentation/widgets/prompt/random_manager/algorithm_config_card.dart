@@ -7,6 +7,9 @@ import '../../../../data/models/prompt/character_count_config.dart';
 import '../../../../data/models/prompt/random_preset.dart';
 import '../../../providers/random_preset_provider.dart';
 import '../../../themes/core/layered_surface_style.dart';
+import '../../common/ink_host.dart';
+import '../../common/labeled_slider_rows.dart';
+import 'probability_text.dart';
 import 'random_config_l10n.dart';
 
 class AlgorithmConfigCard extends ConsumerStatefulWidget {
@@ -50,12 +53,11 @@ class _AlgorithmConfigCardState extends ConsumerState<AlgorithmConfigCard> {
         borderRadius: BorderRadius.circular(12),
       ),
       clipBehavior: Clip.antiAlias,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Material(
-            color: Colors.transparent,
-            child: InkWell(
+      child: InkHost(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            InkWell(
               onTap: () => setState(() => _expanded = !_expanded),
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(14, 13, 10, 12),
@@ -95,53 +97,59 @@ class _AlgorithmConfigCardState extends ConsumerState<AlgorithmConfigCard> {
                 ),
               ),
             ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
-            child: _DistributionSummary(
-              countCategories: countCategories,
-              soloOptions: soloOptions,
-            ),
-          ),
-          if (widget.onGlobalSettings != null)
             Padding(
               padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
-              child: SizedBox(
-                width: double.infinity,
-                child: FilledButton.tonalIcon(
-                  onPressed: readOnly ? null : widget.onGlobalSettings,
-                  icon: const Icon(Icons.people_outline_rounded, size: 18),
-                  label: Text(context.l10n.randomManager_globalPeopleSettings),
-                ),
+              child: _DistributionSummary(
+                countCategories: countCategories,
+                soloOptions: soloOptions,
               ),
             ),
-          AnimatedSize(
-            duration: reduceMotion
-                ? Duration.zero
-                : const Duration(milliseconds: 180),
-            curve: Curves.easeOutCubic,
-            alignment: Alignment.topCenter,
-            child: _expanded
-                ? _ExpandedConfig(
-                    preset: preset,
-                    config: config,
-                    countCategories: countCategories,
-                    soloOptions: soloOptions,
-                    readOnly: readOnly,
-                    onCountWeightChanged: (id, value) =>
-                        _updateCharacterCountCategoryWeight(preset, id, value),
-                    onGenderWeightChanged: (categoryId, optionId, value) =>
-                        _updateCharacterTagOptionWeight(
-                          preset,
-                          categoryId,
-                          optionId,
-                          value,
-                        ),
-                    onConfigChanged: (value) => _updateConfig(preset, value),
-                  )
-                : const SizedBox(width: double.infinity),
-          ),
-        ],
+            if (widget.onGlobalSettings != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.tonalIcon(
+                    onPressed: readOnly ? null : widget.onGlobalSettings,
+                    icon: const Icon(Icons.people_outline_rounded, size: 18),
+                    label: Text(
+                      context.l10n.randomManager_globalPeopleSettings,
+                    ),
+                  ),
+                ),
+              ),
+            AnimatedSize(
+              duration: reduceMotion
+                  ? Duration.zero
+                  : const Duration(milliseconds: 180),
+              curve: Curves.easeOutCubic,
+              alignment: Alignment.topCenter,
+              child: _expanded
+                  ? _ExpandedConfig(
+                      preset: preset,
+                      config: config,
+                      countCategories: countCategories,
+                      soloOptions: soloOptions,
+                      readOnly: readOnly,
+                      onCountWeightChanged: (id, value) =>
+                          _updateCharacterCountCategoryWeight(
+                            preset,
+                            id,
+                            value,
+                          ),
+                      onGenderWeightChanged: (categoryId, optionId, value) =>
+                          _updateCharacterTagOptionWeight(
+                            preset,
+                            categoryId,
+                            optionId,
+                            value,
+                          ),
+                      onConfigChanged: (value) => _updateConfig(preset, value),
+                    )
+                  : const SizedBox(width: double.infinity),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -220,7 +228,13 @@ class _DistributionSummary extends StatelessWidget {
       (total, option) => total + option.weight,
     );
 
+    final metricStyle = Theme.of(context).textTheme.labelSmall?.copyWith(
+      color: colors.onSurfaceVariant,
+      fontFeatures: const [FontFeature.tabularFigures()],
+    );
+
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _SegmentBar(
           values: countCategories.map((item) => item.weight).toList(),
@@ -233,37 +247,31 @@ class _DistributionSummary extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 8),
-        Row(
+        // 每项人数与权重整体换行，窄屏放大文字时不截断
+        Wrap(
+          key: const ValueKey('random-manager-algorithm-summary'),
+          spacing: 12,
+          runSpacing: 2,
+          crossAxisAlignment: WrapCrossAlignment.center,
           children: [
-            Expanded(
-              child: Text(
-                countCategories
-                    .take(4)
-                    .map(
-                      (category) =>
-                          '${context.l10n.characterCountLabel(category)} ${category.weight}',
-                    )
-                    .join('  ·  '),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: colors.onSurfaceVariant,
-                  fontFeatures: const [FontFeature.tabularFigures()],
-                ),
-              ),
-            ),
-            if (genderTotal > 0) ...[
-              const SizedBox(width: 8),
-              Icon(Icons.wc_rounded, size: 14, color: colors.onSurfaceVariant),
-              const SizedBox(width: 3),
+            for (final category in countCategories.take(4))
               Text(
-                genderTotal.toString(),
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: colors.onSurfaceVariant,
-                  fontFeatures: const [FontFeature.tabularFigures()],
-                ),
+                '${context.l10n.characterCountLabel(category)} ${category.weight}',
+                style: metricStyle,
               ),
-            ],
+            if (genderTotal > 0)
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.wc_rounded,
+                    size: 14,
+                    color: colors.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: 3),
+                  Text(genderTotal.toString(), style: metricStyle),
+                ],
+              ),
           ],
         ),
       ],
@@ -350,13 +358,17 @@ class _ExpandedConfig extends StatelessWidget {
             label: context.l10n.randomManager_characterCountWeight,
           ),
           const SizedBox(height: 8),
-          ...countCategories.map(
-            (category) => _WeightSlider(
-              label: context.l10n.characterCountLabel(category),
-              value: category.weight,
-              enabled: !readOnly,
-              onChanged: (value) => onCountWeightChanged(category.id, value),
-            ),
+          _WeightSliders(
+            sliders: [
+              for (final category in countCategories)
+                _weightSlider(
+                  label: context.l10n.characterCountLabel(category),
+                  value: category.weight,
+                  enabled: !readOnly,
+                  onChanged: (value) =>
+                      onCountWeightChanged(category.id, value),
+                ),
+            ],
           ),
           if (soloCategoryId != null && soloOptions.isNotEmpty) ...[
             const SizedBox(height: 12),
@@ -365,14 +377,17 @@ class _ExpandedConfig extends StatelessWidget {
               label: context.l10n.randomManager_genderWeight,
             ),
             const SizedBox(height: 8),
-            ...soloOptions.map(
-              (option) => _WeightSlider(
-                label: context.l10n.characterTagOptionLabel(option),
-                value: option.weight,
-                enabled: !readOnly,
-                onChanged: (value) =>
-                    onGenderWeightChanged(soloCategoryId, option.id, value),
-              ),
+            _WeightSliders(
+              sliders: [
+                for (final option in soloOptions)
+                  _weightSlider(
+                    label: context.l10n.characterTagOptionLabel(option),
+                    value: option.weight,
+                    enabled: !readOnly,
+                    onChanged: (value) =>
+                        onGenderWeightChanged(soloCategoryId, option.id, value),
+                  ),
+              ],
             ),
           ],
           const SizedBox(height: 10),
@@ -391,37 +406,21 @@ class _ExpandedConfig extends StatelessWidget {
                   ),
           ),
           const SizedBox(height: 4),
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  context.l10n.randomManager_globalEmphasisProbability,
-                  style: Theme.of(context).textTheme.bodyMedium,
-                ),
-              ),
-              SizedBox(
-                width: 140,
-                child: Slider(
-                  value: config.globalEmphasisProbability.clamp(0, 0.1),
-                  min: 0,
-                  max: 0.1,
-                  divisions: 10,
-                  onChanged: readOnly
-                      ? null
-                      : (value) => onConfigChanged(
-                          config.copyWith(globalEmphasisProbability: value),
-                        ),
-                ),
-              ),
-              SizedBox(
-                width: 34,
-                child: Text(
-                  '${(config.globalEmphasisProbability * 100).round()}%',
-                  textAlign: TextAlign.end,
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    fontFeatures: const [FontFeature.tabularFigures()],
-                  ),
-                ),
+          LabeledSliderRows(
+            labelStyle: Theme.of(context).textTheme.bodyMedium,
+            valueStyle: Theme.of(context).textTheme.labelSmall,
+            sliders: [
+              LabeledSlider(
+                label: context.l10n.randomManager_globalEmphasisProbability,
+                value: config.globalEmphasisProbability,
+                max: 0.1,
+                divisions: 10,
+                valueText: formatProbabilityPercent,
+                onChanged: readOnly
+                    ? null
+                    : (value) => onConfigChanged(
+                        config.copyWith(globalEmphasisProbability: value),
+                      ),
               ),
             ],
           ),
@@ -444,62 +443,46 @@ class _SectionLabel extends StatelessWidget {
       children: [
         Icon(icon, size: 16, color: colors.onSurfaceVariant),
         const SizedBox(width: 6),
-        Text(
-          label,
-          style: Theme.of(
-            context,
-          ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w600),
+        Expanded(
+          child: Text(
+            label,
+            style: Theme.of(
+              context,
+            ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w600),
+          ),
         ),
       ],
     );
   }
 }
 
-class _WeightSlider extends StatelessWidget {
-  const _WeightSlider({
-    required this.label,
-    required this.value,
-    required this.enabled,
-    required this.onChanged,
-  });
+LabeledSlider _weightSlider({
+  required String label,
+  required int value,
+  required bool enabled,
+  required ValueChanged<int> onChanged,
+}) => LabeledSlider(
+  label: label,
+  value: value.toDouble(),
+  min: 1,
+  max: 100,
+  divisions: 99,
+  valueText: (weight) => '${weight.round()}',
+  onChanged: enabled ? (next) => onChanged(next.round()) : null,
+);
 
-  final String label;
-  final int value;
-  final bool enabled;
-  final ValueChanged<int> onChanged;
+class _WeightSliders extends StatelessWidget {
+  const _WeightSliders({required this.sliders});
+
+  final List<LabeledSlider> sliders;
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      children: [
-        SizedBox(
-          width: 78,
-          child: Text(
-            label,
-            overflow: TextOverflow.ellipsis,
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
-        ),
-        Expanded(
-          child: Slider(
-            value: value.clamp(1, 100).toDouble(),
-            min: 1,
-            max: 100,
-            divisions: 99,
-            onChanged: enabled ? (next) => onChanged(next.round()) : null,
-          ),
-        ),
-        SizedBox(
-          width: 28,
-          child: Text(
-            value.toString(),
-            textAlign: TextAlign.end,
-            style: Theme.of(context).textTheme.labelSmall?.copyWith(
-              fontFeatures: const [FontFeature.tabularFigures()],
-            ),
-          ),
-        ),
-      ],
+    final textTheme = Theme.of(context).textTheme;
+    return LabeledSliderRows(
+      sliders: sliders,
+      labelStyle: textTheme.bodySmall,
+      valueStyle: textTheme.labelSmall,
     );
   }
 }

@@ -4,6 +4,8 @@ import 'package:nai_launcher/core/enums/precise_ref_type.dart';
 import 'package:nai_launcher/l10n/app_localizations.dart';
 import 'package:nai_launcher/presentation/widgets/common/precise_reference_type_dialog.dart';
 
+import '../../../helpers/adaptive_panel_expectations.dart';
+
 void main() {
   testWidgets('returns the selected precise reference type', (tester) async {
     PreciseRefType? selected;
@@ -17,7 +19,10 @@ void main() {
           body: Builder(
             builder: (context) => ElevatedButton(
               onPressed: () async {
-                selected = await PreciseReferenceTypeDialog.show(context);
+                selected = await PreciseReferenceTypeDialog.show(
+                  context,
+                  outfit: false,
+                );
               },
               child: const Text('Open'),
             ),
@@ -32,6 +37,8 @@ void main() {
     expect(find.text('Character'), findsOneWidget);
     expect(find.text('Style'), findsOneWidget);
     expect(find.text('Character + Style'), findsOneWidget);
+    expect(find.text('Outfit'), findsNothing);
+    expect(find.byType(ListTile), findsNWidgets(3));
 
     await tester.tap(
       find.byKey(const ValueKey('precise-reference-type-characterAndStyle')),
@@ -80,7 +87,10 @@ void main() {
               body: Builder(
                 builder: (context) => TextButton(
                   onPressed: () async {
-                    selected = await PreciseReferenceTypeDialog.show(context);
+                    selected = await PreciseReferenceTypeDialog.show(
+                      context,
+                      outfit: false,
+                    );
                   },
                   child: const Text('Open'),
                 ),
@@ -88,9 +98,10 @@ void main() {
             ),
           ),
         );
-        for (final type in PreciseRefType.values) {
+        for (final type in PreciseRefType.selectable(outfit: false)) {
           await tester.tap(find.text('Open'));
           await tester.pumpAndSettle();
+          expectPanelHeaderScrollsWithContent(tester);
           final choice = find.byKey(
             ValueKey('precise-reference-type-${type.name}'),
           );
@@ -106,7 +117,7 @@ void main() {
             choice.hitTestable(),
             findsOneWidget,
             reason:
-                '$size / $type; choice=${tester.getRect(choice)}; list=${tester.getRect(find.byType(ListView))}',
+                '$size / $type; choice=${tester.getRect(choice)}; list=${tester.getRect(find.byWidgetPredicate((widget) => widget is ScrollView))}',
           );
           await tester.tap(choice);
           await tester.pumpAndSettle();

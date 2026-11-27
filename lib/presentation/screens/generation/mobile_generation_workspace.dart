@@ -1,9 +1,13 @@
 import 'package:nai_launcher/presentation/widgets/common/horizontal_action_strip.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/utils/localization_extension.dart';
+import '../../providers/generation/image_generation_selectors.dart';
+import '../../providers/image_generation_provider.dart';
 import '../../themes/theme_extension.dart';
 import '../../widgets/common/keyboard_dismiss_region.dart';
+import '../../widgets/raster_cache/raster_cache_boundary.dart';
 import 'mobile_generation_controller.dart';
 import 'mobile_generation_gestures.dart';
 import 'mobile_generation_view_data.dart';
@@ -54,6 +58,7 @@ class _MobileGenerationWorkspaceState extends State<MobileGenerationWorkspace> {
                     key: widget.promptInputKey,
                     controller: widget.promptInputController,
                     isMaximized: true,
+                    useMobileWorkbench: true,
                     showMaximizeButton: false,
                     autofocus: true,
                   ),
@@ -66,6 +71,8 @@ class _MobileGenerationWorkspaceState extends State<MobileGenerationWorkspace> {
                   onPointerCancel: controller.handleWorkspacePointerCancel,
                   onScrollNotification:
                       controller.handleWorkspaceScrollNotification,
+                  onDragClaimNotification:
+                      controller.handleWorkspaceDragClaimNotification,
                   pointerExclusionKeys: [_collapsedPromptLauncherKey],
                   pointerActive: controller.workspacePointerActive,
                   dragOffset: controller.workspaceDragFeedback,
@@ -99,21 +106,21 @@ class _MobileGenerationWorkspaceState extends State<MobileGenerationWorkspace> {
                               child: Column(
                                 children: [
                                   Expanded(
-                                    child: Padding(
-                                      key: controller.embeddedPromptKey,
-                                      padding: const EdgeInsets.all(12),
-                                      child: PromptInputWidget(
-                                        key: widget.promptInputKey,
-                                        controller:
-                                            widget.promptInputController,
-                                        compact: true,
+                                    child: RasterCacheBoundary(
+                                      child: Padding(
+                                        key: controller.embeddedPromptKey,
+                                        padding: const EdgeInsets.all(12),
+                                        child: PromptInputWidget(
+                                          key: widget.promptInputKey,
+                                          controller:
+                                              widget.promptInputController,
+                                          compact: true,
+                                        ),
                                       ),
                                     ),
                                   ),
-                                  if (data.generationState.isGenerating)
-                                    MobileGenerationProgress(
-                                      progress: data.generationState.progress,
-                                    ),
+                                  if (data.batchStatus.isGenerating)
+                                    const MobileGenerationProgressBar(),
                                 ],
                               ),
                             ),
@@ -124,33 +131,34 @@ class _MobileGenerationWorkspaceState extends State<MobileGenerationWorkspace> {
                         children: [
                           Offstage(
                             offstage: true,
-                            child: SizedBox(
-                              width: constraints.maxWidth,
-                              height:
-                                  160 * textScale.clamp(1.0, 3.0).toDouble(),
-                              child: PromptInputWidget(
-                                key: widget.promptInputKey,
-                                controller: widget.promptInputController,
-                                compact: true,
-                                active: false,
+                            child: TickerMode(
+                              enabled: false,
+                              child: SizedBox(
+                                width: constraints.maxWidth,
+                                height:
+                                    160 * textScale.clamp(1.0, 3.0).toDouble(),
+                                child: PromptInputWidget(
+                                  key: widget.promptInputKey,
+                                  controller: widget.promptInputController,
+                                  compact: true,
+                                  active: false,
+                                ),
                               ),
                             ),
                           ),
-                          const Expanded(child: ImagePreviewWidget()),
-                          if (data.generationState.isGenerating)
-                            MobileGenerationProgress(
-                              progress: data.generationState.progress,
-                            ),
-                          Padding(
-                            padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-                            child: MobileCollapsedPromptLauncher(
-                              key: _collapsedPromptLauncherKey,
-                              prompt: data.promptSummary,
-                              characterCount: data.enabledCharacterCount,
-                              qualityEnabled: data.qualityEnabled,
-                              negativePresetLabel: data.negativePresetLabel,
-                              fixedTagCount: data.fixedTagCount,
-                              onTap: controller.openPromptEditor,
+                          Expanded(
+                            child: _VerticalGenerationPreview(
+                              viewportSize: constraints.biggest,
+                              showProgress: data.batchStatus.isGenerating,
+                              launcher: MobileCollapsedPromptLauncher(
+                                key: _collapsedPromptLauncherKey,
+                                prompt: data.promptSummary,
+                                characterCount: data.enabledCharacterCount,
+                                qualityEnabled: data.qualityEnabled,
+                                negativePresetLabel: data.negativePresetLabel,
+                                fixedTagCount: data.fixedTagCount,
+                                onTap: controller.openPromptEditor,
+                              ),
                             ),
                           ),
                         ],
@@ -160,6 +168,55 @@ class _MobileGenerationWorkspaceState extends State<MobileGenerationWorkspace> {
                 ),
         ),
       ),
+    );
+  }
+}
+
+class _VerticalGenerationPreview extends StatelessWidget {
+  const _VerticalGenerationPreview({
+    required this.viewportSize,
+    required this.showProgress,
+    required this.launcher,
+  });
+
+  final Size viewportSize;
+  final bool showProgress;
+  final Widget launcher;
+
+  @override
+  Widget build(BuildContext context) {
+    final minimumHeight = ImagePreviewWidget.minimumHeightFor(
+      context,
+      viewportSize.width,
+    );
+    return CustomScrollView(
+      // 从底部起排让概览先可见，剩余空间按概览和进度条的实际高度分给预览。
+      reverse: true,
+      primary: false,
+      slivers: [
+        SliverToBoxAdapter(
+          child: RasterCacheBoundary(
+            child: Padding(
+              padding: EdgeInsets.fromLTRB(
+                12,
+                8,
+                12,
+                viewportSize.height < minimumHeight ? 0 : 12,
+              ),
+              child: launcher,
+            ),
+          ),
+        ),
+        if (showProgress)
+          const SliverToBoxAdapter(child: MobileGenerationProgressBar()),
+        SliverFillRemaining(
+          hasScrollBody: false,
+          child: SizedBox(
+            height: minimumHeight,
+            child: const ImagePreviewWidget(),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -432,6 +489,18 @@ class _PromptOverviewItem extends StatelessWidget {
       ),
     );
   }
+}
+
+/// 进度条自订阅进度字段，避免逐帧重建整个移动端工作区。
+class MobileGenerationProgressBar extends ConsumerWidget {
+  const MobileGenerationProgressBar({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) => MobileGenerationProgress(
+    progress: ref.watch(
+      imageGenerationNotifierProvider.select(selectGenerationProgress),
+    ),
+  );
 }
 
 class MobileGenerationProgress extends StatelessWidget {

@@ -6,22 +6,117 @@ import 'dart:ui';
 
 import 'package:archive/archive.dart';
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 import 'package:msgpack_dart/msgpack_dart.dart' as msgpack;
 import 'package:nai_launcher/core/constants/api_constants.dart';
+import 'package:nai_launcher/core/enums/precise_ref_type.dart';
+import 'package:nai_launcher/core/network/browser_identity/browser_headers_interceptor.dart';
+import 'package:nai_launcher/core/network/browser_identity/chrome_identity.dart';
 import 'package:nai_launcher/core/network/nai_api_endpoint.dart';
 import 'package:nai_launcher/core/network/nai_api_endpoint_service.dart';
 import 'package:nai_launcher/core/network/critical_network_activity.dart';
+import 'package:nai_launcher/core/network/request_builders/precise_reference_limit_exception.dart';
+import 'package:nai_launcher/core/utils/inpaint_mask_utils.dart';
 import 'package:nai_launcher/data/datasources/remote/nai_image_enhancement_api_service.dart';
 import 'package:nai_launcher/data/datasources/remote/nai_image_generation_api_service.dart';
 import 'package:nai_launcher/data/models/image/image_params.dart';
 import 'package:nai_launcher/data/models/vibe/vibe_reference.dart';
 import 'package:nai_launcher/presentation/providers/generation/image_generation_service.dart';
 
+import '../../../helpers/browser_multipart_reader.dart';
 import '../../../helpers/image_pixel_matchers.dart';
 
 void main() {
+  for (final streaming in [false, true]) {
+    test(
+      'V5 precise references reach the multipart endpoint (streaming=$streaming)',
+      () async {
+        final generated = _solidPng(width: 8, height: 4, r: 32, g: 64, b: 128);
+        final adapter = _PendingDioAdapter(
+          onRequest: (request) {
+            if (streaming) {
+              request.completeWithMsgpackMessages([
+                {'event_type': 'final', 'samp_ix': 0, 'image': generated},
+              ]);
+            } else {
+              request.completeWithZipImage(generated);
+            }
+          },
+        );
+        final dio = Dio()..httpClientAdapter = adapter;
+        addTearDown(dio.close);
+        final endpoint = NaiApiEndpointService();
+        final service = NAIImageGenerationApiService(
+          dio,
+          NAIImageEnhancementApiService(dio, endpoint),
+          endpoint,
+        );
+        final params = ImageParams(
+          model: ImageModels.animeDiffusionV5Full,
+          preciseReferences: [
+            PreciseReference(
+              image: generated,
+              type: PreciseRefType.costume,
+              fidelity: 0.2,
+            ),
+          ],
+        );
+        final result = streaming
+            ? (await service.generateImageStream(params).last).finalImage
+            : (await service.generateImage(params)).$1.single;
+        expect(result, generated);
+        final request = adapter.requests.single.options;
+        final parts = parseBrowserMultipart(
+          request.data as Uint8List,
+          boundaryOf(request.headers['content-type'] as String),
+        );
+        expect(parts.map((part) => part.name), ['director_ref_0', 'request']);
+        final png = img.decodePng(parts.first.bytes)!;
+        expect((png.width, png.height), (1408, 704));
+        final parameters = jsonDecode(parts.last.text)['parameters'] as Map;
+        expect(parameters['director_reference_descriptions'], [
+          {
+            'caption': {'base_caption': 'costume', 'char_captions': []},
+            'legacy_uc': false,
+          },
+        ]);
+        expect(parameters['director_reference_secondary_strength_values'], [0]);
+        expect(parameters, isNot(contains('extra_passthrough_testing')));
+      },
+    );
+  }
+
+  test(
+    'precise reference limit rejects both endpoints before transport',
+    () async {
+      final adapter = _PendingDioAdapter();
+      final dio = Dio()..httpClientAdapter = adapter;
+      addTearDown(dio.close);
+      final endpoint = NaiApiEndpointService();
+      final service = NAIImageGenerationApiService(
+        dio,
+        NAIImageEnhancementApiService(dio, endpoint),
+        endpoint,
+      );
+      final params = ImageParams(
+        model: ImageModels.animeDiffusionV45Curated,
+        preciseReferences: List.filled(
+          17,
+          PreciseReference(image: Uint8List(1), type: PreciseRefType.character),
+        ),
+      );
+      await expectLater(
+        service.generateImage(params),
+        throwsA(isA<PreciseReferenceLimitException>()),
+      );
+      final response = await service.generateImageStream(params).single;
+      expect(response.error, const PreciseReferenceLimitException().toString());
+      expect(adapter.requests, isEmpty);
+    },
+  );
+
   test(
     'encodes generation payloads with the official multipart layout',
     () async {
@@ -29,7 +124,7 @@ void main() {
       final maskBytes = Uint8List.fromList([5, 6, 7, 8]);
       final vibeBytes = Uint8List.fromList([9, 10, 11]);
       final directorBytes = Uint8List.fromList([12, 13, 14]);
-      final formData = NAIImageGenerationApiService.buildGenerationFormData({
+      final body = NAIImageGenerationApiService.buildGenerationMultipart({
         'input': 'test',
         'model': ImageModels.animeDiffusionV5Curated,
         'action': 'infill',
@@ -41,10 +136,10 @@ void main() {
         },
         'use_new_shared_trial': true,
       });
+      final decodedParts = parseBrowserMultipart(body.bytes, body.boundary);
 
-      expect(formData.fields, isEmpty);
       expect(
-        formData.files.map((entry) => entry.key),
+        decodedParts.map((part) => part.name),
         orderedEquals([
           'image',
           'mask',
@@ -53,26 +148,23 @@ void main() {
           'request',
         ]),
       );
-      final parts = {
-        for (final entry in formData.files) entry.key: entry.value,
-      };
+      final parts = {for (final part in decodedParts) part.name: part};
       final request =
-          jsonDecode(utf8.decode(await _readMultipartFile(parts['request']!)))
-              as Map<String, dynamic>;
+          jsonDecode(parts['request']!.text) as Map<String, dynamic>;
       final parameters = request['parameters'] as Map<String, dynamic>;
       final cachedVibes =
           parameters['reference_image_multiple_cached'] as List<dynamic>;
       final cachedDirectors =
           parameters['director_reference_images_cached'] as List<dynamic>;
 
-      expect(await _readMultipartFile(parts['image']!), imageBytes);
-      expect(await _readMultipartFile(parts['mask']!), maskBytes);
-      expect(await _readMultipartFile(parts['ref_multiple_0']!), vibeBytes);
-      expect(await _readMultipartFile(parts['director_ref_0']!), directorBytes);
+      expect(parts['image']!.bytes, imageBytes);
+      expect(parts['mask']!.bytes, maskBytes);
+      expect(parts['ref_multiple_0']!.bytes, vibeBytes);
+      expect(parts['director_ref_0']!.bytes, directorBytes);
       expect(parts['request']!.filename, 'blob');
-      expect(parts['request']!.contentType.toString(), 'application/json');
+      expect(parts['request']!.contentType, 'application/json');
       expect(parts['image']!.filename, 'blob');
-      expect(parts['image']!.contentType.toString(), 'image/png');
+      expect(parts['image']!.contentType, 'image/png');
       expect(parameters['image'], 'image');
       expect(parameters['mask'], 'mask');
       expect(parameters['image_cache_secret_key'], matches(r'^[0-9a-f]{64}$'));
@@ -92,8 +184,8 @@ void main() {
     },
   );
 
-  test('encodes text-only generation as one JSON multipart part', () async {
-    final formData = NAIImageGenerationApiService.buildGenerationFormData({
+  test('encodes text-only generation as one JSON multipart part', () {
+    final body = NAIImageGenerationApiService.buildGenerationMultipart({
       'input': 'test',
       'model': ImageModels.animeDiffusionV5Curated,
       'action': 'generate',
@@ -101,49 +193,22 @@ void main() {
       'use_new_shared_trial': true,
     });
 
-    expect(formData.files, hasLength(1));
-    expect(formData.files.single.key, 'request');
-    expect(formData.files.single.value.filename, 'blob');
-    expect(
-      formData.files.single.value.contentType.toString(),
-      'application/json',
-    );
+    final parts = parseBrowserMultipart(body.bytes, body.boundary);
+    expect(parts, hasLength(1));
+    expect(parts.single.name, 'request');
+    expect(parts.single.filename, 'blob');
+    expect(parts.single.contentType, 'application/json');
   });
 
-  test('maps DDIM onto Euler Ancestral for every v4-structure model', () {
-    // V5 之前的判定是 contains('diffusion-4')，V5 会漏掉并把 ddim 原样发出。
-    for (final model in [
-      ImageModels.animeDiffusionV4Full,
-      ImageModels.animeDiffusionV45Full,
-      ImageModels.animeDiffusionV5Curated,
-      ImageModels.animeDiffusionV5Full,
-    ]) {
-      expect(
-        NAIImageGenerationApiService.mapSamplerForModel(Samplers.ddim, model),
-        Samplers.kEulerAncestral,
-        reason: model,
-      );
-    }
-
-    expect(
-      NAIImageGenerationApiService.mapSamplerForModel(
-        Samplers.ddim,
-        ImageModels.animeDiffusionV3,
-      ),
-      Samplers.ddimV3,
-    );
-    expect(
-      NAIImageGenerationApiService.mapSamplerForModel(
-        Samplers.kEulerAncestral,
-        ImageModels.animeDiffusionV5Curated,
-      ),
-      Samplers.kEulerAncestral,
-    );
-  });
-
-  test('sends official transport headers with generation requests', () async {
+  test('sends generation requests as a browser multipart body', () async {
     final adapter = _PendingDioAdapter();
     final dio = Dio()..httpClientAdapter = adapter;
+    dio.interceptors.add(
+      BrowserHeadersInterceptor(
+        identity: const ChromeIdentity(platform: ChromePlatform.windows),
+        resolveAcceptLanguage: () => 'en-US,en;q=0.9',
+      ),
+    );
     final endpointService = NaiApiEndpointService();
     final service = NAIImageGenerationApiService(
       dio,
@@ -155,15 +220,29 @@ void main() {
       const ImageParams(prompt: 'transport headers'),
     );
     await _waitForRequestCount(adapter, 1);
-    final headers = adapter.requests.single.options.headers;
+    final options = adapter.requests.single.options;
+    final headers = options.headers;
 
-    expect(headers['Accept'], 'application/x-zip-compressed');
+    expect(
+      headers['content-type'],
+      matches(
+        r'^multipart/form-data; boundary=----WebKitFormBoundary[A-Za-z0-9]{16}$',
+      ),
+    );
+    expect(headers['accept'], '*/*');
     expect(
       headers['x-correlation-id'],
       matches(r'^[A-Zabcdefghijkmnopqrstuvwxyz1-9]{6}$'),
     );
     expect(DateTime.tryParse(headers['x-initiated-at'] as String), isNotNull);
-    expect(adapter.requests.single.options.data, isA<FormData>());
+    expect(options.data, isA<Uint8List>());
+    expect(
+      parseBrowserMultipart(
+        options.data as Uint8List,
+        boundaryOf(headers['content-type'] as String),
+      ).single.name,
+      'request',
+    );
 
     adapter.requests.single.completeWithEmptyZip();
     await expectLater(generation, throwsA(isA<Exception>()));
@@ -920,6 +999,145 @@ void main() {
     },
   );
 
+  test('empty latent inpaint masks fail before any request is sent', () async {
+    final adapter = _PendingDioAdapter();
+    final dio = Dio()..httpClientAdapter = adapter;
+    final endpointService = NaiApiEndpointService();
+    final networkActivity = CriticalNetworkActivityCoordinator();
+    final service = NAIImageGenerationApiService(
+      dio,
+      NAIImageEnhancementApiService(dio, endpointService),
+      endpointService,
+      networkActivity,
+    );
+    final params = ImageParams(
+      action: ImageGenerationAction.infill,
+      model: 'nai-diffusion-4-5-full-inpainting',
+      width: 256,
+      height: 256,
+      sourceImage: _solidPng(width: 256, height: 256, r: 10, g: 20, b: 30),
+      maskImage: _rectMaskPng(
+        width: 256,
+        height: 256,
+        x: 10,
+        y: 0,
+        rectWidth: 1,
+        rectHeight: 256,
+      ),
+    );
+
+    await expectLater(
+      service.generateImage(params),
+      throwsA(isA<EmptyInpaintMaskException>()),
+    );
+    await expectLater(
+      service.generateImageArtifactsCancellable(params),
+      throwsA(isA<EmptyInpaintMaskException>()),
+    );
+    final chunks = await service.generateImageStream(params).toList();
+
+    expect(chunks.single.hasError, isTrue);
+    expect(EmptyInpaintMaskException.matches(chunks.single.error), isTrue);
+    expect(adapter.requests, isEmpty);
+    expect(networkActivity.isActive, isFalse);
+  });
+
+  for (final stream in [false, true]) {
+    test(
+      '1664x2432 canvas sends 1280x768 and preserves every pixel outside the crop (stream=$stream)',
+      () async {
+        final canvas = img.Image(width: 1664, height: 2432, numChannels: 4);
+        img.fill(canvas, color: img.ColorRgba8(30, 70, 90, 255));
+        img.fillRect(
+          canvas,
+          x1: 12,
+          y1: 9,
+          x2: 810,
+          y2: 2010,
+          color: img.ColorRgba8(24, 60, 108, 255),
+        );
+        final generated = _solidPng(
+          width: 1280,
+          height: 768,
+          r: 240,
+          g: 40,
+          b: 70,
+        );
+        final adapter = _PendingDioAdapter(
+          onRequest: (request) {
+            if (stream) {
+              request.completeWithMsgpackMessages([
+                {'event_type': 'final', 'samp_ix': 0, 'image': generated},
+              ]);
+            } else {
+              request.completeWithZipImage(generated);
+            }
+          },
+        );
+        final dio = Dio()..httpClientAdapter = adapter;
+        addTearDown(dio.close);
+        final endpoint = NaiApiEndpointService();
+        final api = NAIImageGenerationApiService(
+          dio,
+          NAIImageEnhancementApiService(dio, endpoint),
+          endpoint,
+        );
+        final params = ImageParams(
+          action: ImageGenerationAction.infill,
+          model: 'nai-diffusion-4-5-full-inpainting',
+          width: 1664,
+          height: 2432,
+          sourceImage: img.encodePng(canvas, level: 1),
+          maskImage: _rectMaskPng(
+            width: 1664,
+            height: 2432,
+            x: 400,
+            y: 1000,
+            rectWidth: 128,
+            rectHeight: 128,
+          ),
+        );
+        const selection = Rect.fromLTWH(288, 900, 1088, 576);
+        final result = stream
+            ? (await api
+                      .generateImageStream(
+                        params,
+                        focusedInpaintEnabled: true,
+                        minimumContextMegaPixels: 96,
+                        focusedSelectionRect: selection,
+                      )
+                      .last)
+                  .finalImage!
+            : (await api.generateImage(
+                params,
+                focusedInpaintEnabled: true,
+                minimumContextMegaPixels: 96,
+                focusedSelectionRect: selection,
+              )).$1.single;
+        final options = adapter.requests.single.options;
+        final parts = {
+          for (final p in parseBrowserMultipart(
+            options.data as Uint8List,
+            boundaryOf(options.headers['content-type'] as String),
+          ))
+            p.name: p,
+        };
+        final payload = jsonDecode(parts['request']!.text)['parameters'] as Map;
+        expect((payload['width'], payload['height']), (1280, 768));
+        final uploaded = img.decodePng(parts['image']!.bytes)!;
+        expect((uploaded.width, uploaded.height), (1280, 768));
+        final display = img.decodePng(result)!;
+        expect((display.width, display.height), (1664, 2432));
+        expect(display.getPixel(464, 1064).r, 240);
+        _expectPixelsOutsideCrop(
+          canvas,
+          display,
+          const Rect.fromLTWH(192, 804, 1280, 768),
+        );
+      },
+    );
+  }
+
   test('focused stream preview keeps raw crop and carries placement', () async {
     final adapter = _PendingDioAdapter();
     final dio = Dio()..httpClientAdapter = adapter;
@@ -1009,6 +1227,100 @@ void main() {
     expect(decodedFinal.getPixel(128, 128).b.toInt(), greaterThan(230));
   });
 
+  test('focus outpaint sends only the frame and pastes it back', () async {
+    final adapter = _PendingDioAdapter();
+    final dio = Dio()..httpClientAdapter = adapter;
+    final endpointService = NaiApiEndpointService();
+    final service = NAIImageGenerationApiService(
+      dio,
+      NAIImageEnhancementApiService(dio, endpointService),
+      endpointService,
+    );
+
+    // 整张画布 384x256：左 256 为原图，右 128 是扩出的透明空白
+    final canvasImage = img.Image(width: 384, height: 256, numChannels: 4);
+    img.fill(canvasImage, color: img.ColorRgba8(0, 0, 0, 0));
+    img.fillRect(
+      canvasImage,
+      x1: 0,
+      y1: 0,
+      x2: 255,
+      y2: 255,
+      color: img.ColorRgba8(10, 20, 30, 255),
+    );
+    final canvas = Uint8List.fromList(img.encodePng(canvasImage));
+    final mask = _rectMaskPng(
+      width: 384,
+      height: 256,
+      x: 255,
+      y: 0,
+      rectWidth: 129,
+      rectHeight: 256,
+    );
+    final generated = _solidPng(
+      width: 1024,
+      height: 1024,
+      r: 200,
+      g: 210,
+      b: 220,
+    );
+
+    final chunksFuture = service
+        .generateImageStream(
+          ImageParams(
+            action: ImageGenerationAction.infill,
+            model: 'nai-diffusion-4-5-full-inpainting',
+            width: 384,
+            height: 256,
+            sourceImage: canvas,
+            maskImage: mask,
+          ),
+          focusedInpaintEnabled: true,
+          focusedContextCrop: const Rect.fromLTWH(128, 0, 256, 256),
+        )
+        .toList();
+    await _waitForRequestCount(adapter, 1);
+
+    final options = adapter.requests.single.options;
+    final parts = {
+      for (final part in parseBrowserMultipart(
+        options.data as Uint8List,
+        boundaryOf(options.headers['content-type'] as String),
+      ))
+        part.name: part,
+    };
+    final parameters =
+        (jsonDecode(parts['request']!.text)
+                as Map<String, dynamic>)['parameters']
+            as Map<String, dynamic>;
+    expect((parameters['width'], parameters['height']), (1024, 1024));
+    final requestImage = img.decodePng(parts['image']!.bytes)!;
+    expect((requestImage.width, requestImage.height), (1024, 1024));
+    expect(requestImage.getPixel(100, 512).r.toInt(), 10);
+    expect(requestImage.getPixel(100, 512).a.toInt(), 255);
+    expect(requestImage.getPixel(900, 512).a.toInt(), 0);
+
+    adapter.requests.single.completeWithMsgpackMessages([
+      {'event_type': 'final', 'samp_ix': 0, 'image': generated},
+    ]);
+
+    final chunks = await chunksFuture.timeout(const Duration(seconds: 2));
+    final decoded = img.decodeImage(chunks.single.finalImage!)!;
+
+    expect((decoded.width, decoded.height), (384, 256));
+    for (final x in const [0, 64, 127, 140]) {
+      final pixel = decoded.getPixel(x, 128);
+      expect(
+        (pixel.r.toInt(), pixel.g.toInt(), pixel.b.toInt(), pixel.a.toInt()),
+        (10, 20, 30, 255),
+        reason: 'x=$x keeps the source',
+      );
+    }
+    final filled = decoded.getPixel(330, 128);
+    expect(filled.r.toInt(), greaterThan(190));
+    expect(filled.a.toInt(), 255);
+  });
+
   test('stream outpaint final preserves official raw service image', () async {
     final adapter = _PendingDioAdapter();
     final dio = Dio()..httpClientAdapter = adapter;
@@ -1088,7 +1400,7 @@ void main() {
       );
     });
 
-    // 与 imageGenerationDioClient 一致：默认 HTTP/1.1 适配器
+    // 与 dioClient 一致：默认 HTTP/1.1 适配器
     final dio = Dio();
     final endpointService = NaiApiEndpointService()
       ..setCurrent(
@@ -1138,7 +1450,34 @@ Future<void> _waitForRequestCount(
   fail('Expected $expectedCount request(s), got ${adapter.requests.length}.');
 }
 
+void _expectPixelsOutsideCrop(img.Image source, img.Image result, Rect crop) {
+  final before = source.getBytes(order: img.ChannelOrder.rgba);
+  final after = result.getBytes(order: img.ChannelOrder.rgba);
+  final stride = source.width * 4;
+  void check(int start, int end) {
+    if (!listEquals(
+      Uint8List.sublistView(before, start, end),
+      Uint8List.sublistView(after, start, end),
+    )) {
+      fail('Pixels outside the crop changed on row ${start ~/ stride}');
+    }
+  }
+
+  for (var y = 0; y < source.height; y++) {
+    final start = y * stride;
+    if (y < crop.top || y >= crop.bottom) {
+      check(start, start + stride);
+    } else {
+      check(start, start + crop.left.toInt() * 4);
+      check(start + crop.right.toInt() * 4, start + stride);
+    }
+  }
+}
+
 class _PendingDioAdapter implements HttpClientAdapter {
+  _PendingDioAdapter({this.onRequest});
+
+  final void Function(_PendingRequest)? onRequest;
   final List<_PendingRequest> requests = [];
 
   @override
@@ -1149,6 +1488,7 @@ class _PendingDioAdapter implements HttpClientAdapter {
   ) {
     final request = _PendingRequest(options, cancelFuture);
     requests.add(request);
+    onRequest?.call(request);
     return request.response.future;
   }
 
@@ -1286,12 +1626,4 @@ class _PendingRequest {
       ),
     );
   }
-}
-
-Future<Uint8List> _readMultipartFile(MultipartFile file) async {
-  final builder = BytesBuilder(copy: false);
-  await for (final chunk in file.finalize()) {
-    builder.add(chunk);
-  }
-  return builder.takeBytes();
 }

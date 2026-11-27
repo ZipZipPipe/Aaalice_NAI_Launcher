@@ -3,6 +3,9 @@ import 'dart:typed_data';
 import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
 
+import '../utils/exif_orientation.dart';
+import '../utils/isolate_pool.dart';
+
 class KritaOutboundImage {
   const KritaOutboundImage({
     required this.bytes,
@@ -22,7 +25,7 @@ class KritaOutboundImage {
 
     final img.Image? decoded;
     try {
-      decoded = img.decodeImage(imageBytes);
+      decoded = ExifOrientation.decodeUpright(imageBytes);
     } on Object {
       throw const FormatException('Unsupported image format for Krita send');
     }
@@ -33,6 +36,20 @@ class KritaOutboundImage {
     return KritaOutboundImage(
       bytes: Uint8List.fromList(img.encodePng(decoded)),
       name: _pngName(name),
+    );
+  }
+
+  /// 与 [prepare] 结果一致；非 PNG 的整图解码与重编码放到后台 isolate。
+  static Future<KritaOutboundImage> prepareInBackground(
+    Uint8List imageBytes, {
+    required String name,
+    ComputeGate? gate,
+  }) async {
+    if (_isPng(imageBytes)) {
+      return prepare(imageBytes, name: name);
+    }
+    return (gate ?? ComputeGate()).runIsolate(
+      () => prepare(imageBytes, name: name),
     );
   }
 

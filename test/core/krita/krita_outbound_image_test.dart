@@ -3,6 +3,9 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 import 'package:nai_launcher/core/krita/krita_outbound_image.dart';
+import 'package:nai_launcher/core/utils/isolate_pool.dart';
+
+import '../../helpers/shared_compute_gate.dart';
 
 void main() {
   group('KritaOutboundImage', () {
@@ -34,6 +37,48 @@ void main() {
     test('rejects undecodable bytes', () {
       expect(
         () => KritaOutboundImage.prepare(
+          Uint8List.fromList([1, 2, 3]),
+          name: 'broken.bin',
+        ),
+        throwsFormatException,
+      );
+    });
+  });
+
+  group('KritaOutboundImage.prepareInBackground', () {
+    test('passes png through without waiting for the compute gate', () async {
+      final gate = ComputeGate.forTesting(maxConcurrentTasks: 1);
+      final png = _png();
+
+      final prepared = await expectRunsWithoutComputeGate(
+        gate,
+        () => KritaOutboundImage.prepareInBackground(
+          png,
+          name: 'sample.jpeg',
+          gate: gate,
+        ),
+      );
+
+      expect(prepared.bytes, same(png));
+      expect(prepared.name, 'sample.png');
+    });
+
+    test('converts non-png bytes exactly like prepare', () async {
+      final jpeg = Uint8List.fromList(img.encodeJpg(_image()));
+      final expected = KritaOutboundImage.prepare(jpeg, name: 'photo.jpg');
+
+      final prepared = await KritaOutboundImage.prepareInBackground(
+        jpeg,
+        name: 'photo.jpg',
+      );
+
+      expect(prepared.bytes, orderedEquals(expected.bytes));
+      expect(prepared.name, expected.name);
+    });
+
+    test('keeps the format error for undecodable bytes', () async {
+      await expectLater(
+        KritaOutboundImage.prepareInBackground(
           Uint8List.fromList([1, 2, 3]),
           name: 'broken.bin',
         ),

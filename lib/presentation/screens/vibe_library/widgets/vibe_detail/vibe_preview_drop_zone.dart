@@ -8,8 +8,10 @@ import 'package:super_drag_and_drop/super_drag_and_drop.dart';
 
 import '../../../../../core/platform/platform_capabilities.dart';
 import '../../../../../core/utils/app_logger.dart';
+import '../../../../../core/utils/picture_png_encoder.dart';
 import '../../../../adaptive/interaction_policy.dart';
 import '../../../../utils/card_drop_reader.dart';
+import '../../../../utils/native_drop_callback.dart';
 import '../../../../widgets/common/app_toast.dart';
 import '../../../../themes/design_tokens.dart';
 import '../../../../widgets/common/decoded_memory_image.dart';
@@ -127,16 +129,16 @@ class _VibePreviewDropZoneState extends State<VibePreviewDropZone> {
 
   /// 缩放图片到最大 512×512
   static Future<Uint8List> _resizeImage(Uint8List bytes) async {
+    ui.Codec? codec;
+    ui.Image? image;
     try {
-      final codec = await ui.instantiateImageCodec(bytes);
-      final frame = await codec.getNextFrame();
-      final image = frame.image;
+      codec = await ui.instantiateImageCodec(bytes);
+      image = (await codec.getNextFrame()).image;
 
       final srcW = image.width;
       final srcH = image.height;
 
       if (srcW <= 512 && srcH <= 512) {
-        image.dispose();
         return bytes;
       }
 
@@ -144,30 +146,13 @@ class _VibePreviewDropZoneState extends State<VibePreviewDropZone> {
       final dstW = (srcW * scale).round();
       final dstH = (srcH * scale).round();
 
-      final recorder = ui.PictureRecorder();
-      final canvas = Canvas(
-        recorder,
-        Rect.fromLTWH(0, 0, dstW.toDouble(), dstH.toDouble()),
-      );
-      canvas.drawImageRect(
-        image,
-        Rect.fromLTWH(0, 0, srcW.toDouble(), srcH.toDouble()),
-        Rect.fromLTWH(0, 0, dstW.toDouble(), dstH.toDouble()),
-        Paint()..filterQuality = FilterQuality.medium,
-      );
-
-      final picture = recorder.endRecording();
-      final resized = await picture.toImage(dstW, dstH);
-      final byteData = await resized.toByteData(format: ui.ImageByteFormat.png);
-
-      image.dispose();
-      resized.dispose();
-      picture.dispose();
-
-      return byteData?.buffer.asUint8List() ?? bytes;
+      return await resampleImageAsPng(image, width: dstW, height: dstH);
     } catch (e) {
       AppLogger.w('Failed to resize image: $e', 'VibePreviewDropZone');
       return bytes;
+    } finally {
+      image?.dispose();
+      codec?.dispose();
     }
   }
 
@@ -262,9 +247,10 @@ class _VibePreviewDropZoneState extends State<VibePreviewDropZone> {
       onDropLeave: (_) {
         if (_isDragging) setState(() => _isDragging = false);
       },
-      onPerformDrop: (event) async {
-        await _handleDrop(event);
-      },
+      onPerformDrop: (event) => releaseNativeDropCallback(
+        () => _handleDrop(event),
+        library: 'VibePreviewDropZone',
+      ),
       child: content,
     );
   }

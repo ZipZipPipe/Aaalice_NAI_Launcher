@@ -1,13 +1,14 @@
 import 'dart:convert';
 
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:hive_flutter/hive_flutter.dart';
+import 'package:hive_ce_flutter/hive_ce_flutter.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../constants/storage_keys.dart';
 import '../../data/models/queue/replication_task.dart';
+
 import '../../data/models/queue/failure_handling_strategy.dart';
 import 'base_hive_storage.dart';
+import 'replication_queue_startup_gate.dart';
 
 part 'queue_state_storage.g.dart';
 
@@ -129,8 +130,17 @@ class QueueStateStorage extends BaseHiveStorage<void> {
     await _queueStateBox.put(StorageKeys.queueFailedTasksData, jsonString);
   }
 
+  bool _lastFailedTasksLoadUnreadable = false;
+
+  /// 上一次 [loadFailedTasks] 读到了非空失败池却解析失败。
+  bool get lastFailedTasksLoadUnreadable => _lastFailedTasksLoadUnreadable;
+
   /// 加载失败任务列表（同步加载）
   List<ReplicationTask> loadFailedTasks() {
+    ReplicationQueueStartupGate.checkReadable(
+      'QueueStateStorage.loadFailedTasks',
+    );
+    _lastFailedTasksLoadUnreadable = false;
     try {
       final jsonString = _queueStateBox.get(StorageKeys.queueFailedTasksData);
 
@@ -142,6 +152,7 @@ class QueueStateStorage extends BaseHiveStorage<void> {
       final taskList = ReplicationTaskList.fromJson(json);
       return taskList.tasks;
     } catch (e) {
+      _lastFailedTasksLoadUnreadable = true;
       return [];
     }
   }

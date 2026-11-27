@@ -11,8 +11,10 @@ import '../../adaptive/interaction_policy.dart';
 import '../../../data/models/gallery/gallery_category.dart';
 import '../../../data/models/gallery/gallery_tree_drop_slot.dart';
 import '../common/context_menu_anchor.dart';
+import '../common/inline_rename_field.dart';
+import '../common/menu_action_label.dart';
+import '../common/surface_ink_well.dart';
 import '../common/themed_divider.dart';
-import 'package:nai_launcher/presentation/widgets/common/themed_input.dart';
 import 'gallery_scan_progress_panel.dart';
 import 'library_sidebar_drag_item.dart';
 import '../../utils/library_sidebar_sort.dart';
@@ -44,7 +46,6 @@ class GalleryCategoryTreeView extends StatefulWidget {
   onCategoryMoveToSlot;
   final Future<void> Function(List<String> imagePaths, String? categoryId)?
   onImagesDrop;
-  final VoidCallback? onSyncWithFileSystem;
 
   /// 是否渲染顶部固定的「全部图片 / 收藏」节点；
   /// 与相簿区并列展示时传 false 避免入口重复。
@@ -67,7 +68,6 @@ class GalleryCategoryTreeView extends StatefulWidget {
     this.onCategoryMove,
     this.onCategoryMoveToSlot,
     this.onImagesDrop,
-    this.onSyncWithFileSystem,
     this.includeRootNodes = true,
     this.embedded = false,
     this.showScanProgress = true,
@@ -167,12 +167,9 @@ class _GalleryCategoryTreeViewState extends State<GalleryCategoryTreeView> {
       items: [
         PopupMenuItem(
           onTap: () => widget.onAddSubCategory?.call(null),
-          child: Row(
-            children: [
-              const Icon(Icons.create_new_folder, size: 18),
-              const SizedBox(width: 8),
-              Text(context.l10n.localGallery_createCategoryTitle),
-            ],
+          child: MenuActionLabel(
+            leading: const Icon(Icons.create_new_folder),
+            label: context.l10n.localGallery_createCategoryTitle,
           ),
         ),
       ],
@@ -354,13 +351,13 @@ class _GalleryCategoryTreeViewState extends State<GalleryCategoryTreeView> {
           setState(() => _superDraggingCategoryIds.remove(key));
         }
       },
-      onPerformDrop: (event) async {
+      onPerformDrop: (event) {
         final key = categoryId ?? '__root__';
         if (_superDraggingCategoryIds.contains(key)) {
           setState(() => _superDraggingCategoryIds.remove(key));
         }
 
-        await performGalleryDrop(
+        return performGalleryDrop(
           context,
           event,
           (paths) => widget.onImagesDrop!(paths, categoryId),
@@ -413,27 +410,13 @@ class _CategoryItem extends StatefulWidget {
 class _CategoryItemState extends State<_CategoryItem> {
   bool _isHovering = false;
   bool _isEditing = false;
-  late TextEditingController _editController;
 
-  @override
-  void initState() {
-    super.initState();
-    _editController = TextEditingController(text: widget.label);
+  void _submitRename(String name) {
+    widget.onRename?.call(name);
+    _stopEditing();
   }
 
-  @override
-  void didUpdateWidget(covariant _CategoryItem oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.label != widget.label && !_isEditing) {
-      _editController.text = widget.label;
-    }
-  }
-
-  @override
-  void dispose() {
-    _editController.dispose();
-    super.dispose();
-  }
+  void _stopEditing() => setState(() => _isEditing = false);
 
   @override
   Widget build(BuildContext context) {
@@ -450,22 +433,19 @@ class _CategoryItemState extends State<_CategoryItem> {
         onSecondaryTapUp: widget.onRename != null
             ? (details) => _showContextMenu(context, details.globalPosition)
             : null,
-        child: AnimatedContainer(
-          duration: MediaQuery.disableAnimationsOf(context)
-              ? Duration.zero
-              : const Duration(milliseconds: 150),
-          margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 1),
-          decoration: BoxDecoration(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 1),
+          child: SurfaceInkWell(
+            borderRadius: BorderRadius.circular(8),
             color: widget.isSelected
                 ? theme.colorScheme.primaryContainer
                 : (_isHovering
                       ? theme.colorScheme.onSurface.withValues(alpha: 0.07)
                       : Colors.transparent),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: InkWell(
+            // 未选中时悬停由底色表达
+            hoverColor: widget.isSelected ? null : Colors.transparent,
+            duration: const Duration(milliseconds: 150),
             onTap: widget.onTap,
-            borderRadius: BorderRadius.circular(8),
             child: ConstrainedBox(
               constraints: const BoxConstraints(minHeight: controlExtent),
               child: Padding(
@@ -505,23 +485,15 @@ class _CategoryItemState extends State<_CategoryItem> {
                     const SizedBox(width: 8),
                     Expanded(
                       child: _isEditing
-                          ? ThemedInput(
-                              controller: _editController,
-                              autofocus: true,
+                          ? InlineRenameField(
+                              name: widget.label,
                               style: const TextStyle(fontSize: 13),
                               decoration: const InputDecoration(
                                 isDense: true,
-                                border: InputBorder.none,
                                 contentPadding: EdgeInsets.zero,
                               ),
-                              onSubmitted: (value) {
-                                if (value.trim().isNotEmpty) {
-                                  widget.onRename?.call(value.trim());
-                                }
-                                setState(() => _isEditing = false);
-                              },
-                              onTapOutside: (_) =>
-                                  setState(() => _isEditing = false),
+                              onSubmit: _submitRename,
+                              onCancel: _stopEditing,
                             )
                           : Text(
                               widget.label,
@@ -659,63 +631,42 @@ class _CategoryItemState extends State<_CategoryItem> {
             onTap: () => Future.delayed(const Duration(milliseconds: 100), () {
               if (mounted) setState(() => _isEditing = true);
             }),
-            child: Row(
-              children: [
-                const Icon(Icons.edit, size: 18),
-                const SizedBox(width: 8),
-                Text(context.l10n.common_rename),
-              ],
+            child: MenuActionLabel(
+              leading: const Icon(Icons.edit),
+              label: context.l10n.common_rename,
             ),
           ),
         if (widget.onAddSubCategory != null)
           PopupMenuItem(
             onTap: widget.onAddSubCategory,
-            child: Row(
-              children: [
-                const Icon(Icons.create_new_folder, size: 18),
-                const SizedBox(width: 8),
-                Text(context.l10n.localGallery_createSubCategoryTitle),
-              ],
+            child: MenuActionLabel(
+              leading: const Icon(Icons.create_new_folder),
+              label: context.l10n.localGallery_createSubCategoryTitle,
             ),
           ),
         if (widget.onMoveUp != null)
           PopupMenuItem(
             onTap: widget.onMoveUp,
-            child: Row(
-              children: [
-                const Icon(Icons.arrow_upward, size: 18),
-                const SizedBox(width: 8),
-                Text(context.l10n.localGallery_moveCategoryUp),
-              ],
+            child: MenuActionLabel(
+              leading: const Icon(Icons.arrow_upward),
+              label: context.l10n.localGallery_moveCategoryUp,
             ),
           ),
         if (widget.onMoveToRoot != null)
           PopupMenuItem(
             onTap: widget.onMoveToRoot,
-            child: Row(
-              children: [
-                const Icon(Icons.drive_file_move_outline, size: 18),
-                const SizedBox(width: 8),
-                Text(context.l10n.localGallery_moveToRoot),
-              ],
+            child: MenuActionLabel(
+              leading: const Icon(Icons.drive_file_move_outline),
+              label: context.l10n.localGallery_moveToRoot,
             ),
           ),
         if (widget.onDelete != null)
           PopupMenuItem(
             onTap: widget.onDelete,
-            child: Row(
-              children: [
-                Icon(
-                  Icons.delete,
-                  size: 18,
-                  color: Theme.of(context).colorScheme.error,
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  context.l10n.common_delete,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
-                ),
-              ],
+            child: MenuActionLabel(
+              leading: const Icon(Icons.delete),
+              label: context.l10n.common_delete,
+              destructive: true,
             ),
           ),
       ],

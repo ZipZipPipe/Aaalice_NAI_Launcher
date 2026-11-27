@@ -1,8 +1,10 @@
-import '../../core/constants/api_constants.dart';
+import '../../core/enums/image_model_mode.dart';
 import '../../data/models/gallery/nai_image_metadata.dart';
 import '../../data/models/metadata/metadata_import_options.dart';
 
 void _ignoreQualityTier(String _) {}
+
+void _ignoreModelMode(ImageModelMode _) {}
 
 class MetadataImportTarget {
   const MetadataImportTarget({
@@ -23,6 +25,7 @@ class MetadataImportTarget {
     this.updateQualityTier = _ignoreQualityTier,
     required this.updateUcPreset,
     required this.updateTransparentBackground,
+    this.updateModelMode = _ignoreModelMode,
   });
 
   final void Function(String value) updatePrompt;
@@ -42,6 +45,7 @@ class MetadataImportTarget {
   final void Function(String value) updateQualityTier;
   final void Function(int value) updateUcPreset;
   final void Function(bool value) updateTransparentBackground;
+  final void Function(ImageModelMode value) updateModelMode;
 }
 
 class MetadataImportApplier {
@@ -50,15 +54,22 @@ class MetadataImportApplier {
   static int applyPromptAndGenerationParams({
     required NaiImageMetadata metadata,
     required MetadataImportOptions options,
-    required String currentModel,
     required MetadataImportTarget target,
   }) {
-    var count = 0;
+    // 切模型会为旧模型存档当前参数，导入值必须在切换之后写入。
+    var count = _applyValue<String>(
+      options.importModel,
+      resolveImportableModel(metadata),
+      target.updateModel,
+    );
 
     if (options.importPrompt && metadata.prompt.isNotEmpty) {
       target.updatePrompt(
         metadata.hasSeparatedFields ? metadata.mainPrompt : metadata.prompt,
       );
+      // 数据集前缀已从提示词剥离，模式随提示词一起恢复才能复现原图。
+      final modelMode = metadata.modelMode;
+      if (modelMode != null) target.updateModelMode(modelMode);
       count++;
     }
 
@@ -69,7 +80,6 @@ class MetadataImportApplier {
         resolveImportedNegativePrompt(
           metadata,
           importUcPreset: options.importUcPreset,
-          currentModel: currentModel,
         ),
       );
       count++;
@@ -102,11 +112,6 @@ class MetadataImportApplier {
       options.importSampler,
       metadata.sampler,
       target.updateSampler,
-    );
-    count += _applyValue<String>(
-      options.importModel,
-      resolveImportableModel(metadata),
-      target.updateModel,
     );
     count += _applyValue<bool>(
       options.importSmea,
@@ -155,33 +160,22 @@ class MetadataImportApplier {
     return count;
   }
 
+  /// 写入负面框的内容。导入 UC 预设时预设文字由预设选择在发送时拼回，
+  /// 不导入时保留在文本里，否则原图的预设会丢失。
   static String resolveImportedNegativePrompt(
     NaiImageMetadata metadata, {
     required bool importUcPreset,
-    required String currentModel,
   }) {
-    final baseNegative = metadata.hasSeparatedFields
-        ? metadata.negativePromptWithoutFixedTags
-        : metadata.displayNegativePrompt;
-    if (!importUcPreset || metadata.ucPreset == null) {
-      return baseNegative;
-    }
-
-    final model = resolveImportableModel(metadata) ?? currentModel;
-    return UcPresets.stripPresetByInt(baseNegative, model, metadata.ucPreset!);
+    final mainNegative = metadata.mainNegativePrompt;
+    if (importUcPreset) return mainNegative;
+    return [
+      metadata.negativePresetSplit.preset,
+      mainNegative,
+    ].where((part) => part.isNotEmpty).join(', ');
   }
 
-  static String? toImportableModelId(String? model) {
-    if (model == null || model.isEmpty) return null;
-    // 测试期生成的图元数据里是 `custom`，迁移到正式 ID。
-    final normalized = ImageModels.migrateLegacyModel(model);
-    return ImageModels.allModels.contains(normalized) ? normalized : null;
-  }
-
-  static String? resolveImportableModel(NaiImageMetadata metadata) {
-    return toImportableModelId(metadata.sourceModel) ??
-        toImportableModelId(metadata.model);
-  }
+  static String? resolveImportableModel(NaiImageMetadata metadata) =>
+      metadata.importableModel;
 
   static int _applyValue<T>(
     bool shouldImport,

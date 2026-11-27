@@ -22,6 +22,7 @@ void main() {
             onPointerUp: (_) {},
             onPointerCancel: (_) {},
             onScrollNotification: (_) => false,
+            onDragClaimNotification: (_) => false,
             pointerExclusionKeys: [launcherKey],
             pointerActive: false,
             dragOffset: 0,

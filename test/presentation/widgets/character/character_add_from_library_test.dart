@@ -1,10 +1,12 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/misc.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hive_flutter/hive_flutter.dart';
+import 'package:hive_ce_flutter/hive_ce_flutter.dart';
 import 'package:nai_launcher/core/constants/storage_keys.dart';
 import 'package:nai_launcher/data/models/character/character_prompt.dart';
 import 'package:nai_launcher/data/models/tag_library/tag_library_entry.dart';
@@ -26,11 +28,13 @@ void main() {
       'nai_launcher_character_library_menu_hive_',
     );
     Hive.init(hiveTempDir.path);
-    await Hive.openBox(StorageKeys.settingsBox);
+    // 内存后端：落盘写一旦从 widget test 的 FakeAsync 时钟发起就不会完成，会锁死 box
+    await Hive.openBox(StorageKeys.settingsBox, bytes: Uint8List(0));
   });
 
   tearDownAll(() async {
-    await Hive.close();
+    // 有界等待：box 被锁死时快速失败，不把整个测试分片拖到看门狗超时
+    await Hive.close().timeout(const Duration(seconds: 10));
     if (await hiveTempDir.exists()) {
       await hiveTempDir.delete(recursive: true);
     }

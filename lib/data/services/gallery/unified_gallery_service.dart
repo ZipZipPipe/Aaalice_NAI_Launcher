@@ -7,6 +7,7 @@ import '../../../core/database/datasources/gallery_data_source.dart';
 import '../../../core/database/database.dart';
 import '../../../core/exceptions/gallery_exceptions.dart';
 import '../../../core/utils/app_logger.dart';
+import '../../models/gallery/gallery_index_admission.dart';
 import '../../models/gallery/local_image_record.dart';
 import '../../models/gallery/nai_image_metadata.dart';
 import 'gallery_filter_service.dart';
@@ -27,6 +28,11 @@ part 'unified_gallery_service.g.dart';
 
 @Riverpod(keepAlive: true)
 class GalleryService extends _$GalleryService {
+  GalleryService({
+    LocalGalleryService Function() createService = _createService,
+  }) : _create = createService;
+
+  final LocalGalleryService Function() _create;
   LocalGalleryService? _service;
   Future<void>? _initialization;
 
@@ -36,36 +42,53 @@ class GalleryService extends _$GalleryService {
     ref.onDispose(() {
       _service?.dispose();
       _service = null;
+      _initialization = null;
     });
     return _PlaceholderGalleryService();
   }
 
   Future<void> ensureInitialized() {
-    return _initialization ??= _initializeService();
+    return _initialization ??= Future<void>.microtask(_initializeService);
+  }
+
+  static LocalGalleryService _createService() {
+    final dataSource = DatabaseManager.instance
+        .getDataSource<GalleryDataSource>('gallery');
+    if (dataSource == null) {
+      throw const GalleryDatabaseException(
+        message: 'GalleryDataSource not available',
+      );
+    }
+    return LocalGalleryServiceImpl(
+      dataSource: dataSource,
+      filterService: GalleryFilterService(dataSource),
+    );
   }
 
   Future<void> _initializeService() async {
+    if (!ref.mounted) return;
     try {
-      final dataSource = DatabaseManager.instance
-          .getDataSource<GalleryDataSource>('gallery');
-      if (dataSource == null) {
-        throw const GalleryDatabaseException(
-          message: 'GalleryDataSource not available',
-        );
+      final service = _create();
+      _service = service;
+      await service.initialize();
+      if (!ref.mounted) {
+        await service.dispose();
+        if (identical(_service, service)) {
+          _service = null;
+        }
+        return;
       }
-
-      _service = LocalGalleryServiceImpl(
-        dataSource: dataSource,
-        filterService: GalleryFilterService(dataSource),
-      );
-      await _service!.initialize();
-      state = _service!;
+      state = service;
     } on GalleryPermissionDeniedException catch (error) {
       AppLogger.e('Gallery permission denied', error, null, 'GalleryService');
-      state = ErrorGalleryService(error: '无法访问图片文件夹: ${error.message}');
+      if (ref.mounted) {
+        state = ErrorGalleryService(error: '无法访问图片文件夹: ${error.message}');
+      }
     } on GalleryScanException catch (error) {
       AppLogger.e('Gallery scan failed', error, null, 'GalleryService');
-      state = ErrorGalleryService(error: '扫描图片失败: ${error.message}');
+      if (ref.mounted) {
+        state = ErrorGalleryService(error: '扫描图片失败: ${error.message}');
+      }
     } catch (error) {
       AppLogger.e(
         'Failed to initialize gallery service',
@@ -73,15 +96,16 @@ class GalleryService extends _$GalleryService {
         null,
         'GalleryService',
       );
-      state = ErrorGalleryService(error: '画廊初始化失败: $error');
+      if (ref.mounted) {
+        state = ErrorGalleryService(error: '画廊初始化失败: $error');
+      }
+    } finally {
+      if (ref.mounted && state is ErrorGalleryService) {
+        await _service?.dispose();
+        _service = null;
+        _initialization = null;
+      }
     }
-  }
-
-  Future<void> reinitialize() async {
-    await _service?.dispose();
-    _service = null;
-    _initialization = null;
-    await ensureInitialized();
   }
 }
 
@@ -102,6 +126,9 @@ class ErrorGalleryService implements LocalGalleryService {
   Never _throwError() => throw GalleryDatabaseException(message: error);
 
   @override
+  int imageCountInFolder(String path) => _throwError();
+
+  @override
   Future<List<File>> initialize() => _throwError();
   @override
   Future<List<LocalImageRecord>> getPage(int page, {int? pageSize}) =>
@@ -110,7 +137,8 @@ class ErrorGalleryService implements LocalGalleryService {
   Future<LocalGalleryQueryPage> queryPage({
     required int page,
     int pageSize = 50,
-    String searchQuery = '',
+    FilterCriteria criteria = const FilterCriteria(),
+    bool includeFilePathMatches = false,
   }) => _throwError();
   @override
   Future<int?> getImageIdByPath(String filePath) => _throwError();
@@ -127,10 +155,13 @@ class ErrorGalleryService implements LocalGalleryService {
   @override
   Future<void> refresh({bool scan = true}) => _throwError();
   @override
-  Future<bool> addNewImageImmediately(
+  Future<GalleryIndexAdmission> addNewImageImmediately(
     String filePath, {
     NaiImageMetadata? metadata,
   }) => _throwError();
+  @override
+  Future<int> removeDeletedImagesImmediately(List<String> filePaths) =>
+      _throwError();
   @override
   Future<void> setSearchQuery(String query) => _throwError();
   @override
@@ -151,6 +182,8 @@ class ErrorGalleryService implements LocalGalleryService {
 }
 
 class _PlaceholderGalleryService implements LocalGalleryService {
+  @override
+  int imageCountInFolder(String path) => _throwNotInitialized();
   @override
   bool get isInitialized => false;
   @override
@@ -173,7 +206,8 @@ class _PlaceholderGalleryService implements LocalGalleryService {
   Future<LocalGalleryQueryPage> queryPage({
     required int page,
     int pageSize = 50,
-    String searchQuery = '',
+    FilterCriteria criteria = const FilterCriteria(),
+    bool includeFilePathMatches = false,
   }) => _throwNotInitialized();
   @override
   Future<int?> getImageIdByPath(String filePath) => _throwNotInitialized();
@@ -191,10 +225,13 @@ class _PlaceholderGalleryService implements LocalGalleryService {
   @override
   Future<void> refresh({bool scan = true}) => _throwNotInitialized();
   @override
-  Future<bool> addNewImageImmediately(
+  Future<GalleryIndexAdmission> addNewImageImmediately(
     String filePath, {
     NaiImageMetadata? metadata,
   }) => _throwNotInitialized();
+  @override
+  Future<int> removeDeletedImagesImmediately(List<String> filePaths) =>
+      _throwNotInitialized();
   @override
   Future<void> setSearchQuery(String query) => _throwNotInitialized();
   @override

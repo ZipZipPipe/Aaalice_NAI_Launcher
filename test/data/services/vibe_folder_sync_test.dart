@@ -1,8 +1,10 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
+import 'package:nai_launcher/core/utils/novelai_vibe_codec.dart';
 import 'package:nai_launcher/data/models/vibe/vibe_library_entry.dart';
 import 'package:nai_launcher/data/models/vibe/vibe_reference.dart';
 import 'package:nai_launcher/data/services/vibe_file_storage_protocol.dart';
@@ -26,7 +28,7 @@ void main() {
       );
 
       final upserts = <VibeLibraryEntry>[];
-      final deleted = <VibeLibraryEntry>[];
+      final deleted = <String>[];
       final stale = VibeLibraryEntry(
         id: 'stale',
         name: 'stale',
@@ -40,16 +42,18 @@ void main() {
       );
 
       final result = await VibeFolderSync(repository).syncFolderToHive(
-        existingEntries: [stale],
+        existingFilePathsById: {stale.id: stale.filePath!},
+        loadExistingEntry: (id) async =>
+            fail('unmatched files must not load existing entries'),
         onUpsertEntry: (entry) async => upserts.add(entry),
-        onDeleteEntry: (entry) async => deleted.add(entry),
+        onDeleteEntry: (id) async => deleted.add(id),
       );
 
       expect(result.scannedCount, 1);
       expect(result.upsertedCount, 1);
       expect(result.deletedCount, 1);
       expect(upserts.single.filePath, file.path);
-      expect(deleted.single.id, 'stale');
+      expect(deleted.single, 'stale');
     },
   );
 
@@ -112,7 +116,8 @@ void main() {
       final upserts = <VibeLibraryEntry>[];
 
       await VibeFolderSync(repository).syncFolderToHive(
-        existingEntries: [existing],
+        existingFilePathsById: {existing.id: file.path},
+        loadExistingEntry: (id) async => id == existing.id ? existing : null,
         onUpsertEntry: (entry) async => upserts.add(entry),
       );
 
@@ -130,4 +135,188 @@ void main() {
       expect(updated.bundledVibeEncodingModels, ['nai-diffusion-4-full']);
     },
   );
+
+  test('bundle resync preserves entries with unreadable children', () async {
+    final tempDir = await Directory.systemTemp.createTemp('vibe_folder_sync_');
+    addTearDown(() => tempDir.delete(recursive: true));
+    const vibe = VibeReference(
+      displayName: 'first',
+      vibeEncoding: 'first-encoding',
+      sourceType: VibeSourceType.naiv4vibebundle,
+    );
+    final document = NovelAiVibeCodec.buildBundleMap([vibe]);
+    document['vibes'] = [...document['vibes'] as List<dynamic>, null];
+    final file = await File(
+      '${tempDir.path}/partial.naiv4vibebundle',
+    ).writeAsString(jsonEncode(document));
+    final existing = VibeLibraryEntry.fromVibeReference(
+      name: 'partial',
+      vibeData: vibe,
+      filePath: file.path,
+    ).copyWith(
+      bundledVibeNames: const ['first', 'second'],
+      bundledVibeEncodings: const ['first-encoding', 'second-encoding'],
+    );
+    final repository = _FileRepository();
+    when(repository.listVibeFiles).thenAnswer((_) async => [file]);
+    when(
+      () => repository.extractPreviewsFromBundle(file.path),
+    ).thenAnswer((_) async => []);
+    final upserts = <VibeLibraryEntry>[];
+    final deleted = <String>[];
+
+    final result = await VibeFolderSync(repository).syncFolderToHive(
+      existingFilePathsById: {existing.id: file.path},
+      loadExistingEntry: (_) async => existing,
+      onUpsertEntry: (entry) async => upserts.add(entry),
+      onDeleteEntry: (id) async => deleted.add(id),
+    );
+
+    expect(result.upsertedCount, 0);
+    expect(result.deletedCount, 0);
+    expect(result.errors, ['读取或解析失败: ${file.path}']);
+    expect(upserts, isEmpty);
+    expect(deleted, isEmpty);
+  });
+
+  group('existing entries indexed by file path', () {
+    final file = File('C:/vibes/kept.naiv4vibe');
+    final customThumbnail = Uint8List.fromList([9, 9, 9]);
+    late _FileRepository repository;
+    late VibeLibraryEntry full;
+
+    setUp(() {
+      repository = _FileRepository();
+      when(repository.listVibeFiles).thenAnswer((_) async => [file]);
+      when(() => repository.loadVibeFromFile(file.path)).thenAnswer(
+        (_) async => VibeReference(
+          displayName: 'kept',
+          vibeEncoding: 'file-encoding',
+          thumbnail: Uint8List.fromList([1, 2, 3]),
+          sourceType: VibeSourceType.naiv4vibe,
+        ),
+      );
+      full = VibeLibraryEntry(
+        id: 'kept-id',
+        name: 'kept',
+        vibeDisplayName: 'kept',
+        vibeEncoding: 'stored-encoding',
+        strength: 0.6,
+        infoExtracted: 0.7,
+        sourceTypeIndex: VibeSourceType.naiv4vibe.index,
+        categoryId: 'category',
+        isFavorite: true,
+        createdAt: DateTime(2026),
+        thumbnail: customThumbnail,
+        filePath: file.path,
+      );
+    });
+
+    test(
+      'merge reads the full entry so the custom thumbnail survives',
+      () async {
+        final loaded = <String>[];
+        final upserts = <VibeLibraryEntry>[];
+
+        await VibeFolderSync(repository).syncFolderToHive(
+          existingFilePathsById: {full.id: file.path},
+          loadExistingEntry: (id) async {
+            loaded.add(id);
+            return full;
+          },
+          onUpsertEntry: (entry) async => upserts.add(entry),
+        );
+
+        expect(loaded, ['kept-id']);
+        expect(upserts.single.id, 'kept-id');
+        expect(upserts.single.thumbnail, customThumbnail);
+        expect(upserts.single.categoryId, 'category');
+        expect(upserts.single.isFavorite, isTrue);
+      },
+    );
+
+    test('an entry removed after the path scan is not recreated', () async {
+      final upserts = <VibeLibraryEntry>[];
+      final deleted = <String>[];
+
+      await VibeFolderSync(repository).syncFolderToHive(
+        existingFilePathsById: {full.id: file.path},
+        loadExistingEntry: (_) async => null,
+        onUpsertEntry: (entry) async => upserts.add(entry),
+        onDeleteEntry: (id) async => deleted.add(id),
+      );
+
+      expect(upserts, isEmpty);
+      expect(deleted, isEmpty);
+    });
+
+    test('an entry already matching its file is not rewritten', () async {
+      final firstPass = <VibeLibraryEntry>[];
+      await VibeFolderSync(repository).syncFolderToHive(
+        existingFilePathsById: {full.id: file.path},
+        loadExistingEntry: (_) async => full,
+        onUpsertEntry: (entry) async => firstPass.add(entry),
+      );
+      final stored = firstPass.single;
+      final secondPass = <VibeLibraryEntry>[];
+
+      final result = await VibeFolderSync(repository).syncFolderToHive(
+        existingFilePathsById: {stored.id: file.path},
+        loadExistingEntry: (_) async => stored,
+        onUpsertEntry: (entry) async => secondPass.add(entry),
+      );
+
+      expect(secondPass, isEmpty);
+      expect(result.scannedCount, 1);
+      expect(result.upsertedCount, 0);
+      expect(result.unchangedCount, 1);
+      expect(result.errors, isEmpty);
+    });
+
+    test(
+      'replacing the encoding drops the original image from the old encoding',
+      () async {
+        final stored = full.copyWith(
+          rawImageData: Uint8List.fromList([4, 5, 6]),
+        );
+        when(() => repository.loadVibeFromFile(file.path)).thenAnswer(
+          (_) async => VibeReference(
+            displayName: 'kept',
+            vibeEncoding: 'edited-encoding',
+            thumbnail: Uint8List.fromList([1, 2, 3]),
+            sourceType: VibeSourceType.naiv4vibe,
+          ),
+        );
+        final secondPass = <VibeLibraryEntry>[];
+
+        final result = await VibeFolderSync(repository).syncFolderToHive(
+          existingFilePathsById: {stored.id: file.path},
+          loadExistingEntry: (_) async => stored,
+          onUpsertEntry: (entry) async => secondPass.add(entry),
+        );
+
+        expect(secondPass.single.vibeEncoding, 'edited-encoding');
+        expect(secondPass.single.rawImageData, isNull);
+        expect(secondPass.single.thumbnail, customThumbnail);
+        expect(result.upsertedCount, 1);
+        expect(result.unchangedCount, 0);
+      },
+    );
+
+    test('a failed full read skips that file and reports it', () async {
+      final upserts = <VibeLibraryEntry>[];
+      final deleted = <String>[];
+
+      final result = await VibeFolderSync(repository).syncFolderToHive(
+        existingFilePathsById: {full.id: file.path},
+        loadExistingEntry: (_) async => throw StateError('hive read failed'),
+        onUpsertEntry: (entry) async => upserts.add(entry),
+        onDeleteEntry: (id) async => deleted.add(id),
+      );
+
+      expect(upserts, isEmpty);
+      expect(deleted, isEmpty);
+      expect(result.errors, hasLength(1));
+    });
+  });
 }

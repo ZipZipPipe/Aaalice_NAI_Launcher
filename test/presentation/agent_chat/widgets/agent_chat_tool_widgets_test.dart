@@ -24,6 +24,9 @@ import 'package:nai_launcher/presentation/widgets/common/image_detail/image_deta
 import 'package:nai_launcher/presentation/widgets/common/image_detail/image_detail_viewer.dart';
 import 'package:nai_launcher/presentation/widgets/online_gallery/gallery_detail_dialog.dart';
 
+import '../../../helpers/ink_expectations.dart';
+import '../../../helpers/real_async_pump.dart';
+
 void main() {
   Future<void> pumpResult(WidgetTester tester, ToolResultMessage result) async {
     await tester.pumpWidget(
@@ -244,6 +247,46 @@ void main() {
     expect(find.byType(Image), findsOneWidget);
   });
 
+  testWidgets('inline image previews keep the source aspect ratio', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(
+      () => PaintingBinding.instance.imageCache
+        ..clear()
+        ..clearLiveImages(),
+    );
+    final result = ToolResultMessage(
+      toolCallId: 'preview-wide',
+      toolName: 'preview_generated_image',
+      content: [
+        ToolResultImageContent(
+          ImageContent(
+            source: ImageSource.base64(
+              mimeType: 'image/png',
+              base64Data: base64Encode(
+                image_lib.encodePng(image_lib.Image(width: 640, height: 320)),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+
+    await pumpResult(tester, result);
+    await tester.tap(
+      find.byKey(const ValueKey('agent-tool-result-preview-wide')),
+    );
+    await tester.pump();
+    await pumpUntilRealAsync(
+      tester,
+      () => tester.widget<RawImage>(find.byType(RawImage)).image != null,
+    );
+
+    expect(tester.getSize(find.byType(RawImage)), const Size(320, 160));
+  });
+
   testWidgets('read image results never create transcript previews', (
     tester,
   ) async {
@@ -339,14 +382,22 @@ void main() {
     await tester.pump();
     await tester.pump();
 
-    final viewer = tester.widget<ImageDetailViewer>(
-      find.byType(ImageDetailViewer),
-    );
+    final detail = find.byType(ImageDetailViewer);
+    final viewer = tester.widget<ImageDetailViewer>(detail);
     expect(viewer.images, hasLength(1));
     expect(
       (viewer.images.single as FileImageDetailData).filePath,
       imageFile.path,
     );
+    expect(viewer.callbacks?.onDelete, isNull);
+    await tester.sendKeyEvent(LogicalKeyboardKey.delete);
+    await tester.pump();
+    expect(ModalRoute.of(tester.element(detail))!.isCurrent, isTrue);
+    expect(
+      find.widgetWithIcon(ImageDetailViewer, Icons.delete_outline),
+      findsNothing,
+    );
+    expect(imageFile.existsSync(), isTrue);
   });
 
   testWidgets('renders persisted generation files without a display tool', (
@@ -445,6 +496,7 @@ void main() {
       find.byType(ImageDetailViewer),
     );
     final detail = viewer.images.single as GeneratedImageDetailData;
+    expect(viewer.callbacks?.onDelete, isNull);
     expect(detail.imageBytes, originalBytes);
     final decoded = image_lib.decodeImage(detail.imageBytes);
     expect(decoded?.width, 4);
@@ -454,54 +506,7 @@ void main() {
   testWidgets('online gallery refs render quiet multi-card metadata layout', (
     tester,
   ) async {
-    final references = [
-      for (var index = 0; index < 3; index++)
-        AgentChatResourceReference(
-          kind: AgentChatResourceKind.onlineGalleryMedia,
-          source: 'danbooru',
-          resourceId: '$index',
-          display: {
-            'source_label': 'Danbooru',
-            'title': 'Ibuki $index',
-            'author': 'Artist $index',
-          },
-        ),
-    ];
-    final result = ToolResultMessage(
-      toolCallId: 'display-online',
-      toolName: 'display_images',
-      content: [
-        for (var index = 0; index < references.length; index++)
-          ToolResultImageContent(
-            ImageContent(
-              source: ImageSource.base64(
-                mimeType: 'image/png',
-                base64Data: base64Encode(_onePixelPng),
-              ),
-            ),
-          ),
-      ],
-      details: {
-        'images': [
-          for (final reference in references)
-            {
-              'resource_ref': AgentChatResourceReferenceCodec.encodeJsonMap(
-                reference,
-              ),
-            },
-        ],
-      },
-    );
-
-    await tester.pumpWidget(
-      ProviderScope(
-        child: MaterialApp(
-          localizationsDelegates: AppLocalizations.localizationsDelegates,
-          supportedLocales: AppLocalizations.supportedLocales,
-          home: Scaffold(body: AgentChatToolResultMedia(result: result)),
-        ),
-      ),
-    );
+    await _pumpOnlineGalleryCards(tester);
 
     expect(
       find.byKey(const ValueKey('online-gallery-resource-card')),
@@ -531,6 +536,54 @@ void main() {
     );
     expect(hoverMotion.hovered, isTrue);
   });
+
+  testWidgets('在线画廊卡片的按压反馈叠在图片区之上，悬停只用自绘蒙层', (tester) async {
+    await _pumpOnlineGalleryCards(tester);
+    final card = find
+        .byKey(const ValueKey('online-gallery-resource-card'))
+        .first;
+    final theme = Theme.of(tester.element(card));
+
+    await hoverOver(tester, card);
+    expect(tester.renderObject(card), isNot(inkOnTop(ink: theme.hoverColor)));
+
+    // 抬起会打开画廊详情，按压反馈确认后取消手势
+    final press = await pressAndHold(tester, card);
+    expectInkOnTop(
+      tester,
+      card,
+      ink: theme.highlightColor,
+      below: theme.colorScheme.surfaceContainerLow,
+    );
+    await press.cancel();
+    await tester.pump();
+  });
+
+  testWidgets(
+    'Tab 聚焦在线画廊卡片时焦点高亮叠在图片区之上',
+    (tester) async {
+      await _pumpOnlineGalleryCards(tester);
+      final card = find
+          .byKey(const ValueKey('online-gallery-resource-card'))
+          .first;
+      final theme = Theme.of(tester.element(card));
+
+      await tabUntilFocused(
+        tester,
+        find.descendant(of: card, matching: find.byType(InkWell)),
+      );
+      expectInkOnTop(
+        tester,
+        card,
+        ink: theme.focusColor,
+        below: theme.colorScheme.surfaceContainerLow,
+      );
+    },
+    variant: const TargetPlatformVariant({
+      TargetPlatform.windows,
+      TargetPlatform.macOS,
+    }),
+  );
 
   testWidgets(
     'online gallery card opens gallery detail instead of PNG metadata',
@@ -794,6 +847,57 @@ void main() {
       expect(tester.takeException(), isNull, reason: 'width $width');
     }
   });
+}
+
+Future<void> _pumpOnlineGalleryCards(WidgetTester tester) async {
+  final references = [
+    for (var index = 0; index < 3; index++)
+      AgentChatResourceReference(
+        kind: AgentChatResourceKind.onlineGalleryMedia,
+        source: 'danbooru',
+        resourceId: '$index',
+        display: {
+          'source_label': 'Danbooru',
+          'title': 'Ibuki $index',
+          'author': 'Artist $index',
+        },
+      ),
+  ];
+  final result = ToolResultMessage(
+    toolCallId: 'display-online',
+    toolName: 'display_images',
+    content: [
+      for (var index = 0; index < references.length; index++)
+        ToolResultImageContent(
+          ImageContent(
+            source: ImageSource.base64(
+              mimeType: 'image/png',
+              base64Data: base64Encode(_onePixelPng),
+            ),
+          ),
+        ),
+    ],
+    details: {
+      'images': [
+        for (final reference in references)
+          {
+            'resource_ref': AgentChatResourceReferenceCodec.encodeJsonMap(
+              reference,
+            ),
+          },
+      ],
+    },
+  );
+
+  await tester.pumpWidget(
+    ProviderScope(
+      child: MaterialApp(
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: Scaffold(body: AgentChatToolResultMedia(result: result)),
+      ),
+    ),
+  );
 }
 
 class _TestShortcutConfigNotifier extends ShortcutConfigNotifier {

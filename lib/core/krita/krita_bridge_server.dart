@@ -4,6 +4,8 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
+import '../platform/launcher_discovery_directory.dart';
+import '../platform/owner_only_permissions.dart';
 import '../utils/app_logger.dart';
 import 'krita_bridge_models.dart';
 import 'krita_bridge_protocol.dart';
@@ -11,6 +13,7 @@ import 'krita_bridge_protocol.dart';
 typedef KritaBridgeSecretGenerator = String Function();
 typedef KritaBridgePidProvider = int Function();
 typedef KritaBridgeClock = DateTime Function();
+typedef KritaBridgeLateFramesObserver = void Function();
 
 class KritaBridgeServer {
   KritaBridgeServer({
@@ -18,26 +21,37 @@ class KritaBridgeServer {
     KritaBridgeSecretGenerator? secretGenerator,
     KritaBridgePidProvider? pidProvider,
     KritaBridgeClock? clock,
+    OwnerOnlyPermissionGuard? restrictToOwner,
+    KritaBridgeLateFramesObserver? onLateFramesDropped,
     this.maxTextFrameBytes = KritaBridgeProtocol.defaultMaxTextFrameBytes,
+    this.closeGracePeriod = defaultCloseGracePeriod,
   })  : _discoveryDirectory =
             discoveryDirectory ?? _defaultDiscoveryDirectory(),
         _secretGenerator = secretGenerator ?? _generateSecret,
         _pidProvider = pidProvider ?? (() => pid),
-        _clock = clock ?? DateTime.now;
+        _clock = clock ?? DateTime.now,
+        _restrictToOwner = restrictToOwner ?? restrictPathToOwner,
+        _onLateFramesDropped = onLateFramesDropped;
 
   static const String discoveryFileName = 'krita-bridge.json';
+  static const Duration defaultCloseGracePeriod = Duration(seconds: 2);
   static const String _logTag = 'KritaBridge';
 
   final Directory _discoveryDirectory;
   final KritaBridgeSecretGenerator _secretGenerator;
   final KritaBridgePidProvider _pidProvider;
   final KritaBridgeClock _clock;
+  final OwnerOnlyPermissionGuard _restrictToOwner;
+  final KritaBridgeLateFramesObserver? _onLateFramesDropped;
   final int maxTextFrameBytes;
+  final Duration closeGracePeriod;
 
   final StreamController<KritaBridgeMessage> _messageController =
       StreamController<KritaBridgeMessage>.broadcast();
   final StreamController<bool> _authenticationController =
       StreamController<bool>.broadcast();
+
+  final Set<WebSocket> _connections = <WebSocket>{};
 
   HttpServer? _server;
   WebSocket? _client;
@@ -68,19 +82,31 @@ class KritaBridgeServer {
       await stop();
     }
 
-    _secret = _secretGenerator();
-    _startedAt = _clock().toUtc();
-    _server = await HttpServer.bind(
+    final server = await HttpServer.bind(
       InternetAddress.loopbackIPv4,
       preferredPort,
     );
-    unawaited(_acceptRequests(_server!));
-    await _writeDiscoveryFile();
+    _server = server;
+    try {
+      _secret = _secretGenerator();
+      _startedAt = _clock().toUtc();
+      unawaited(_acceptRequests(server));
+      await _writeDiscoveryFile();
+    } catch (_) {
+      // Publishing failed, so the discovery file is not ours to delete.
+      await _releaseListener();
+      rethrow;
+    }
     AppLogger.i('Bridge listening on 127.0.0.1:$port', _logTag);
   }
 
   Future<void> stop() async {
-    final client = _client;
+    await _releaseListener();
+    await _deleteDiscoveryFile();
+    AppLogger.i('Bridge stopped', _logTag);
+  }
+
+  Future<void> _releaseListener() async {
     _client = null;
     _clientAuthenticated = false;
     _connectedClientLabel = null;
@@ -88,22 +114,44 @@ class KritaBridgeServer {
       _authenticationController.add(false);
     }
 
-    if (client != null) {
-      await client.close();
-    }
-
     final server = _server;
     _server = null;
+    _secret = null;
+    _startedAt = null;
+
+    // Upgraded sockets are detached, so server.close(force) cannot reach them.
+    final closing = _closeConnections();
     if (server != null) {
       await server.close(force: true);
     }
+    await closing;
+  }
 
+  Future<void> _closeConnections() async {
+    final connections = List<WebSocket>.of(_connections);
+    if (connections.isEmpty) {
+      return;
+    }
+    try {
+      await Future.wait(connections.map(_closeConnection))
+          .timeout(closeGracePeriod);
+    } on TimeoutException {
+      // close() only completes once a peer reads all queued output.
+      AppLogger.w('Gave up waiting for bridge connections to close', _logTag);
+    }
+  }
+
+  Future<void> _closeConnection(WebSocket socket) async {
+    _connections.remove(socket);
+    await socket.close();
+  }
+
+  Future<void> _deleteDiscoveryFile() async {
     final file = discoveryFile;
     if (await file.exists()) {
       await file.delete();
       AppLogger.i('Discovery file deleted: ${file.path}', _logTag);
     }
-    AppLogger.i('Bridge stopped', _logTag);
   }
 
   Future<void> dispose() async {
@@ -141,6 +189,11 @@ class KritaBridgeServer {
 
       final clientLabel = _clientLabelFor(request);
       final socket = await WebSocketTransformer.upgrade(request);
+      if (!identical(_server, server)) {
+        unawaited(_closeConnection(socket));
+        continue;
+      }
+      _connections.add(socket);
       AppLogger.i('Incoming WebSocket connection', _logTag);
       unawaited(_handleSocket(socket, clientLabel: clientLabel));
     }
@@ -151,103 +204,122 @@ class KritaBridgeServer {
     required String clientLabel,
   }) async {
     var socketAuthenticated = false;
+    var droppedLateFrames = false;
 
     try {
       await for (final data in socket) {
-        if (data is! String) {
-          _sendError(
-            socket,
-            const KritaBridgeError(
-              code: KritaBridgeErrorCode.invalidRequest,
-              message: 'Only JSON text frames are supported in V1',
-            ),
-          );
+        if (!_connections.contains(socket)) {
+          // Closed by this server; replying to late frames would throw.
+          if (!droppedLateFrames) {
+            droppedLateFrames = true;
+            AppLogger.w(
+              'Dropped late frames from a closed connection',
+              _logTag,
+            );
+            _onLateFramesDropped?.call();
+          }
           continue;
         }
 
-        final result = KritaBridgeProtocol.decodeIncoming(
+        final message = _decodeFrame(
+          socket,
           data,
-          sessionSecret: _secret ?? '',
           authenticated: socketAuthenticated,
-          maxTextFrameBytes: maxTextFrameBytes,
         );
-
-        final error = result.error;
-        if (error != null) {
-          AppLogger.w(
-            'Rejected message: ${error.code.value}'
-            '${error.id == null ? '' : ' id=${error.id}'}',
-            _logTag,
-          );
-          _sendError(socket, error);
-          continue;
+        switch (message) {
+          case null:
+            break;
+          case KritaUnsupportedPingVersionMessage():
+            _rejectPingVersion(socket, message);
+          case KritaPingMessage():
+            _authenticateSocket(socket, clientLabel: clientLabel);
+            socketAuthenticated = true;
+          default:
+            _messageController.add(message);
         }
-
-        final message = result.message;
-        if (message == null) {
-          continue;
-        }
-
-        if (message is KritaUnsupportedPingVersionMessage) {
-          socket.add(
-            jsonEncode(
-              KritaBridgeProtocol.encodePong(
-                supportedVersions: message.supportedVersions,
-              ),
-            ),
-          );
-          AppLogger.w(
-            'Rejected ping version: ${message.requestedVersion}',
-            _logTag,
-          );
-          continue;
-        }
-
-        if (message is KritaPingMessage) {
-          await _authenticateSocket(socket, clientLabel: clientLabel);
-          socketAuthenticated = true;
-          socket.add(jsonEncode(KritaBridgeProtocol.encodePong()));
-          AppLogger.i('Bridge client authenticated', _logTag);
-          continue;
-        }
-
-        if (!identical(_client, socket)) {
-          AppLogger.w(
-            'Dropped message from replaced client'
-            '${message.id == null ? '' : ' id=${message.id}'}',
-            _logTag,
-          );
-          continue;
-        }
-
-        _messageController.add(message);
       }
     } finally {
-      if (identical(_client, socket)) {
-        _client = null;
-        _clientAuthenticated = false;
-        _connectedClientLabel = null;
-        if (!_authenticationController.isClosed) {
-          _authenticationController.add(false);
-        }
-      }
+      _forgetSocket(socket);
     }
   }
 
-  Future<void> _authenticateSocket(
+  KritaBridgeMessage? _decodeFrame(
+    WebSocket socket,
+    Object? data, {
+    required bool authenticated,
+  }) {
+    if (data is! String) {
+      _sendError(
+        socket,
+        const KritaBridgeError(
+          code: KritaBridgeErrorCode.invalidRequest,
+          message: 'Only JSON text frames are supported in V1',
+        ),
+      );
+      return null;
+    }
+
+    final result = KritaBridgeProtocol.decodeIncoming(
+      data,
+      sessionSecret: _secret,
+      authenticated: authenticated,
+      maxTextFrameBytes: maxTextFrameBytes,
+    );
+    final error = result.error;
+    if (error != null) {
+      AppLogger.w(
+        'Rejected message: ${error.code.value}'
+        '${error.id == null ? '' : ' id=${error.id}'}',
+        _logTag,
+      );
+      _sendError(socket, error);
+      return null;
+    }
+    return result.message;
+  }
+
+  void _rejectPingVersion(
+    WebSocket socket,
+    KritaUnsupportedPingVersionMessage message,
+  ) {
+    socket.add(
+      jsonEncode(
+        KritaBridgeProtocol.encodePong(
+          supportedVersions: message.supportedVersions,
+        ),
+      ),
+    );
+    AppLogger.w('Rejected ping version: ${message.requestedVersion}', _logTag);
+  }
+
+  void _authenticateSocket(
     WebSocket socket, {
     required String clientLabel,
-  }) async {
+  }) {
     final previousClient = _client;
     if (previousClient != null && !identical(previousClient, socket)) {
-      unawaited(previousClient.close());
+      unawaited(_closeConnection(previousClient));
     }
 
     _client = socket;
     _clientAuthenticated = true;
     _connectedClientLabel = clientLabel;
     _authenticationController.add(true);
-    AppLogger.i('Authenticated client is active', _logTag);
+    socket.add(jsonEncode(KritaBridgeProtocol.encodePong()));
+    AppLogger.i('Bridge client authenticated', _logTag);
+  }
+
+  void _forgetSocket(WebSocket socket) {
+    _connections.remove(socket);
+    if (!identical(_client, socket)) {
+      return;
+    }
+    _client = null;
+    _clientAuthenticated = false;
+    _connectedClientLabel = null;
+    if (!_authenticationController.isClosed) {
+      _authenticationController.add(false);
+    }
   }
 
   void _sendError(WebSocket socket, KritaBridgeError error) {
@@ -256,6 +328,7 @@ class KritaBridgeServer {
 
   Future<void> _writeDiscoveryFile() async {
     await _discoveryDirectory.create(recursive: true);
+    await _restrictToOwner(_discoveryDirectory.path, '700');
 
     final target = discoveryFile;
     final temp = File(
@@ -273,25 +346,31 @@ class KritaBridgeServer {
       'started_at': _startedAt?.toIso8601String(),
     };
 
-    await temp.writeAsString(jsonEncode(data), flush: true);
-    if (await target.exists()) {
-      await target.delete();
+    await temp.create(exclusive: true);
+    try {
+      await _restrictToOwner(temp.path, '600');
+      await temp.writeAsString(jsonEncode(data), flush: true);
+      // rename replaces the target; an extra delete only blanks it for Krita.
+      await temp.rename(target.path);
+    } catch (_) {
+      await _discardTemp(temp);
+      rethrow;
     }
-    await temp.rename(target.path);
     AppLogger.i('Discovery file written: ${target.path}', _logTag);
   }
 
-  static Directory _defaultDiscoveryDirectory() {
-    final appData = Platform.environment['APPDATA'];
-    if (appData != null && appData.isNotEmpty) {
-      return Directory(_join(appData, 'nai-launcher'));
+  Future<void> _discardTemp(File temp) async {
+    try {
+      if (await temp.exists()) {
+        await temp.delete();
+      }
+    } on FileSystemException {
+      // Cleanup must not mask the write failure the caller is about to see.
     }
-
-    final home = Platform.environment['HOME'] ??
-        Platform.environment['USERPROFILE'] ??
-        Directory.current.path;
-    return Directory(_join(home, '.nai-launcher'));
   }
+
+  static Directory _defaultDiscoveryDirectory() =>
+      resolveLauncherDiscoveryDirectory();
 
   static String _generateSecret() {
     final random = Random.secure();

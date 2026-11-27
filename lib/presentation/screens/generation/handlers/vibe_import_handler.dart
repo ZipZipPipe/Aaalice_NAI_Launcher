@@ -1,6 +1,5 @@
 import 'dart:io';
 
-import 'package:collection/collection.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -22,6 +21,7 @@ import '../../../providers/image_generation_provider.dart';
 import '../../../providers/vibe_library_provider.dart';
 import '../../../widgets/common/app_toast.dart';
 import '../../../widgets/common/editable_double_field.dart';
+import '../../../widgets/common/themed_slider.dart';
 import '../../vibe_library/widgets/vibe_selector_dialog.dart';
 
 /// Vibe 导入处理器
@@ -130,6 +130,7 @@ class VibeImportHandler {
   ) async {
     final notifier = ref.read(generationParamsNotifierProvider.notifier);
     final storage = ref.read(vibeLibraryStorageServiceProvider);
+    final fileStorage = ref.read(vibeFileStorageServiceProvider);
     final groups = <({List<VibeReference> vibes, String? libraryId})>[];
     for (final resource in resources) {
       final entry = resource.vibe;
@@ -142,7 +143,7 @@ class VibeImportHandler {
         if (path == null) {
           throw StateError('Vibe Bundle file is unavailable: ${entry.id}');
         }
-        vibes = (await VibeFileStorageService().extractVibesFromBundle(path))
+        vibes = (await fileStorage.extractVibesFromBundle(path))
             .map((vibe) => vibe.copyWith(bundleSource: entry.displayName))
             .toList();
         if (vibes.length != entry.bundledVibeCount) {
@@ -312,7 +313,7 @@ class VibeImportHandler {
     try {
       if (availableSlots <= 0 || entry.filePath == null) return 0;
 
-      final fileStorage = VibeFileStorageService();
+      final fileStorage = ref.read(vibeFileStorageServiceProvider);
       final extractLimit = entry.bundledVibeCount
           .clamp(0, availableSlots)
           .toInt();
@@ -640,7 +641,7 @@ Widget _buildVibeLibraryDialogSlider(
   required ValueChanged<double> onChanged,
   bool unboundedInput = false,
 }) {
-  final sliderValue = value.clamp(min, max).toDouble();
+  const decimals = 2;
 
   return Column(
     crossAxisAlignment: CrossAxisAlignment.start,
@@ -655,9 +656,10 @@ Widget _buildVibeLibraryDialogSlider(
           ),
           EditableDoubleField(
             value: value,
+            semanticLabel: label,
             min: unboundedInput ? null : min,
             max: unboundedInput ? null : max,
-            decimals: 2,
+            decimals: decimals,
             width: 64,
             onChanged: onChanged,
             textStyle: const TextStyle(
@@ -666,8 +668,10 @@ Widget _buildVibeLibraryDialogSlider(
           ),
         ],
       ),
-      Slider(
-        value: sliderValue,
+      NamedSlider(
+        label: label,
+        valueText: (v) => EditableDoubleField.format(v, decimals: decimals),
+        value: value,
         min: min,
         max: max,
         divisions: 99,
@@ -675,26 +679,6 @@ Widget _buildVibeLibraryDialogSlider(
       ),
     ],
   );
-}
-
-VibeLibraryEntry? findOriginalLibraryEntryForOverwrite(
-  List<VibeReference> vibes,
-  List<VibeLibraryEntry> entries,
-) {
-  if (vibes.length != 1) {
-    return null;
-  }
-
-  final vibe = vibes.single;
-  return entries.firstWhereOrNull((entry) {
-    final sameDisplayName = entry.displayName == vibe.displayName;
-    final sameEncoding = entry.vibeEncoding == vibe.vibeEncoding;
-    final sameRawImage = const ListEquality<int>().equals(
-      entry.rawImageData,
-      vibe.rawImageData,
-    );
-    return sameDisplayName && (sameEncoding || sameRawImage);
-  });
 }
 
 bool shouldShowInfoExtractedForLibrarySave(List<VibeReference> vibes) {

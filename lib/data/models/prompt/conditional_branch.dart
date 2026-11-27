@@ -1,5 +1,7 @@
 import 'package:freezed_annotation/freezed_annotation.dart';
 
+import 'rule_tag_match.dart';
+
 part 'conditional_branch.freezed.dart';
 part 'conditional_branch.g.dart';
 
@@ -17,7 +19,7 @@ enum LogicType {
 /// 实现 switch-case 逻辑，用于服装类型选择等场景
 /// 例如: uniform 10%, swimsuit 5%, bodysuit 5%, normal 40%
 @freezed
-class ConditionalBranch with _$ConditionalBranch {
+abstract class ConditionalBranch with _$ConditionalBranch {
   const ConditionalBranch._();
 
   const factory ConditionalBranch({
@@ -27,10 +29,11 @@ class ConditionalBranch with _$ConditionalBranch {
     /// 分支选择概率 (0-100)
     @Default(10) int probability,
 
-    /// 该分支下的子标签组ID列表
+    /// 该分支输出的词组 ID：本词组的子词组，或同类别中的其他词组
     @Default([]) List<String> tagGroupIds,
 
     /// 触发条件 - 变量名到期望值的映射
+    /// 变量为类别 ID、角色性别、角色数量或配置了分支的词组 ID/名称
     /// 例如: {"clothing_type": "uniform"}
     @Default({}) Map<String, String> conditions,
 
@@ -49,21 +52,22 @@ class ConditionalBranch with _$ConditionalBranch {
 
   /// 检查条件是否满足
   ///
-  /// [context] 当前上下文变量值映射
+  /// [context] 当前上下文变量值映射。类别变量是逗号拼接的已选标签，
+  /// 条件值出现在其中即满足，按标签比较键比较
   bool checkCondition(Map<String, String> context) {
     if (conditions.isEmpty) return true;
 
-    if (logicType == LogicType.and) {
-      // 所有条件都必须满足
-      return conditions.entries.every(
-        (entry) => context[entry.key] == entry.value,
-      );
-    } else {
-      // 任一条件满足即可
-      return conditions.entries.any(
-        (entry) => context[entry.key] == entry.value,
-      );
+    bool matches(MapEntry<String, String> condition) {
+      final value = context[condition.key];
+      if (value == null) return false;
+      return ruleTagMatchKeysOfList(
+        value,
+      ).contains(ruleTagMatchKey(condition.value));
     }
+
+    return logicType == LogicType.and
+        ? conditions.entries.every(matches)
+        : conditions.entries.any(matches);
   }
 
   /// 获取显示文本
@@ -74,7 +78,7 @@ class ConditionalBranch with _$ConditionalBranch {
 ///
 /// 包含多个分支的完整配置
 @freezed
-class ConditionalBranchConfig with _$ConditionalBranchConfig {
+abstract class ConditionalBranchConfig with _$ConditionalBranchConfig {
   const ConditionalBranchConfig._();
 
   const factory ConditionalBranchConfig({

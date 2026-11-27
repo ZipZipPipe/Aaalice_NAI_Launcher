@@ -1,7 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hive/hive.dart';
+import 'package:hive_ce/hive_ce.dart';
 import 'package:nai_launcher/core/agent/agent.dart';
 import 'package:nai_launcher/core/agent/audit/audit_sink.dart';
 import 'package:nai_launcher/core/agent/harness/session/session.dart';
@@ -11,6 +11,7 @@ import 'package:nai_launcher/core/agent/resources/agent_chat_resource_draft_stor
 import 'package:nai_launcher/core/constants/storage_keys.dart';
 import 'package:nai_launcher/core/storage/local_storage_service.dart';
 import 'package:nai_launcher/presentation/agent_chat/providers/agent_chat_state.dart';
+import 'package:nai_launcher/presentation/agent_chat/services/agent_chat_auto_retry.dart';
 import 'package:nai_launcher/presentation/agent_chat/services/agent_chat_draft_controller.dart';
 import 'package:nai_launcher/presentation/agent_chat/services/agent_chat_event_controller.dart';
 import 'package:nai_launcher/presentation/agent_chat/services/agent_chat_session_controller.dart';
@@ -513,8 +514,15 @@ void main() {
       permissionController: AgentToolPermissionController(
         auditSink: MemoryAgentAuditSink(),
         estimateAnlas: (_, _) async => null,
+        describeFileTargets: (_, _) => const [],
+        chargeConfirmThreshold: () => null,
         onApprovalChanged: (_) {},
         isMounted: () => true,
+      ),
+      autoRetry: AgentChatAutoRetry(
+        onRetryStart: (_) {},
+        onRetryEnd: () {},
+        omitFailedAttempt: (_) {},
       ),
       readState: () => state,
       writeState: (next) => state = next,

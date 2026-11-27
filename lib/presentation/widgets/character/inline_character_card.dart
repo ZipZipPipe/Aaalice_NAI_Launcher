@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 
@@ -5,11 +6,13 @@ import 'package:flutter/material.dart';
 import 'package:nai_launcher/l10n/app_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/cache/local_file_image.dart';
 import '../../../core/utils/character_prompt_block_parser.dart';
 import '../../../data/models/character/character_prompt.dart';
 import '../../providers/character_position_canvas_provider.dart';
 import '../../providers/character_prompt_provider.dart';
 import '../common/decoded_memory_image.dart';
+import '../common/menu_action_label.dart';
 import '../common/translated_tag_text.dart';
 import 'add_to_library_dialog.dart';
 import 'inline_character_editor.dart';
@@ -64,10 +67,43 @@ class _InlineCharacterCardState extends ConsumerState<InlineCharacterCard> {
   /// 模态对话框（位置/重命名/词库）打开期间抑制点外部收起
   bool _modalOpen = false;
 
+  /// 缩略图是否可用：头部背景、文字配色与性别徽章都按它取值
+  bool _hasThumbnail = false;
+  int _thumbnailGeneration = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_resolveThumbnail());
+  }
+
+  @override
+  void didUpdateWidget(covariant InlineCharacterCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.character.thumbnailPath == widget.character.thumbnailPath) {
+      return;
+    }
+    _hasThumbnail = false;
+    unawaited(_resolveThumbnail());
+  }
+
   @override
   void dispose() {
     _cardFocusNode.dispose();
     super.dispose();
+  }
+
+  Future<void> _resolveThumbnail() async {
+    final path = widget.character.thumbnailPath;
+    final generation = ++_thumbnailGeneration;
+    final available =
+        path != null && path.isNotEmpty && await File(path).exists();
+    if (!mounted ||
+        generation != _thumbnailGeneration ||
+        available == _hasThumbnail) {
+      return;
+    }
+    setState(() => _hasThumbnail = available);
   }
 
   bool get _isEditing =>
@@ -232,10 +268,7 @@ class _InlineCharacterCardState extends ConsumerState<InlineCharacterCard> {
     final colorScheme = theme.colorScheme;
     final l10n = AppLocalizations.of(context)!;
     final character = widget.character;
-    final hasThumbnail =
-        character.thumbnailPath != null &&
-        character.thumbnailPath!.isNotEmpty &&
-        File(character.thumbnailPath!).existsSync();
+    final hasThumbnail = _hasThumbnail;
     final gender = character.effectiveGender;
     final genderColor = _genderColor(gender);
     final scaledLabelHeight = MediaQuery.textScalerOf(context).scale(14) * 1.35;
@@ -550,13 +583,11 @@ class _CharacterMenuLabel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final foreground = color ?? Theme.of(context).colorScheme.onSurface;
-    return Row(
-      children: [
-        Icon(icon, size: 18, color: foreground),
-        const SizedBox(width: 10),
-        Text(label, style: TextStyle(color: foreground)),
-      ],
+    return MenuActionLabel(
+      leading: Icon(icon),
+      label: label,
+      color: color ?? Theme.of(context).colorScheme.onSurface,
+      gap: 10,
     );
   }
 }
@@ -581,11 +612,10 @@ class _HeaderThumbnail extends StatelessWidget {
         return Stack(
           fit: StackFit.expand,
           children: [
-            Image.file(
-              File(path),
+            Image(
+              image: LocalFileImage.withCacheSize(path, cacheWidth: cacheWidth),
               fit: BoxFit.cover,
               alignment: const Alignment(0, -0.4),
-              cacheWidth: cacheWidth,
               errorBuilder: (context, error, stack) => ColoredBox(
                 color: Theme.of(
                   context,

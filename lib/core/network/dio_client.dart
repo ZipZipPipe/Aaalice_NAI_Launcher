@@ -1,28 +1,41 @@
 import 'package:dio/dio.dart';
-import 'package:dio_http2_adapter/dio_http2_adapter.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../data/services/token_refresh_service.dart';
 import '../../l10n/app_localizations.dart';
-import '../../presentation/providers/auth_provider.dart';
-import '../../presentation/providers/locale_provider.dart';
-import '../../presentation/providers/proxy_settings_provider.dart';
+import '../../data/services/auth_provider.dart';
+import '../services/auth_error_service.dart';
+import '../utils/locale_provider.dart';
+import 'proxy_settings_provider.dart';
 import '../constants/api_constants.dart';
 import '../storage/secure_storage_service.dart';
 import '../utils/app_logger.dart';
+import '../utils/log_url_redaction.dart';
+import 'browser_identity/accept_language.dart';
+import 'browser_identity/browser_headers_interceptor.dart';
+import 'browser_identity/chrome_identity.dart';
 import 'dio_error_response_parser.dart';
+import 'js_compatible_json.dart';
 
 part 'dio_client.g.dart';
 
-/// Dio 客户端 Provider
+/// 让请求形态对齐 Chrome 上的官网前端。
+BrowserHeadersInterceptor _browserHeadersInterceptor(Ref ref) {
+  return BrowserHeadersInterceptor(
+    identity: ChromeIdentity.current(),
+    resolveAcceptLanguage: () =>
+        acceptLanguageForLocale(ref.read(localeNotifierProvider)),
+  );
+}
+
+/// 所有 NAI 兼容请求共用的 HTTP/1.1 客户端。
 ///
-/// 根据代理设置动态选择 HTTP 适配器：
-/// - 有代理时：使用默认 HTTP/1.1 适配器（配合 HttpOverrides.global 使用代理）
-/// - 无代理时：使用 HTTP/2 适配器（提升并发性能）
+/// 默认适配器兼容第三方 HTTPS 的 ALPN 和本地明文 HTTP，
+/// 并通过 HttpClientRequest.abort() 真正中断生成请求。
+/// 不使用 Http2Adapter，避免协议回退缺口及取消后仍占用生成额度。
 @Riverpod(keepAlive: true)
 Dio dioClient(Ref ref) {
-  // 监听代理设置变化，当代理设置改变时会触发 Dio 重建
+  // 路由会即时更新；设置变化时也重建客户端，避免继续复用旧连接池。
   final proxyAddress = ref.watch(currentProxyAddressProvider);
 
   final dio = Dio(
@@ -33,25 +46,22 @@ Dio dioClient(Ref ref) {
     ),
   );
 
+  dio.transformer = JsCompatibleJsonTransformer();
+
   // 添加认证拦截器
   dio.interceptors.add(AuthInterceptor(ref));
+
+  dio.interceptors.add(_browserHeadersInterceptor(ref));
 
   // 添加错误处理拦截器
   dio.interceptors.add(ErrorInterceptor(ref));
 
-  // 根据代理设置选择适配器
-  if (proxyAddress != null && proxyAddress.isNotEmpty) {
-    // 有代理时：使用默认 HTTP/1.1 适配器
-    // 默认适配器内部使用 dart:io.HttpClient，会自动遵循 HttpOverrides.global
-    AppLogger.i('Dio using proxy: $proxyAddress (HTTP/1.1 adapter)', 'NETWORK');
-    // 不设置 httpClientAdapter，使用默认值
-  } else {
-    // 无代理时：使用 HTTP/2 适配器以提升并发性能
-    AppLogger.d('Dio using HTTP/2 adapter (no proxy)', 'NETWORK');
-    dio.httpClientAdapter = Http2Adapter(
-      ConnectionManager(idleTimeout: const Duration(seconds: 15)),
-    );
-  }
+  AppLogger.d(() {
+    final route = proxyAddress != null && proxyAddress.isNotEmpty
+        ? 'proxy: ${formatProxyAddressForLog(proxyAddress)}'
+        : 'direct';
+    return 'Dio using HTTP/1.1 adapter ($route)';
+  }, 'NETWORK');
 
   // 注意：不要在 dispose 时关闭 Dio，因为 Provider 可能会被重建
   // ref.onDispose(dio.close);
@@ -59,45 +69,9 @@ Dio dioClient(Ref ref) {
   return dio;
 }
 
-/// 图像生成专用 Dio Provider
-///
-/// 始终使用默认 HTTP/1.1 适配器，不用 HTTP/2：
-/// Http2Adapter 在响应到达前取消请求时不会终止 HTTP/2 流
-/// （上游在 2.5.2 移除了 client stream termination），
-/// NovelAI 收不到中止信号会继续生成并占用账号并发额度，
-/// 导致取消后的新请求全部立即 429。
-/// 默认适配器通过 HttpClientRequest.abort() 在任意阶段真正中断请求。
-@Riverpod(keepAlive: true)
-Dio imageGenerationDioClient(Ref ref) {
-  // 监听代理设置变化触发重建：默认适配器在创建 HttpClient 时
-  // 才读取 HttpOverrides.global，代理变更后需要新实例
-  ref.watch(currentProxyAddressProvider);
-
-  final dio = Dio(
-    BaseOptions(
-      connectTimeout: ApiConstants.connectTimeout,
-      receiveTimeout: ApiConstants.receiveTimeout,
-      headers: ApiConstants.defaultHeaders,
-    ),
-  );
-
-  dio.interceptors.add(AuthInterceptor(ref));
-  dio.interceptors.add(ErrorInterceptor(ref));
-
-  AppLogger.d(
-    'Image generation Dio using HTTP/1.1 adapter (abortable)',
-    'NETWORK',
-  );
-
-  return dio;
-}
-
 /// 认证拦截器 - 自动添加 Bearer Token 并支持 401 自动刷新
 class AuthInterceptor extends Interceptor {
   final Ref _ref;
-
-  /// 是否正在刷新中（防止并发刷新）
-  bool _isRefreshing = false;
 
   static final RegExp _bearerPrefixRegex = RegExp(
     r'^Bearer\s+',
@@ -112,7 +86,7 @@ class AuthInterceptor extends Interceptor {
     RequestOptions options,
     RequestInterceptorHandler handler,
   ) async {
-    AppLogger.d('Request to: ${options.path}', 'DIO');
+    AppLogger.d(() => 'Request to: ${redactUriForLog(options.uri)}', 'DIO');
 
     // 登录接口不需要 Token
     if (options.path.contains('/user/login')) {
@@ -168,121 +142,89 @@ class AuthInterceptor extends Interceptor {
 
   @override
   void onError(DioException err, ErrorInterceptorHandler handler) async {
-    // Token 过期处理
-    if (err.response?.statusCode == 401) {
-      // 如果是登录请求失败，不要尝试刷新 token 或登出
-      // 登录失败是预期的（密码错误等），不应影响当前的全局认证状态
-      if (err.requestOptions.path.contains(ApiConstants.loginEndpoint)) {
+    // 登录失败不参与刷新，避免刷新登录自身的 401 递归或影响未登录状态。
+    if (err.response?.statusCode != 401 ||
+        err.requestOptions.path.contains(ApiConstants.loginEndpoint) ||
+        !_ref.read(authNotifierProvider).isAuthenticated) {
+      handler.next(err);
+      return;
+    }
+
+    final storage = _ref.read(secureStorageServiceProvider);
+    try {
+      final sessionToken = await storage.getAccessToken();
+      if (!_wasSentWithSessionToken(err.requestOptions, sessionToken)) {
         AppLogger.w(
-          '[AuthInterceptor] Ignoring 401 from login endpoint',
+          '[AuthInterceptor] 401 belongs to a previous session, ignoring',
           'DIO',
         );
         handler.next(err);
         return;
       }
 
-      AppLogger.w(
-        '[AuthInterceptor] onError: 401 received, path: ${err.requestOptions.path}',
-        'DIO',
-      );
-
-      final authState = _ref.read(authNotifierProvider);
-      AppLogger.w(
-        '[AuthInterceptor] current authState: status=${authState.status}, isAuthenticated=${authState.isAuthenticated}, hasError=${authState.hasError}',
-        'DIO',
-      );
-
-      // 只有在已登录状态且未在刷新中时才尝试刷新
-      if (authState.isAuthenticated && !_isRefreshing) {
-        _isRefreshing = true;
-
-        try {
-          // 尝试刷新 token
-          AppLogger.d('[AuthInterceptor] Attempting token refresh...', 'DIO');
-          final tokenRefreshService = _ref.read(
-            tokenRefreshServiceProvider.notifier,
-          );
-          final refreshed = await tokenRefreshService.refreshCurrentToken();
-
-          if (refreshed) {
-            AppLogger.d(
-              '[AuthInterceptor] Token refreshed, retrying request',
-              'DIO',
-            );
-
-            // 获取新 token 并重试请求
-            final storage = _ref.read(secureStorageServiceProvider);
-            final newToken = await storage.getAccessToken();
-
-            if (newToken != null && newToken.isNotEmpty) {
-              final normalizedToken = _normalizeToken(newToken);
-
-              if (normalizedToken.isEmpty) {
-                _isRefreshing = false;
-                handler.next(err);
-                return;
-              }
-
-              // 更新请求头（统一使用 Bearer 前缀）
-              err.requestOptions.headers['Authorization'] =
-                  'Bearer $normalizedToken';
-
-              try {
-                // 创建新的 Dio 实例来重试，避免循环
-                final retryDio = Dio();
-                final response = await retryDio.fetch(err.requestOptions);
-                _isRefreshing = false;
-                handler.resolve(response);
-                return;
-              } catch (retryError) {
-                AppLogger.e(
-                  '[AuthInterceptor] Retry request failed: $retryError',
-                  retryError,
-                  null,
-                  'DIO',
-                );
-              }
-            }
-          } else {
-            AppLogger.w(
-              '[AuthInterceptor] Token refresh returned false',
-              'DIO',
-            );
-          }
-        } catch (e) {
-          AppLogger.e(
-            '[AuthInterceptor] Token refresh error: $e',
-            e,
-            null,
-            'DIO',
-          );
-        } finally {
-          _isRefreshing = false;
-        }
-
-        // 刷新失败，执行登出
-        AppLogger.w(
-          '[AuthInterceptor] Token refresh failed, logging out...',
-          'DIO',
-        );
-        await _ref
-            .read(authNotifierProvider.notifier)
-            .logout(errorCode: AuthErrorCode.authFailed, httpStatusCode: 401);
-        AppLogger.w('[AuthInterceptor] logout() completed', 'DIO');
-      } else if (_isRefreshing) {
-        AppLogger.w(
-          '[AuthInterceptor] Skipping because already refreshing',
-          'DIO',
-        );
-      } else {
-        AppLogger.w(
-          '[AuthInterceptor] Skipping logout because not authenticated',
-          'DIO',
-        );
+      // 服务共享进行中的刷新；每个 401 都等待结果并重试自己的请求。
+      final outcome = await _ref
+          .read(tokenRefreshServiceProvider.notifier)
+          .refreshCurrentToken();
+      if (outcome == TokenRefreshOutcome.sessionChanged) {
+        handler.next(err);
+        return;
       }
+      if (outcome == TokenRefreshOutcome.refreshed) {
+        final newToken = await storage.getAccessToken();
+        if (newToken != null && newToken.isNotEmpty) {
+          final normalizedToken = _normalizeToken(newToken);
+          if (normalizedToken.isEmpty) {
+            handler.next(err);
+            return;
+          }
+          err.requestOptions.headers['Authorization'] =
+              'Bearer $normalizedToken';
+          final response = await _retryRequest(err.requestOptions);
+          handler.resolve(response);
+          return;
+        }
+      }
+    } catch (e) {
+      AppLogger.e(
+        '[AuthInterceptor] Token refresh/retry failed: $e',
+        e,
+        null,
+        'DIO',
+      );
     }
 
+    // 刷新期间会话可能已被退出或切换，登出只能作用于发出这个请求的会话。
+    final latestSessionToken = await storage.getAccessToken();
+    if (_wasSentWithSessionToken(err.requestOptions, latestSessionToken)) {
+      AppLogger.w(
+        '[AuthInterceptor] Token refresh failed, logging out...',
+        'DIO',
+      );
+      await _ref
+          .read(authNotifierProvider.notifier)
+          .logout(errorCode: AuthErrorCode.authFailed, httpStatusCode: 401);
+    }
     handler.next(err);
+  }
+
+  Future<Response<dynamic>> _retryRequest(RequestOptions options) async {
+    // 重试不再经过认证拦截器，防止持续 401 时循环刷新。
+    final retryDio = Dio()..transformer = JsCompatibleJsonTransformer();
+    try {
+      return await retryDio.fetch<dynamic>(options);
+    } finally {
+      retryDio.close();
+    }
+  }
+
+  /// 401 只说明请求当时携带的 token 失效；会话已换成别的 token 时不能据此刷新或登出
+  bool _wasSentWithSessionToken(RequestOptions options, String? sessionToken) {
+    final sent = options.headers['Authorization']?.toString();
+    if (sent == null || sessionToken == null) return false;
+    final normalizedSession = _normalizeToken(sessionToken);
+    return normalizedSession.isNotEmpty &&
+        _normalizeToken(sent) == normalizedSession;
   }
 
   String _normalizeToken(String token) {
@@ -326,7 +268,7 @@ class ErrorInterceptor extends Interceptor {
     final message =
         'DIO Error: ${err.type.name}\n'
         'Status: ${err.response?.statusCode}\n'
-        'URL: ${err.requestOptions.uri}\n'
+        'URL: ${redactUriForLog(err.requestOptions.uri)}\n'
         'Response Data: ${formatDioErrorResponseDataForLog(err.response?.data)}';
 
     // 非致命网络抖动降级为 warning，避免错误日志噪音

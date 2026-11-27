@@ -5,9 +5,12 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 import '../../../core/utils/app_logger.dart';
 import '../../../data/datasources/remote/nai_image_generation_api_service.dart';
 import '../../../data/models/image/image_params.dart';
+import '../../../data/models/image/image_stream_chunk.dart';
 import 'generation_models.dart';
 import 'generation_settings_notifiers.dart';
 import 'image_generation_service.dart';
+import 'stream_preview_decode.dart';
+import 'stream_preview_publication.dart';
 import '../dlss_provider.dart';
 
 part 'stream_generation_notifier.g.dart';
@@ -95,14 +98,20 @@ class StreamGenerationState {
 @Riverpod(keepAlive: true)
 class StreamGenerationNotifier extends _$StreamGenerationNotifier {
   ImageGenerationService? _service;
+  late StreamPreviewPublication _previewPublication;
 
   @override
   StreamGenerationState build() {
+    _previewPublication = StreamPreviewPublication(
+      resolve: ref.read(streamPreviewImageResolverProvider),
+      lifecycle: ref.read(streamPreviewLifecycleReaderProvider),
+    );
     ref.onDispose(_cleanup);
     return const StreamGenerationState();
   }
 
   void _cleanup() {
+    _previewPublication.clear();
     _service?.cancel();
     _service = null;
   }
@@ -113,6 +122,7 @@ class StreamGenerationNotifier extends _$StreamGenerationNotifier {
       return;
     }
     final dlss = ref.read(dlssProvider);
+    _previewPublication.clear();
     final service = ImageGenerationService(
       apiService: ref.read(naiImageGenerationApiServiceProvider),
       postprocess: dlss.automaticSnapshot(),
@@ -124,25 +134,30 @@ class StreamGenerationNotifier extends _$StreamGenerationNotifier {
       status: StreamGenerationStatus.connecting,
       startTime: DateTime.now(),
     );
+    ({Uint8List bytes, double progress})? pendingProgress;
     final result = await service.generateSingle(
       params,
       onProgress: (_, _, progress, {previewImage}) {
-        if (!identical(_service, service) || service.isCancelled) return;
-        state = state.copyWith(
-          status: StreamGenerationStatus.streaming,
-          progress: progress,
-          previewImage: previewImage,
-        );
+        if (previewImage == null) {
+          _publishProgress(service, progress, null, null, null);
+        } else {
+          pendingProgress = (bytes: previewImage, progress: progress);
+        }
       },
-      onStepProgress: (currentStep, totalSteps) {
-        if (!identical(_service, service) || service.isCancelled) return;
-        state = state.copyWith(
-          currentStep: currentStep,
-          totalSteps: totalSteps,
+      onStepProgress: (current, total) {
+        final preview = pendingProgress!;
+        pendingProgress = null;
+        _publishProgress(
+          service,
+          preview.progress,
+          preview.bytes,
+          current,
+          total,
         );
       },
       onCompleting: () {
         if (!identical(_service, service) || service.isCancelled) return;
+        _previewPublication.closeSlot(0);
         state = state.copyWith(
           status: StreamGenerationStatus.completing,
           progress: 1,
@@ -150,7 +165,12 @@ class StreamGenerationNotifier extends _$StreamGenerationNotifier {
       },
     );
     if (!identical(_service, service)) return;
+    _previewPublication.clear();
     _service = null;
+    _complete(result);
+  }
+
+  void _complete(ImageGenerationResult result) {
     if (result.isCancelled) {
       state = state.copyWith(
         status: StreamGenerationStatus.cancelled,
@@ -174,8 +194,30 @@ class StreamGenerationNotifier extends _$StreamGenerationNotifier {
     }
   }
 
+  void _publishProgress(
+    ImageGenerationService service,
+    double progress,
+    Uint8List? preview,
+    int? currentStep,
+    int? totalSteps,
+  ) {
+    _previewPublication.add(
+      slot: 0,
+      frame: preview == null ? null : StreamPreviewFrame(bytes: preview),
+      isCurrent: () => identical(_service, service) && !service.isCancelled,
+      publish: (_) => state = state.copyWith(
+        status: StreamGenerationStatus.streaming,
+        progress: progress,
+        previewImage: preview,
+        currentStep: currentStep,
+        totalSteps: totalSteps,
+      ),
+    );
+  }
+
   void cancel() {
     if (!isGenerating) return;
+    _previewPublication.clear();
     final service = _service;
     if (service?.isPostprocessing != true) _service = null;
     service?.cancel();
@@ -201,6 +243,7 @@ class StreamGenerationNotifier extends _$StreamGenerationNotifier {
   }
 
   void clearResult() {
+    _previewPublication.clear();
     state = state.copyWith(
       status: StreamGenerationStatus.idle,
       clearResult: true,

@@ -2,6 +2,7 @@ import 'dart:collection';
 import 'dart:io';
 
 import '../utils/app_logger.dart';
+import '../utils/log_url_redaction.dart';
 
 /// 系统代理 HTTP 覆盖类
 ///
@@ -10,13 +11,30 @@ import '../utils/app_logger.dart';
 /// 包括 Dio 和 CachedNetworkImage。
 class SystemProxyHttpOverrides extends HttpOverrides {
   /// 代理配置字符串
-  final String _proxyString;
+  String _proxyString;
   final LinkedHashSet<String> _loggedRoutes = LinkedHashSet<String>();
 
   /// 构造函数
   ///
   /// [proxyString] 格式为 "PROXY host:port" 或 "DIRECT"
   SystemProxyHttpOverrides(this._proxyString);
+
+  /// 启动与设置修改共用同一个路由对象，让已有客户端的新请求也跟随设置。
+  static void applyProxyAddress(String? proxyAddress) {
+    final address = proxyAddress?.trim();
+    final route = address == null || address.isEmpty
+        ? 'DIRECT'
+        : 'PROXY $address';
+    final overrides = HttpOverrides.current;
+    if (overrides is SystemProxyHttpOverrides) {
+      if (overrides._proxyString != route) {
+        overrides._proxyString = route;
+        overrides._loggedRoutes.clear();
+      }
+    } else {
+      HttpOverrides.global = SystemProxyHttpOverrides(route);
+    }
+  }
 
   @override
   HttpClient createHttpClient(SecurityContext? context) {
@@ -28,7 +46,12 @@ class SystemProxyHttpOverrides extends HttpOverrides {
     client.findProxy = (uri) {
       final route = '${uri.host}:${uri.port}';
       if (_loggedRoutes.add(route)) {
-        AppLogger.d('Proxy route: $route -> $_proxyString', 'PROXY');
+        AppLogger.d(() {
+          final destination = _proxyString == 'DIRECT'
+              ? 'DIRECT'
+              : 'PROXY ${formatProxyAddressForLog(_proxyString.substring(6))}';
+          return 'Proxy route: $route -> $destination';
+        }, 'PROXY');
         if (_loggedRoutes.length > 64) {
           _loggedRoutes.remove(_loggedRoutes.first);
         }

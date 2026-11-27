@@ -4,6 +4,7 @@ import 'package:freezed_annotation/freezed_annotation.dart';
 
 import '../../../core/constants/api_constants.dart';
 import '../../../core/constants/model_capabilities.dart';
+import '../../../core/enums/image_model_mode.dart';
 import '../../../core/enums/precise_ref_type.dart';
 import '../vibe/vibe_reference.dart';
 
@@ -26,10 +27,9 @@ extension ImageGenerationActionExtension on ImageGenerationAction {
   }
 }
 
-/// Precise Reference 配置 (仅 V4+ 模型支持)
-/// 支持 Character/Style/CharacterAndStyle 三种类型
+/// 精准参考图片配置
 @freezed
-class PreciseReference with _$PreciseReference {
+abstract class PreciseReference with _$PreciseReference {
   const factory PreciseReference({
     /// 参考图像数据
     required Uint8List image,
@@ -37,7 +37,9 @@ class PreciseReference with _$PreciseReference {
     /// Precise Reference 类型
     required PreciseRefType type,
 
-    /// 参考强度（数值输入不设前端上下限，滑条范围 0-1）
+    bool? preferSameOutfit,
+
+    /// 参考强度的数值输入不限范围，滑条上限由模型决定。
     @Default(1.0) double strength,
 
     /// 保真度（数值输入不设前端上下限，滑条范围 0-1）
@@ -50,7 +52,7 @@ class PreciseReference with _$PreciseReference {
 
 /// 多角色提示词配置 (仅 V4 模型支持)
 @freezed
-class CharacterPrompt with _$CharacterPrompt {
+abstract class CharacterPrompt with _$CharacterPrompt {
   const CharacterPrompt._();
 
   const factory CharacterPrompt({
@@ -83,7 +85,7 @@ class CharacterPrompt with _$CharacterPrompt {
 
 /// 图像生成参数模型
 @freezed
-class ImageParams with _$ImageParams {
+abstract class ImageParams with _$ImageParams {
   const factory ImageParams({
     // ========== 基础参数 ==========
 
@@ -142,6 +144,11 @@ class ImageParams with _$ImageParams {
 
     /// 官方质量词档位 (standard/light，light 仅 V5 提供)
     @Default(QualityTags.standardTier) String qualityTier,
+
+    /// Anime / Furry 模式，仅对 [ModelCapabilities.hasFurryMode] 的模型生效。
+    @Default(ImageModelMode.anime)
+    @JsonKey(unknownEnumValue: ImageModelMode.anime)
+    ImageModelMode modelMode,
 
     /// 自定义质量词没有官网预设 ID，请求中应省略 `tag_hint_qt`。
     @Default(false)
@@ -275,6 +282,13 @@ extension ImageParamsExtension on ImageParams {
   /// 当前模型的能力描述
   ModelCapabilities get capabilities => ModelCapabilityRegistry.of(model);
 
+  String get requestModel => action == ImageGenerationAction.infill
+      ? ImageModels.resolveInpaintingModel(ImageModels.resolveBaseModel(model))
+      : model;
+
+  PreciseReferenceCapabilities get requestPreciseReferenceCapabilities =>
+      ModelCapabilityRegistry.of(requestModel).preciseReference;
+
   /// 检查是否为 V3 模型
   bool get isV3Model =>
       model.contains('diffusion-3') || model.contains('diffusion-furry-3');
@@ -315,6 +329,53 @@ extension ImageParamsExtension on ImageParams {
       isEnhanceRequest &&
       !effectiveUpscaledEnhance &&
       capabilities.supportsEnhancePromptAdd;
+
+  /// 实际发送的步数。
+  int get effectiveSteps => capabilities.fixedSettings?.steps ?? steps;
+
+  /// 实际发送的采样器：模型固定的采样器优先，DDIM 按模型换算。
+  String get effectiveSampler => Samplers.resolveForModel(
+    capabilities.fixedSettings?.sampler ?? sampler,
+    model,
+  );
+
+  /// 实际发送的噪声调度：模型不开放选择时与网页端一样固定为 karras。
+  String get effectiveNoiseSchedule => capabilities.supportsNoiseSchedule
+      ? NoiseSchedules.resolve(
+          noiseSchedule,
+          allowNative: capabilities.allowsNativeNoiseSchedule,
+        )
+      : NoiseSchedules.karras;
+
+  /// 是否有参数被模型固定，界面据此把对应控件显示为锁定。
+  bool get usesFixedSettings => capabilities.fixedSettings != null;
+
+  /// 套用模型固定参数后的请求参数，只用于构造与记录请求，不回写界面状态。
+  ImageParams resolveFixedSettings() {
+    final fixed = capabilities.fixedSettings;
+    if (fixed == null) return this;
+    return copyWith(
+      steps: fixed.steps,
+      sampler: fixed.sampler,
+      ucPreset: fixed.ucPreset,
+      omitUcPresetTagHint: false,
+      negativePrompt: '',
+      characters: [
+        for (final character in characters)
+          character.copyWith(negativePrompt: ''),
+      ],
+    );
+  }
+
+  /// 高级选项里是否显示 SMEA：只有 V3 系列在非 DDIM 采样器下可用。
+  bool get showsSmeaOptions => isV3Model && !sampler.contains('ddim');
+
+  /// 高级选项里是否显示 CFG Rescale：V4 起的模型都显示，不发送时显示为停用。
+  bool get showsCfgRescaleOption => isV4Model;
+
+  /// 「高级选项」是否有可显示的控件，两种参数面板布局据此决定是否渲染该分组。
+  bool get hasAdvancedSamplingOptions =>
+      showsSmeaOptions || showsCfgRescaleOption;
 
   /// 开启端到端放大后服务端实际输出的尺寸。
   (int, int) get outputSize => effectiveE2eUpscale
@@ -357,11 +418,8 @@ extension ImageParamsExtension on ImageParams {
   /// 检查是否启用了 Precise Reference
   bool get hasPreciseReferences => enabledPreciseReferences.isNotEmpty;
 
-  /// 计算 Precise Reference 数量 (消耗 Anlas)
+  /// 启用的精准参考数量。
   int get preciseReferenceCount => enabledPreciseReferences.length;
-
-  /// 计算 Precise Reference 成本 (每张 5 Anlas)
-  int get preciseReferenceCost => preciseReferenceCount * 5;
 
   /// 启用的 V4 Vibe Transfer 参考。
   List<VibeReference> get enabledVibeReferencesV4 =>
@@ -384,7 +442,7 @@ extension ImageParamsExtension on ImageParams {
 
 /// 图像生成请求模型
 @freezed
-class ImageGenerationRequest with _$ImageGenerationRequest {
+abstract class ImageGenerationRequest with _$ImageGenerationRequest {
   const factory ImageGenerationRequest({
     required String input,
     required String model,
@@ -398,7 +456,7 @@ class ImageGenerationRequest with _$ImageGenerationRequest {
 
 /// 图像生成参数（API 请求格式）
 @freezed
-class ImageGenerationParameters with _$ImageGenerationParameters {
+abstract class ImageGenerationParameters with _$ImageGenerationParameters {
   const factory ImageGenerationParameters({
     required int width,
     required int height,

@@ -10,6 +10,87 @@ import 'package:nai_launcher/data/models/vibe/vibe_reference.dart';
 void main() {
   const model = 'nai-diffusion-4-5-full';
 
+  group('official precise reference pricing', () {
+    final references = [
+      PreciseReference(image: Uint8List(1), type: PreciseRefType.character),
+      PreciseReference(image: Uint8List(1), type: PreciseRefType.costume),
+      PreciseReference(
+        image: Uint8List(1),
+        type: PreciseRefType.style,
+        enabled: false,
+      ),
+    ];
+    for (final (model, action, count) in [
+      (ImageModels.animeDiffusionV45Full, ImageGenerationAction.generate, 1),
+      (ImageModels.animeDiffusionV45Curated, ImageGenerationAction.infill, 1),
+      (ImageModels.animeDiffusionV5Curated, ImageGenerationAction.generate, 2),
+      (ImageModels.animeDiffusionV5Curated, ImageGenerationAction.infill, 1),
+      (ImageModels.animeDiffusionV5Full, ImageGenerationAction.img2img, 2),
+      (ImageModels.animeDiffusionV5Full, ImageGenerationAction.infill, 0),
+      (
+        ImageModels.animeDiffusionV5FullMedium,
+        ImageGenerationAction.generate,
+        2,
+      ),
+      (ImageModels.animeDiffusionV5FullMedium, ImageGenerationAction.infill, 0),
+      (ImageModels.animeDiffusionV4Full, ImageGenerationAction.generate, 0),
+    ]) {
+      test('$model ${action.name} bills only the references it sends', () {
+        final params = ImageParams(
+          model: model,
+          action: action,
+          width: 832,
+          height: 1216,
+          steps: 28,
+          nSamples: 3,
+        );
+        final withReferences = params.copyWith(preciseReferences: references);
+        for (final isOpus in [false, true]) {
+          expect(
+            AnlasCalculator.calculate(withReferences, isOpus: isOpus),
+            AnlasCalculator.calculate(params, isOpus: isOpus) + 5 * count * 3,
+          );
+        }
+        expect(
+          AnlasCalculator.calculate(
+            withReferences,
+            batchCount: 2,
+            batchSize: 4,
+          ),
+          AnlasCalculator.calculate(params, batchCount: 2, batchSize: 4) +
+              5 * count * 8,
+        );
+        expect(
+          AnlasCalculator.isOpusFreeGeneration(
+            withReferences.copyWith(nSamples: 1),
+            isOpus: true,
+          ),
+          count == 0,
+        );
+      });
+    }
+
+    for (final model in [
+      ImageModels.animeDiffusionV45Full,
+      ImageModels.animeDiffusionV5Full,
+    ]) {
+      test('$model omits reference fees from the estimate when over limit', () {
+        final params = ImageParams(model: model);
+        ImageParams withCount(int count) => params.copyWith(
+          preciseReferences: List.filled(count, references.first),
+        );
+        expect(
+          AnlasCalculator.resolvePreciseReferenceExtraCost(withCount(16)),
+          80,
+        );
+        expect(
+          AnlasCalculator.calculate(withCount(17)),
+          AnlasCalculator.calculate(params),
+        );
+      });
+    }
+  });
+
   group('AnlasCalculator base pricing', () {
     test('matches the web formula at non-default step counts', () {
       final cost = AnlasCalculator.calculateFromValues(
@@ -245,7 +326,7 @@ void main() {
             smea: false,
             smeaDyn: false,
             model: ImageModels.animeDiffusionV5Curated,
-            subscriptionTier: AnlasCalculator.opusTier,
+            isOpus: true,
             opusQuotaExhausted: exhausted,
           );
 
@@ -262,7 +343,7 @@ void main() {
         smea: false,
         smeaDyn: false,
         model: ImageModels.animeDiffusionV45Full,
-        subscriptionTier: AnlasCalculator.opusTier,
+        isOpus: true,
         opusQuotaExhausted: true,
       );
 
@@ -345,7 +426,7 @@ void main() {
         smea: false,
         smeaDyn: false,
         model: model,
-        subscriptionTier: AnlasCalculator.opusTier,
+        isOpus: true,
       );
 
       expect(cost, 80);
@@ -361,7 +442,7 @@ void main() {
         smea: false,
         smeaDyn: false,
         model: model,
-        subscriptionTier: AnlasCalculator.opusTier,
+        isOpus: true,
         strength: 0.5,
       );
 
@@ -404,7 +485,7 @@ void main() {
         smea: false,
         smeaDyn: false,
         model: model,
-        subscriptionTier: AnlasCalculator.opusTier,
+        isOpus: true,
         extraPerSampleCost: 5,
       );
 
@@ -421,13 +502,118 @@ void main() {
         smea: false,
         smeaDyn: false,
         model: model,
-        subscriptionTier: AnlasCalculator.opusTier,
+        isOpus: true,
         extraPerSampleCost: 5,
         extraPerRequestCost: 2,
         oneTimeCost: 4,
       );
 
       expect(cost, 118);
+    });
+  });
+
+  group('AnlasCalculator.calculate', () {
+    final maxEnhance = ImageParams(
+      model: ImageModels.animeDiffusionV5Curated,
+      action: ImageGenerationAction.img2img,
+      sourceImage: Uint8List.fromList([1, 2, 3]),
+      width: 832,
+      height: 1216,
+      steps: 23,
+      strength: 0.5,
+      upscaledEnhance: true,
+      isEnhanceRequest: true,
+    );
+
+    test('bills max enhance at the upscaled 3.14MP area', () {
+      final billed = AnlasCalculator.billingSize(maxEnhance);
+
+      expect(maxEnhance.effectiveUpscaledEnhance, isTrue);
+      expect(billed, E2eUpscale.resolveMaxEnhanceTargetSize(832, 1216));
+      expect(
+        billed.width * billed.height,
+        inInclusiveRange(3100000, ApiConstants.maxImagePixels),
+      );
+      final cost = AnlasCalculator.calculate(maxEnhance, isOpus: true);
+      expect(
+        cost,
+        AnlasCalculator.calculateRequestCost(
+          width: billed.width,
+          height: billed.height,
+          steps: 23,
+          batchCount: 1,
+          batchSize: 1,
+          smea: false,
+          smeaDyn: false,
+          model: ImageModels.animeDiffusionV5Curated,
+          isOpus: true,
+          strength: 0.5,
+        ),
+      );
+      expect(
+        cost,
+        greaterThan(
+          AnlasCalculator.calculate(
+            maxEnhance.copyWith(upscaledEnhance: false),
+            isOpus: true,
+          ),
+        ),
+      );
+    });
+
+    test('bills a request size override as given', () {
+      expect(
+        AnlasCalculator.calculate(
+          maxEnhance,
+          requestSize: (width: 832, height: 1216),
+        ),
+        AnlasCalculator.calculateRequestCost(
+          width: 832,
+          height: 1216,
+          steps: 23,
+          batchCount: 1,
+          batchSize: 1,
+          smea: false,
+          smeaDyn: false,
+          model: ImageModels.animeDiffusionV5Curated,
+          strength: 0.5,
+        ),
+      );
+    });
+
+    test('counts nSamples as independent requests unless overridden', () {
+      const params = ImageParams(
+        model: model,
+        width: 832,
+        height: 1216,
+        steps: 28,
+        nSamples: 3,
+      );
+      int expected(int batchCount) => AnlasCalculator.calculateRequestCost(
+        width: 832,
+        height: 1216,
+        steps: 28,
+        batchCount: batchCount,
+        batchSize: 2,
+        smea: false,
+        smeaDyn: false,
+        model: model,
+        isOpus: true,
+      );
+
+      expect(
+        AnlasCalculator.calculate(params, batchSize: 2, isOpus: true),
+        expected(3),
+      );
+      expect(
+        AnlasCalculator.calculate(
+          params,
+          batchCount: 6,
+          batchSize: 2,
+          isOpus: true,
+        ),
+        expected(6),
+      );
     });
   });
 
@@ -472,7 +658,7 @@ void main() {
           inputWidth: 640,
           inputHeight: 640,
           scale: 4,
-          subscriptionTier: AnlasCalculator.opusTier,
+          isOpus: true,
         ),
         0,
       );
@@ -608,6 +794,62 @@ void main() {
       );
 
       expect(AnlasCalculator.resolveVibeReferenceExtraCost(params), 0);
+    });
+  });
+
+  group('AnlasCalculator V5 Full Medium effort', () {
+    int priceFor(String model, {int steps = 28, int width = 832}) =>
+        AnlasCalculator.calculateFromValues(
+          width: width,
+          height: 1216,
+          steps: steps,
+          nSamples: 1,
+          smea: false,
+          smeaDyn: false,
+          model: model,
+        );
+
+    // 官网：ceil(面积项 + 步数项 × 1/1.06521739) × 1.5，步数固定 14。
+    test('prices medium at its fixed 14 steps with the reduced step term', () {
+      expect(priceFor(ImageModels.animeDiffusionV5FullMedium), 17);
+      expect(priceFor(ImageModels.animeDiffusionV5Full), 30);
+      // 同为 14 步时 V5 Full 是 18，差值来自步数项系数。
+      expect(priceFor(ImageModels.animeDiffusionV5Full, steps: 14), 18);
+    });
+
+    test('ignores the UI step value the caller passes for medium', () {
+      for (final steps in [1, 14, 28, 50]) {
+        expect(
+          priceFor(ImageModels.animeDiffusionV5FullMedium, steps: steps),
+          17,
+          reason: 'steps $steps',
+        );
+      }
+    });
+
+    test('medium stays Opus-free even when the stored steps exceed 28', () {
+      const params = ImageParams(
+        model: ImageModels.animeDiffusionV5FullMedium,
+        width: 832,
+        height: 1216,
+        steps: 50,
+      );
+      expect(AnlasCalculator.isOpusFreeGeneration(params, isOpus: true), true);
+      expect(
+        AnlasCalculator.calculate(
+          params,
+          isOpus: true,
+          opusQuotaExhausted: true,
+        ),
+        17,
+      );
+    });
+
+    test('medium inpainting shares the medium price', () {
+      expect(
+        priceFor(ImageModels.animeDiffusionV5FullMediumInpainting),
+        priceFor(ImageModels.animeDiffusionV5FullMedium),
+      );
     });
   });
 }

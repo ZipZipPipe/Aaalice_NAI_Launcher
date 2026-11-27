@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -10,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../../core/constants/storage_keys.dart';
 import '../../../core/platform/platform_capabilities.dart';
 import '../../../core/shortcuts/default_shortcuts.dart';
+import '../../../core/utils/app_background_return.dart';
 import '../../../core/utils/app_logger.dart';
 import '../../../core/utils/file_explorer_utils.dart';
 import '../../../core/utils/localization_extension.dart';
@@ -17,7 +17,6 @@ import '../../../core/utils/permission_utils.dart';
 import '../../../data/models/gallery/gallery_category.dart';
 import '../../../data/repositories/gallery_folder_repository.dart';
 import '../../adaptive/adaptive_presenter.dart';
-import '../../providers/bulk_operation_provider.dart';
 import '../../providers/collection_provider.dart';
 import '../../providers/gallery_album_provider.dart';
 import '../../providers/gallery_category_provider.dart';
@@ -26,13 +25,13 @@ import '../../providers/local_gallery_provider.dart';
 import '../../providers/selection_mode_provider.dart';
 import '../../services/library_sidebar_move_service.dart';
 import '../../utils/asset_protection_guard.dart';
+import '../../utils/image_date_grouping.dart' show ImageDateGroup;
 import '../../widgets/common/app_toast.dart';
 import '../../widgets/common/image_card_action.dart';
 import '../../widgets/common/themed_confirm_dialog.dart';
 import '../../widgets/common/themed_input_dialog.dart';
 import '../../widgets/gallery_filter_panel.dart';
-import '../../widgets/grouped_grid_view.dart'
-    show GroupedGridViewState, ImageDateGroup;
+import '../../widgets/grouped_grid_view.dart' show GroupedGridViewState;
 import 'local_gallery_action_coordinator.dart';
 import 'local_gallery_category_panel.dart';
 
@@ -72,12 +71,13 @@ class LocalGalleryScreenController extends ChangeNotifier {
   final GlobalKey<GroupedGridViewState> groupedGridViewKey;
 
   late final Map<String, VoidCallback> shortcuts;
-  final FocusNode shortcutsFocusNode = FocusNode();
+  final FocusNode searchFocusNode = FocusNode(debugLabel: 'LocalGallerySearch');
 
-  AppLifecycleListener? _lifecycleListener;
+  AppBackgroundReturnListener? _backgroundReturnListener;
   Timer? _refreshDebounceTimer;
   Completer<void>? _refreshCompleter;
   DateTime? _lastRefreshTime;
+  bool _refreshAfterScan = false;
   bool _showCategoryPanel = true;
   bool _isPackingImages = false;
 
@@ -85,13 +85,22 @@ class LocalGalleryScreenController extends ChangeNotifier {
   bool get isPackingImages => _isPackingImages;
 
   void start() {
+    _ref.listenManual(galleryScanProgressProvider.select((s) => s.isScanning), (
+      _,
+      scanning,
+    ) {
+      if (!scanning && _refreshAfterScan) {
+        _refreshAfterScan = false;
+        unawaited(_autoRefreshNow(afterScan: true));
+      }
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await _checkPermissionsAndScan();
       await _showFirstTimeTip();
       await autoRefresh();
     });
-    _lifecycleListener = AppLifecycleListener(
-      onResume: () {
+    _backgroundReturnListener = AppBackgroundReturnListener(
+      onReturn: () {
         Future<void>.delayed(const Duration(milliseconds: 500), () async {
           if (!_mounted()) return;
           try {
@@ -115,63 +124,33 @@ class LocalGalleryScreenController extends ChangeNotifier {
     if (_refreshCompleter case final completer? when !completer.isCompleted) {
       completer.complete();
     }
-    _lifecycleListener?.dispose();
-    shortcutsFocusNode.dispose();
+    _backgroundReturnListener?.dispose();
+    searchFocusNode.dispose();
     super.dispose();
   }
 
   void goToPreviousPage() {
-    final state = _ref.read(localGalleryNotifierProvider);
-    if (state.currentPage > 0) {
-      _ref
-          .read(localGalleryNotifierProvider.notifier)
-          .loadPage(state.currentPage - 1);
-    }
+    _ref.read(localGalleryNotifierProvider.notifier).loadPreviousPage();
   }
 
   void goToNextPage() {
-    final state = _ref.read(localGalleryNotifierProvider);
-    if (state.currentPage < state.totalPages - 1) {
-      _ref
-          .read(localGalleryNotifierProvider.notifier)
-          .loadPage(state.currentPage + 1);
-    }
+    _ref.read(localGalleryNotifierProvider.notifier).loadNextPage();
   }
 
-  void refreshGallery() {
-    _ref.read(localGalleryNotifierProvider.notifier).refresh();
+  Future<void> refreshGallery({bool scan = true}) async {
+    final categories = _ref.read(galleryCategoryNotifierProvider.notifier);
+    await _ref.read(localGalleryNotifierProvider.notifier).refresh(scan: scan);
+    await categories.syncWithFileSystem();
   }
 
-  void focusSearch() {
-    FocusManager.instance.primaryFocus?.unfocus();
-    Future<void>.delayed(const Duration(milliseconds: 50), () {
-      FocusManager.instance.primaryFocus?.requestFocus();
-    });
-  }
+  void focusSearch() => searchFocusNode.requestFocus();
 
   void enterSelectionMode() {
     _ref.read(localGallerySelectionNotifierProvider.notifier).enter();
   }
 
   void clearFilters() {
-    _ref.read(localGalleryNotifierProvider.notifier).clearAllFilters();
-  }
-
-  void handleKeyEvent(KeyEvent event) {
-    if (event is! KeyDownEvent || !HardwareKeyboard.instance.isControlPressed) {
-      return;
-    }
-    final bulkState = _ref.read(bulkOperationNotifierProvider);
-    if (event.logicalKey == LogicalKeyboardKey.keyZ) {
-      if (HardwareKeyboard.instance.isShiftPressed) {
-        if (bulkState.canRedo) unawaited(_actions.redo());
-      } else if (bulkState.canUndo) {
-        unawaited(_actions.undo());
-      }
-    } else if (event.logicalKey == LogicalKeyboardKey.keyY &&
-        bulkState.canRedo) {
-      unawaited(_actions.redo());
-    }
+    _ref.read(localGalleryNotifierProvider.notifier).clearFiltersWithinScope();
   }
 
   Future<void> runPacking(Future<void> Function() action) async {
@@ -197,55 +176,37 @@ class LocalGalleryScreenController extends ChangeNotifier {
   Future<void> autoRefresh() {
     _refreshDebounceTimer?.cancel();
     final completer = _refreshCompleter ??= Completer<void>();
-    _refreshDebounceTimer = Timer(_refreshDebounce, () async {
+    _refreshDebounceTimer = Timer(_refreshDebounce, () {
       _refreshDebounceTimer = null;
       if (identical(_refreshCompleter, completer)) {
         _refreshCompleter = null;
       }
-      try {
-        if (!_mounted()) return;
-        final router = GoRouter.of(_context());
-        final currentPath = router.routeInformationProvider.value.uri.path;
-        if (currentPath != '/local-gallery') {
-          AppLogger.d(
-            '[AutoRefresh] Skipped: not on local gallery page (current: $currentPath)',
-            'LocalGalleryScreen',
-          );
-          return;
-        }
-
-        final now = DateTime.now();
-        final lastRefreshTime =
-            _lastRefreshTime ??
-            _ref.read(localGalleryNotifierProvider.notifier).lastSynchronizedAt;
-        if (lastRefreshTime != null &&
-            now.difference(lastRefreshTime) < _minimumRefreshInterval) {
-          AppLogger.d(
-            '[AutoRefresh] Skipped: too frequent',
-            'LocalGalleryScreen',
-          );
-          return;
-        }
-        if (_ref.read(galleryScanProgressProvider).isScanning) {
-          AppLogger.d(
-            '[AutoRefresh] Skipped: scan in progress',
-            'LocalGalleryScreen',
-          );
-          return;
-        }
-
-        _lastRefreshTime = now;
-        await _ref
-            .read(localGalleryNotifierProvider.notifier)
-            .refresh(scan: false);
-        await _ref
-            .read(galleryCategoryNotifierProvider.notifier)
-            .syncWithFileSystem();
-      } finally {
-        if (!completer.isCompleted) completer.complete();
-      }
+      completer.complete(_autoRefreshNow());
     });
     return completer.future;
+  }
+
+  Future<void> _autoRefreshNow({bool afterScan = false}) async {
+    if (!_mounted() ||
+        GoRouter.of(_context()).routeInformationProvider.value.uri.path !=
+            '/local-gallery') {
+      return;
+    }
+    if (_ref.read(galleryScanProgressProvider).isScanning) {
+      _refreshAfterScan = true;
+      return;
+    }
+    final now = DateTime.now();
+    final last =
+        _lastRefreshTime ??
+        _ref.read(localGalleryNotifierProvider.notifier).lastSynchronizedAt;
+    if (!afterScan &&
+        last != null &&
+        now.difference(last) < _minimumRefreshInterval) {
+      return;
+    }
+    _lastRefreshTime = now;
+    await refreshGallery(scan: false);
   }
 
   Future<void> showCategoryPanelSheet() {
@@ -301,7 +262,6 @@ class LocalGalleryScreenController extends ChangeNotifier {
           .read(librarySidebarMoveServiceProvider)
           .moveFolder(id, targetId, slot),
       onImagesDrop: handleImagesDrop,
-      onSyncWithFileSystem: handleSyncWithFileSystem,
       onCreateAlbum: (parentId) => createAlbum(parentId),
       onAlbumSelected: (id) => unawaited(handleAlbumSelected(id)),
       onAlbumRename: (id, newName) => _ref
@@ -417,6 +377,7 @@ class LocalGalleryScreenController extends ChangeNotifier {
     final categoryState = _ref.read(galleryCategoryNotifierProvider);
     final category = id != null ? categoryState.categories.findById(id) : null;
     if (id == 'favorites') {
+      await gallery.setSelectedCategory(null, null);
       await gallery.setShowFavoritesOnly(true);
     } else if (id != null && category != null) {
       await gallery.setShowFavoritesOnly(false);
@@ -488,18 +449,6 @@ class LocalGalleryScreenController extends ChangeNotifier {
       }
     });
     result.requireComplete();
-  }
-
-  Future<void> handleSyncWithFileSystem() async {
-    await _ref
-        .read(galleryCategoryNotifierProvider.notifier)
-        .syncWithFileSystem();
-    if (_mounted()) {
-      AppToast.success(
-        _context(),
-        _context().l10n.localGallery_categoriesSynced,
-      );
-    }
   }
 
   Future<void> openGalleryFolder() async {

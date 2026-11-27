@@ -84,7 +84,11 @@ void main() {
       expect(offline, isNot(contains('First use web_search')));
       expect(online, contains('exactly zero'));
       expect(online, contains('without asking for confirmation'));
-      expect(online, contains('Destructive operations and paid/unknown-cost'));
+      expect(online, contains('page-state removals'));
+      expect(online, contains('Permanently deleting saved data'));
+      expect(online, contains('paid/unknown-cost submissions still need'));
+      expect(online, contains('In Autopilot, paid submissions below'));
+      expect(online, contains('never repeat a paid call'));
     },
   );
   test('does not inspect or repeat direct generation output by default', () {

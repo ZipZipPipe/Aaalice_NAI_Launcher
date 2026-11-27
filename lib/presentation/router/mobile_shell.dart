@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/platform/platform_capabilities.dart';
 import '../../core/utils/localization_extension.dart';
+import '../mcp/widgets/mcp_approval_banner.dart';
 import '../providers/mobile_shell_overlay_provider.dart';
 import '../providers/replication_queue_provider.dart';
 import '../providers/update_provider.dart';
@@ -14,6 +14,7 @@ import 'android_root_back_guard.dart';
 import 'app_branch.dart';
 import 'global_status_banners.dart';
 import 'mobile_more_panel.dart';
+import 'shell_panel_dismiss_scope.dart';
 import 'shell_panels_overlay.dart';
 
 /// Compact touch-first shell. Secondary destinations remain explicit in the
@@ -53,7 +54,7 @@ class MobileShell extends ConsumerWidget {
     );
 
     void closePanel() {
-      ref.read(shellPanelProvider.notifier).state = null;
+      ref.read(shellPanelProvider.notifier).close();
     }
 
     final scaffold = Scaffold(
@@ -89,6 +90,9 @@ class MobileShell extends ConsumerWidget {
                     navigationShell.goBranch(AppBranch.generation.index),
                 onOpenAgentSettings: () =>
                     navigationShell.goBranch(AppBranch.settings.index),
+              ),
+              const McpApprovalOverlay(
+                key: ValueKey('mobile-approval-overlay-layer'),
               ),
             ],
           ),
@@ -156,26 +160,18 @@ class MobileShell extends ConsumerWidget {
             ),
     );
 
-    return CallbackShortcuts(
-      bindings: {
-        if (activePanel != null)
-          const SingleActivator(LogicalKeyboardKey.escape): closePanel,
-      },
-      child: PopScope<void>(
-        canPop: activePanel == null,
-        onPopInvokedWithResult: (didPop, _) {
-          if (!didPop && activePanel != null) closePanel();
-        },
-        child: AndroidRootBackGuard(
-          enabled:
-              PlatformCapabilities.current.isAndroid &&
-              activePanel == null &&
-              !branchCanHandlePop,
-          resetKey: navigationShell.currentIndex,
-          onExitHint: () =>
-              AppToast.info(context, context.l10n.router_backAgainToExit),
-          child: scaffold,
-        ),
+    return ShellPanelDismissScope(
+      activePanel: activePanel,
+      onClose: closePanel,
+      child: AndroidRootBackGuard(
+        enabled:
+            PlatformCapabilities.current.isAndroid &&
+            activePanel == null &&
+            !branchCanHandlePop,
+        resetKey: navigationShell.currentIndex,
+        onExitHint: () =>
+            AppToast.info(context, context.l10n.router_backAgainToExit),
+        child: scaffold,
       ),
     );
   }

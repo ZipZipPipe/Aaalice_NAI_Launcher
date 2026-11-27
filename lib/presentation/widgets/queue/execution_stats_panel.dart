@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:nai_launcher/l10n/app_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/misc.dart';
 import 'package:nai_launcher/core/utils/localization_extension.dart';
 
 import '../../providers/queue_execution_provider.dart';
 import '../../providers/replication_queue_provider.dart';
 import '../common/app_toast.dart';
+import 'queue_stop_notice_banner.dart';
 
 /// 执行统计面板 - 紧凑精致的现代设计
 class ExecutionStatsPanel extends ConsumerStatefulWidget {
@@ -162,6 +164,15 @@ class _ExecutionStatsPanelState extends ConsumerState<ExecutionStatsPanel>
                   _buildStatusChip(context, l10n, executionState),
                 ],
               ),
+              if (executionState.stopNotice case final notice?) ...[
+                const SizedBox(height: 10),
+                QueueStopNoticeBanner(
+                  notice: notice,
+                  onDismiss: () => ref
+                      .read(queueExecutionNotifierProvider.notifier)
+                      .dismissStopNotice(),
+                ),
+              ],
 
               const SizedBox(height: 12),
 
@@ -367,13 +378,15 @@ class _ExecutionStatsPanelState extends ConsumerState<ExecutionStatsPanel>
     if (!isRunning || _disableAnimations) {
       return Icon(icon, size: 16, color: color);
     }
-    return AnimatedBuilder(
-      animation: _animController,
-      builder: (context, child) => Transform.rotate(
-        angle: _animController.value * 2 * 3.14159,
-        child: child,
+    return RepaintBoundary(
+      child: AnimatedBuilder(
+        animation: _animController,
+        builder: (context, child) => Transform.rotate(
+          angle: _animController.value * 2 * 3.14159,
+          child: child,
+        ),
+        child: Icon(icon, size: 16, color: color),
       ),
-      child: Icon(icon, size: 16, color: color),
     );
   }
 

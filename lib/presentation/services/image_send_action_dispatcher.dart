@@ -10,6 +10,7 @@ import '../../core/utils/app_logger.dart';
 import '../../core/utils/localization_extension.dart';
 import '../../core/utils/nai_resolution_adapter.dart';
 import '../../data/models/gallery/nai_image_metadata.dart';
+import '../../data/models/image/image_params.dart';
 import '../../data/services/image_metadata_service.dart';
 import '../providers/fixed_tags_provider.dart';
 import '../providers/image_generation_provider.dart';
@@ -47,6 +48,8 @@ class ImageSendActionDispatcher {
       switch (action) {
         case LocalImageContextAction.addToAgent:
         case LocalImageContextAction.moveToCategory:
+        case LocalImageContextAction.addToAlbum:
+        case LocalImageContextAction.removeFromAlbum:
           return;
         case LocalImageContextAction.sendToTextToImage:
         case LocalImageContextAction.importMetadata:
@@ -80,7 +83,12 @@ class ImageSendActionDispatcher {
             suggestedName: _baseName(fileName),
           );
         case LocalImageContextAction.sendToKrita:
-          KritaSendHelper.sendImageBytes(context, ref, bytes, name: fileName);
+          await KritaSendHelper.sendImageBytes(
+            context,
+            ref,
+            bytes,
+            name: fileName,
+          );
         case LocalImageContextAction.upscale:
           ImageWorkflowLauncher.openUpscale(ref, bytes);
           context.go(AppRoutes.home);
@@ -203,7 +211,14 @@ class ImageSendActionDispatcher {
     WidgetRef ref,
     Uint8List bytes,
   ) async {
-    final selectedType = await PreciseReferenceTypeDialog.show(context);
+    final selectedType = await PreciseReferenceTypeDialog.show(
+      context,
+      outfit: ref
+          .read(generationParamsNotifierProvider)
+          .capabilities
+          .preciseReference
+          .supportsOutfit,
+    );
     if (selectedType == null || !context.mounted) return;
     unawaited(
       ref

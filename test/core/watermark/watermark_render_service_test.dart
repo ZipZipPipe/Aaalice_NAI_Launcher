@@ -1,13 +1,20 @@
+import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
+import 'package:nai_launcher/core/derivatives/derivative_render.dart';
 import 'package:nai_launcher/core/watermark/watermark_render_service.dart';
 import 'package:nai_launcher/core/watermark/watermark_scene.dart';
 import 'package:nai_launcher/data/models/watermark/watermark_settings.dart';
 import 'package:nai_launcher/data/services/metadata/unified_metadata_parser.dart';
+
+import '../../helpers/exif_orientation_fixture.dart';
+import '../../helpers/novelai_exif_fixture.dart';
+import '../../helpers/novelai_jpeg_layout_fixture.dart';
+import '../../helpers/novelai_webp_layout_fixture.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -93,6 +100,48 @@ void main() {
     },
   );
 
+  test('envelope sources keep the generation JSON as the Comment', () async {
+    final sources = {
+      'jpeg exif': (
+        bytes: novelAiLayoutJpeg(
+          exifTiffs: [
+            novelAiExif(
+              userComment: asciiUserComment(
+                novelAiEnvelopeJson(prompt: 'envelope prompt', seed: 21),
+              ),
+            ),
+          ],
+        ),
+        prompt: 'envelope prompt',
+      ),
+      'webp stealth': (
+        bytes: novelAiLayoutWebp(),
+        prompt: novelAiStealthPrompt,
+      ),
+    };
+
+    for (final MapEntry(key: name, value: source) in sources.entries) {
+      final result = await WatermarkRenderService.render(
+        WatermarkRenderRequest(
+          sourceBytes: source.bytes,
+          settings: const WatermarkSettings(),
+          preserveMetadata: true,
+        ),
+      );
+
+      final text = UnifiedMetadataParser.extractPngTextData(result.bytes);
+      final comment = jsonDecode(text['Comment']!) as Map<String, dynamic>;
+      expect(comment['prompt'], source.prompt, reason: name);
+      expect(comment, isNot(contains('Comment')), reason: name);
+      expect(text['Source'], novelAiV45FullSource, reason: name);
+      expect(
+        UnifiedMetadataParser.parseFromImage(result.bytes).metadata?.prompt,
+        source.prompt,
+        reason: name,
+      );
+    }
+  });
+
   test('ordinary images do not gain fabricated generation metadata', () async {
     final source = await _solidPng(64, 64, const Color(0xFF123456));
     final result = await WatermarkRenderService.render(
@@ -106,8 +155,33 @@ void main() {
     expect(result.metadataPreserved, isFalse);
   });
 
+  test('a damaged source comment fails with the metadata error', () async {
+    final source = UnifiedMetadataParser.embedTextChunkOnly(
+      await _solidPng(64, 64, const Color(0xFF654321)),
+      'Comment',
+      '{"prompt":',
+    );
+
+    await expectLater(
+      WatermarkRenderService.render(
+        WatermarkRenderRequest(
+          sourceBytes: source,
+          settings: const WatermarkSettings(),
+          preserveMetadata: true,
+        ),
+      ),
+      throwsA(
+        isA<WatermarkRenderException>().having(
+          (error) => error.message,
+          'message',
+          startsWith('The source metadata is damaged or cannot be parsed: '),
+        ),
+      ),
+    );
+  });
+
   test('cancellation is explicit before decoding starts', () async {
-    final token = WatermarkCancellationToken()..cancel();
+    final token = DerivativeRenderCancellationToken()..cancel();
     await expectLater(
       WatermarkRenderService.render(
         WatermarkRenderRequest(
@@ -117,13 +191,13 @@ void main() {
         ),
         cancellationToken: token,
       ),
-      throwsA(isA<WatermarkCancelledException>()),
+      throwsA(isA<DerivativeRenderCancelledException>()),
     );
   });
 
   test('cancellation during rendering completes with a typed error', () async {
     final source = await _solidPng(1200, 800, const Color(0xFF334455));
-    final token = WatermarkCancellationToken();
+    final token = DerivativeRenderCancellationToken();
     final rendering = WatermarkRenderService.render(
       WatermarkRenderRequest(
         sourceBytes: source,
@@ -135,7 +209,10 @@ void main() {
 
     token.cancel();
 
-    await expectLater(rendering, throwsA(isA<WatermarkCancelledException>()));
+    await expectLater(
+      rendering,
+      throwsA(isA<DerivativeRenderCancelledException>()),
+    );
   });
 
   test('extreme aspect ratios keep every resolved layer on canvas', () async {
@@ -173,6 +250,24 @@ void main() {
         expect(layer.bounds.bottom, lessThanOrEqualTo(size.height + 0.01));
       }
     }
+  });
+
+  test('copied camera exif matches the upright watermarked pixels', () async {
+    final source = orientedCameraJpeg(width: 60, height: 40, orientation: 6);
+
+    final result = await WatermarkRenderService.render(
+      WatermarkRenderRequest(
+        sourceBytes: source,
+        settings: const WatermarkSettings(),
+        preserveMetadata: true,
+      ),
+    );
+
+    final output = img.decodePng(result.bytes)!;
+    expect((output.width, output.height), (40, 60));
+    final ifd = readImageIfd(pngExifPayload(result.bytes)!);
+    expect(ifd.orientation, 1);
+    expect(ifd.make, 'Aaalice Camera');
   });
 }
 

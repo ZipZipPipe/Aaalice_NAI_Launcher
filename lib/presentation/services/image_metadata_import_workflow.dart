@@ -3,10 +3,12 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../core/utils/app_logger.dart';
 import '../../core/utils/localization_extension.dart';
 import '../../data/models/gallery/nai_image_metadata.dart';
 import '../../data/models/metadata/metadata_import_options.dart';
 import '../../data/services/image_metadata_service.dart';
+import '../../data/services/metadata_import_selection_store.dart';
 import '../../l10n/app_localizations.dart';
 import '../router/app_routes.dart';
 import '../providers/fixed_tags_provider.dart';
@@ -20,6 +22,8 @@ enum ImageMetadataImportResult {
   cancelled,
   noMetadata,
   noParametersSelected,
+  characterModelConflict,
+  characterLimitReached,
   applied,
 }
 
@@ -29,9 +33,10 @@ typedef MetadataImportOptionsPicker =
     Future<MetadataImportOptions?> Function(
       BuildContext context,
       NaiImageMetadata metadata,
+      MetadataImportOptions initialOptions,
     );
 typedef MetadataImportApplier =
-    Future<int> Function(
+    Future<MetadataImportOutcome> Function(
       ProviderReader read,
       NaiImageMetadata metadata,
       MetadataImportOptions options,
@@ -41,7 +46,7 @@ typedef MetadataImportResultReporter =
     void Function(
       BuildContext context,
       ImageMetadataImportResult result,
-      int appliedCount,
+      MetadataImportOutcome outcome,
     );
 typedef GenerationPageOpener = void Function(BuildContext context);
 
@@ -82,7 +87,11 @@ class ImageMetadataImportWorkflow {
     if (!context.mounted) return ImageMetadataImportResult.cancelled;
 
     if (parsedMetadata == null || !parsedMetadata.hasData) {
-      _resultReporter(context, ImageMetadataImportResult.noMetadata, 0);
+      _resultReporter(
+        context,
+        ImageMetadataImportResult.noMetadata,
+        const MetadataImportOutcome(0),
+      );
       return ImageMetadataImportResult.noMetadata;
     }
 
@@ -91,18 +100,21 @@ class ImageMetadataImportWorkflow {
       entries: read(fixedTagsNotifierProvider).entries,
     );
     final resolvedMetadata = resolution.metadata;
+    final selectionStore = read(metadataImportSelectionStoreProvider);
+    final initialOptions = selectionStore.load();
     final options = _optionsPicker == null
         ? await MetadataImportDialog.show(
             context,
             metadata: resolvedMetadata,
             fixedTagResolution: resolution,
+            initialOptions: initialOptions,
           )
-        : await _optionsPicker(context, resolvedMetadata);
-    if (options == null || !context.mounted) {
-      return ImageMetadataImportResult.cancelled;
-    }
+        : await _optionsPicker(context, resolvedMetadata, initialOptions);
+    if (options == null) return ImageMetadataImportResult.cancelled;
+    await _rememberSelection(selectionStore, options);
+    if (!context.mounted) return ImageMetadataImportResult.cancelled;
 
-    final appliedCount = _metadataApplier == null
+    final outcome = _metadataApplier == null
         ? await MetadataImportCoordinator.apply(
             read: read,
             metadata: resolvedMetadata,
@@ -113,37 +125,77 @@ class ImageMetadataImportWorkflow {
         : await _metadataApplier(read, resolvedMetadata, options, context.l10n);
     if (!context.mounted) return ImageMetadataImportResult.cancelled;
 
-    if (appliedCount == 0) {
-      _resultReporter(
-        context,
+    final result = switch (outcome) {
+      MetadataImportOutcome(characterConflictLimit: != null) =>
+        ImageMetadataImportResult.characterModelConflict,
+      MetadataImportOutcome(appliedCount: 0, characterAppend: != null) =>
+        ImageMetadataImportResult.characterLimitReached,
+      MetadataImportOutcome(appliedCount: 0) =>
         ImageMetadataImportResult.noParametersSelected,
-        0,
-      );
-      return ImageMetadataImportResult.noParametersSelected;
+      _ => ImageMetadataImportResult.applied,
+    };
+    _resultReporter(context, result, outcome);
+    if (result == ImageMetadataImportResult.applied && openGenerationPage) {
+      _generationPageOpener(context);
     }
+    return result;
+  }
 
-    _resultReporter(context, ImageMetadataImportResult.applied, appliedCount);
-    if (openGenerationPage) _generationPageOpener(context);
-    return ImageMetadataImportResult.applied;
+  // 记忆写入失败不能拦下用户已确认的导入。
+  static Future<void> _rememberSelection(
+    MetadataImportSelectionStore store,
+    MetadataImportOptions options,
+  ) async {
+    try {
+      await store.save(options);
+    } catch (error, stackTrace) {
+      AppLogger.e(
+        'Failed to remember metadata import selection',
+        error,
+        stackTrace,
+        'MetadataImport',
+      );
+    }
   }
 
   static void _reportResult(
     BuildContext context,
     ImageMetadataImportResult result,
-    int appliedCount,
+    MetadataImportOutcome outcome,
   ) {
+    final l10n = context.l10n;
     switch (result) {
+      case ImageMetadataImportResult.characterModelConflict:
+        final limit = outcome.characterConflictLimit!;
+        final count = outcome.existingCharacterCount;
+        final message = count == null
+            ? l10n.metadataImport_characterModelConflict(limit)
+            : l10n.metadataImport_characterAppendModelConflict(count, limit);
+        AppToast.warning(context, message);
+        return;
       case ImageMetadataImportResult.noMetadata:
-        AppToast.warning(context, context.l10n.metadataImport_noDataFound);
+        AppToast.warning(context, l10n.metadataImport_noDataFound);
         return;
       case ImageMetadataImportResult.noParametersSelected:
-        AppToast.warning(context, context.l10n.metadataImport_noParamsSelected);
+        AppToast.warning(context, l10n.metadataImport_noParamsSelected);
         return;
+      case ImageMetadataImportResult.characterLimitReached:
       case ImageMetadataImportResult.applied:
-        AppToast.success(
-          context,
-          context.l10n.metadataImport_appliedCount(appliedCount),
-        );
+        final append = outcome.characterAppend;
+        final applied = l10n.metadataImport_appliedCount(outcome.appliedCount);
+        if (append != null && append.skipped > 0) {
+          final counts = l10n.metadataImport_characterAppendResult(
+            append.added,
+            append.skipped,
+            append.limit,
+          );
+          AppToast.warning(
+            context,
+            outcome.appliedCount == 0 ? counts : '$applied\n$counts',
+          );
+        } else {
+          AppToast.success(context, applied);
+        }
         return;
       case ImageMetadataImportResult.cancelled:
         return;

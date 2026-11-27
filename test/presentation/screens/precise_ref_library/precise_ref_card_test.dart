@@ -5,6 +5,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:nai_launcher/core/cache/box_fit_resize_image.dart';
 import 'package:nai_launcher/core/enums/precise_ref_type.dart';
 import 'package:nai_launcher/data/models/precise_ref/precise_ref_library_entry.dart';
 import 'package:nai_launcher/data/services/precise_ref_library_storage_service.dart';
@@ -18,9 +19,11 @@ import 'package:nai_launcher/presentation/widgets/common/image_hover_preview.dar
 import 'package:nai_launcher/presentation/widgets/common/library_card_badges.dart';
 
 class _FakeStorage extends PreciseRefLibraryStorageService {
-  _FakeStorage({this.imageBytes});
+  _FakeStorage({this.imageBytes, this.copyOnRead = false});
 
   final Uint8List? imageBytes;
+  final bool copyOnRead;
+  final List<Uint8List?> imageReads = [];
 
   @override
   Future<Uint8List?> getDisplayThumbnail(
@@ -29,7 +32,14 @@ class _FakeStorage extends PreciseRefLibraryStorageService {
   }) async => imageBytes;
 
   @override
-  Future<Uint8List?> readImageBytes(String id) async => imageBytes;
+  Future<Uint8List?> readImageBytes(String id) async {
+    final bytes = imageBytes;
+    final read = copyOnRead && bytes != null
+        ? Uint8List.fromList(bytes)
+        : bytes;
+    imageReads.add(read);
+    return read;
+  }
 }
 
 void main() {
@@ -203,9 +213,87 @@ void main() {
         matching: find.byType(Image),
       ),
     );
-    final resized = image.image as ResizeImage;
+    final resized = image.image as BoxFitResizeImage;
     expect((resized.imageProvider as MemoryImage).bytes, same(imageBytes));
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('指针短暂经过不读原图，预览弹出才读取且关闭后释放原图缓存', (tester) async {
+    tester.view.physicalSize = const Size(900, 700);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final storage = _FakeStorage(
+      imageBytes: Uint8List.fromList(_onePixelPng),
+      copyOnRead: true,
+    );
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          preciseRefLibraryStorageServiceProvider.overrideWithValue(storage),
+        ],
+        child: MaterialApp(
+          locale: const Locale('zh'),
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          home: Scaffold(
+            body: Align(
+              alignment: Alignment.topLeft,
+              child: SizedBox(
+                width: 160,
+                height: 200,
+                child: PreciseRefCard(entry: entry),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    const outside = Offset(850, 650);
+    final center = tester.getCenter(find.byType(PreciseRefCard));
+    final preview = find.byKey(const ValueKey('precise-ref-hover-preview'));
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    addTearDown(mouse.removePointer);
+    await mouse.addPointer(location: outside);
+
+    await mouse.moveTo(center);
+    await tester.pump(const Duration(milliseconds: 200));
+    await mouse.moveTo(outside);
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(preview, findsNothing);
+    expect(storage.imageReads, isEmpty);
+
+    await mouse.moveTo(center);
+    await tester.pump(const Duration(milliseconds: 281));
+    await tester.pump();
+    expect(preview, findsOneWidget);
+    expect(storage.imageReads, hasLength(1));
+    final image = tester.widget<Image>(
+      find.descendant(
+        of: find.byKey(const ValueKey('precise-ref-hover-media')),
+        matching: find.byType(Image),
+      ),
+    );
+    final resized = image.image as BoxFitResizeImage;
+    expect(
+      (resized.imageProvider as MemoryImage).bytes,
+      same(storage.imageReads.single),
+    );
+    final cacheKey = await resized.obtainKey(ImageConfiguration.empty);
+    final imageCache = PaintingBinding.instance.imageCache;
+    expect(imageCache.statusForKey(cacheKey).tracked, isTrue);
+
+    await mouse.moveTo(outside);
+    await tester.pump();
+    expect(preview, findsNothing);
+    expect(imageCache.statusForKey(cacheKey).untracked, isTrue);
+    await mouse.moveTo(center);
+    await tester.pump(const Duration(milliseconds: 281));
+    await tester.pump();
+    expect(storage.imageReads, hasLength(2));
   });
 
   test('悬浮预览按比例适配且有最大尺寸', () {

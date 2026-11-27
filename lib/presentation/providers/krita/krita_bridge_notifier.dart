@@ -3,13 +3,12 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:hive/hive.dart';
 
-import '../../../core/constants/storage_keys.dart';
 import '../../../core/krita/krita_bridge_server.dart';
+import '../../../core/storage/local_storage_service.dart';
 import '../../../core/utils/app_logger.dart';
 import '../../../data/datasources/remote/nai_image_generation_api_service.dart';
-import '../auth_provider.dart';
+import '../../../data/services/auth_provider.dart';
 import '../fixed_tags_provider.dart';
 import '../generation/image_workflow_controller.dart';
 import '../image_generation_provider.dart';
@@ -84,19 +83,23 @@ class KritaBridgeState {
   }
 }
 
-class KritaBridgeNotifier extends StateNotifier<KritaBridgeState> {
+class KritaBridgeNotifier extends Notifier<KritaBridgeState> {
   KritaBridgeNotifier({
     KritaBridgeServerFactory? serverFactory,
     KritaBridgeEnabledPersister? persistEnabled,
     KritaBridgeServiceFactory? serviceFactory,
+    bool useHivePersistence = false,
   }) : _serverFactory = serverFactory ?? (() => KritaBridgeServer()),
-       _persistEnabled = persistEnabled,
-       _serviceFactory = serviceFactory,
-       super(const KritaBridgeState());
+       _injectedPersistEnabled = persistEnabled,
+       _injectedServiceFactory = serviceFactory,
+       _useHivePersistence = useHivePersistence;
 
   final KritaBridgeServerFactory _serverFactory;
-  final KritaBridgeEnabledPersister? _persistEnabled;
-  final KritaBridgeServiceFactory? _serviceFactory;
+  final KritaBridgeEnabledPersister? _injectedPersistEnabled;
+  final KritaBridgeServiceFactory? _injectedServiceFactory;
+  final bool _useHivePersistence;
+  KritaBridgeEnabledPersister? _persistEnabled;
+  KritaBridgeServiceFactory? _serviceFactory;
   KritaBridgeServer? _server;
   KritaBridgeMessageService? _service;
   StreamSubscription? _messagesSubscription;
@@ -104,6 +107,94 @@ class KritaBridgeNotifier extends StateNotifier<KritaBridgeState> {
   static const String _logTag = 'KritaBridge';
 
   KritaBridgeServer? get server => _server;
+
+  @override
+  KritaBridgeState build() {
+    if (_useHivePersistence) {
+      final storage = ref.read(localStorageServiceProvider);
+      _persistEnabled =
+          _injectedPersistEnabled ?? storage.setKritaBridgeEnabled;
+      _serviceFactory = _injectedServiceFactory ?? _defaultServiceFactory;
+      final enabled = storage.getKritaBridgeEnabled();
+      if (enabled) {
+        Future<void>.microtask(() {
+          if (ref.mounted) {
+            unawaited(enable(persist: false));
+          }
+        });
+      }
+      ref.onDispose(() {
+        unawaited(close());
+      });
+      return const KritaBridgeState();
+    }
+
+    _persistEnabled = _injectedPersistEnabled;
+    _serviceFactory = _injectedServiceFactory;
+    ref.onDispose(() {
+      unawaited(close());
+    });
+    return const KritaBridgeState();
+  }
+
+  KritaBridgeMessageService _defaultServiceFactory(KritaBridgeServer server) {
+    return KritaBridgeService(
+      readBaseParams: () => ref.read(generationParamsNotifierProvider),
+      readPromptSnapshot: (params) {
+        final fixedTags = ref.read(fixedTagsNotifierProvider);
+        return (
+          prompt: fixedTags.applyToPrompt(params.prompt),
+          negativePrompt: fixedTags.applyToNegativePrompt(
+            params.negativePrompt,
+          ),
+        );
+      },
+      readMinimumContextPixels: () => ref
+          .read(imageWorkflowControllerProvider)
+          .minimumContextMegaPixels
+          .round()
+          .clamp(16, 192)
+          .toInt(),
+      readStreamPreviewEnabled: () =>
+          ref.read(generationStreamPreviewSettingsProvider),
+      send: server.send,
+      isUiGenerating: () => ref.read(imageGenerationNotifierProvider).isBusy,
+      authGuard: () =>
+          requireAuthenticatedAction(ref, AuthPromptReason.kritaBridge),
+      generateStream: (request) {
+        final apiService = ref.read(naiImageGenerationApiServiceProvider);
+        return apiService.generateImageStream(
+          request.params,
+          focusedInpaintEnabled: request.focusedInpaintEnabled,
+          minimumContextMegaPixels: request.minimumContextPixels,
+          focusedSelectionRect: request.focusedSelectionRect,
+        );
+      },
+      generateFallback: (request) async {
+        final apiService = ref.read(naiImageGenerationApiServiceProvider);
+        return apiService.generateImageArtifactsCancellable(
+          request.params,
+          onProgress: (_, __) {},
+          focusedInpaintEnabled: request.focusedInpaintEnabled,
+          minimumContextMegaPixels: request.minimumContextPixels,
+          focusedSelectionRect: request.focusedSelectionRect,
+        );
+      },
+      registerExternalImage: (image, {required params, addToDisplay}) => ref
+          .read(imageGenerationNotifierProvider.notifier)
+          .registerExternalImage(
+            image,
+            params: params,
+            saveToLocal: ref.read(imageSaveSettingsNotifierProvider).autoSave,
+            addToDisplay: addToDisplay ?? false,
+          ),
+      cancelGeneration: () =>
+          ref.read(naiImageGenerationApiServiceProvider).cancelGeneration(),
+      schedulePostBillingRefresh: () => ref
+          .read(subscriptionNotifierProvider.notifier)
+          .schedulePostBillingRefresh(),
+    );
+  }
 
   Future<void> setEnabled(bool enabled) async {
     if (enabled) {
@@ -126,9 +217,11 @@ class KritaBridgeNotifier extends StateNotifier<KritaBridgeState> {
     );
 
     final server = _serverFactory();
+    var started = false;
     try {
       AppLogger.i('Enabling Krita bridge', _logTag);
       await server.start(preferredPort: 0);
+      started = true;
       _server = server;
       _service = _serviceFactory?.call(server);
       _service?.setActiveRequestReporter(_setActiveRequest);
@@ -142,7 +235,7 @@ class KritaBridgeNotifier extends StateNotifier<KritaBridgeState> {
       _connectionSubscription = server.authenticationChanges.listen((
         connected,
       ) {
-        if (!mounted || !state.enabled) {
+        if (!ref.mounted || !state.enabled) {
           return;
         }
         if (!connected) {
@@ -160,7 +253,7 @@ class KritaBridgeNotifier extends StateNotifier<KritaBridgeState> {
           clearConnectedClientLabel: !connected,
         );
       });
-      if (!mounted) {
+      if (!ref.mounted) {
         await server.stop();
         return;
       }
@@ -174,15 +267,19 @@ class KritaBridgeNotifier extends StateNotifier<KritaBridgeState> {
       if (persist) {
         await _persistEnabled?.call(true);
       }
-      if (!mounted) {
+      if (!ref.mounted) {
         await server.stop();
         return;
       }
       AppLogger.i('Krita bridge enabled on port ${server.port}', _logTag);
     } catch (error) {
-      await server.stop();
+      _server = null;
+      // Stopping a server that never started deletes another owner's file.
+      if (started) {
+        await server.stop();
+      }
       AppLogger.e('Failed to enable Krita bridge', error, null, _logTag);
-      if (!mounted) {
+      if (!ref.mounted) {
         return;
       }
       state = KritaBridgeState(
@@ -194,7 +291,7 @@ class KritaBridgeNotifier extends StateNotifier<KritaBridgeState> {
   }
 
   Future<void> disable({bool persist = true}) async {
-    if (state.isBridgeGenerating) {
+    if (ref.mounted && state.isBridgeGenerating) {
       _service?.handleClientDisconnected();
     }
 
@@ -211,7 +308,7 @@ class KritaBridgeNotifier extends StateNotifier<KritaBridgeState> {
       await server.stop();
     }
 
-    if (!mounted) {
+    if (!ref.mounted) {
       return;
     }
     state = const KritaBridgeState();
@@ -222,7 +319,7 @@ class KritaBridgeNotifier extends StateNotifier<KritaBridgeState> {
   }
 
   void _setActiveRequest(String? requestId) {
-    if (!mounted || !state.enabled) {
+    if (!ref.mounted || !state.enabled) {
       return;
     }
     state = state.copyWith(
@@ -263,87 +360,9 @@ class KritaBridgeNotifier extends StateNotifier<KritaBridgeState> {
   Future<void> close() async {
     await disable(persist: false);
   }
-
-  @override
-  void dispose() {
-    unawaited(close());
-    super.dispose();
-  }
 }
 
 final kritaBridgeNotifierProvider =
-    StateNotifierProvider<KritaBridgeNotifier, KritaBridgeState>((ref) {
-      final box = Hive.box(StorageKeys.settingsBox);
-      final notifier = KritaBridgeNotifier(
-        persistEnabled: (enabled) =>
-            box.put(StorageKeys.kritaBridgeEnabled, enabled),
-        serviceFactory: (server) => KritaBridgeService(
-          readBaseParams: () => ref.read(generationParamsNotifierProvider),
-          readPromptSnapshot: (params) {
-            final fixedTags = ref.read(fixedTagsNotifierProvider);
-            return (
-              prompt: fixedTags.applyToPrompt(params.prompt),
-              negativePrompt: fixedTags.applyToNegativePrompt(
-                params.negativePrompt,
-              ),
-            );
-          },
-          readMinimumContextPixels: () => ref
-              .read(imageWorkflowControllerProvider)
-              .minimumContextMegaPixels
-              .round()
-              .clamp(16, 192)
-              .toInt(),
-          readStreamPreviewEnabled: () =>
-              ref.read(generationStreamPreviewSettingsProvider),
-          send: server.send,
-          isUiGenerating: () =>
-              ref.read(imageGenerationNotifierProvider).isBusy,
-          authGuard: () =>
-              requireAuthenticatedAction(ref, AuthPromptReason.kritaBridge),
-          generateStream: (request) {
-            final apiService = ref.read(naiImageGenerationApiServiceProvider);
-            return apiService.generateImageStream(
-              request.params,
-              focusedInpaintEnabled: request.focusedInpaintEnabled,
-              minimumContextMegaPixels: request.minimumContextPixels,
-              focusedSelectionRect: request.focusedSelectionRect,
-            );
-          },
-          generateFallback: (request) async {
-            final apiService = ref.read(naiImageGenerationApiServiceProvider);
-            return apiService.generateImageArtifactsCancellable(
-              request.params,
-              onProgress: (_, __) {},
-              focusedInpaintEnabled: request.focusedInpaintEnabled,
-              minimumContextMegaPixels: request.minimumContextPixels,
-              focusedSelectionRect: request.focusedSelectionRect,
-            );
-          },
-          registerExternalImage: (image, {required params, addToDisplay}) => ref
-              .read(imageGenerationNotifierProvider.notifier)
-              .registerExternalImage(
-                image,
-                params: params,
-                saveToLocal: ref
-                    .read(imageSaveSettingsNotifierProvider)
-                    .autoSave,
-                addToDisplay: addToDisplay ?? false,
-              ),
-          cancelGeneration: () =>
-              ref.read(naiImageGenerationApiServiceProvider).cancelGeneration(),
-          schedulePostBillingRefresh: () => ref
-              .read(subscriptionNotifierProvider.notifier)
-              .schedulePostBillingRefresh(),
-        ),
-      );
-      final enabled =
-          box.get(StorageKeys.kritaBridgeEnabled, defaultValue: false) as bool;
-      if (enabled) {
-        unawaited(notifier.enable(persist: false));
-      }
-      ref.onDispose(() {
-        unawaited(notifier.close());
-      });
-      return notifier;
-    });
+    NotifierProvider<KritaBridgeNotifier, KritaBridgeState>(
+      () => KritaBridgeNotifier(useHivePersistence: true),
+    );

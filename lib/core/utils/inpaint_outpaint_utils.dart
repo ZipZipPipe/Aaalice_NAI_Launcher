@@ -1,9 +1,10 @@
-import 'dart:isolate';
 import 'dart:typed_data';
 import 'dart:ui' show Offset, Rect, Size;
 
 import 'package:image/image.dart' as img;
+import 'package:nai_launcher/core/utils/exif_orientation.dart';
 import 'package:nai_launcher/core/utils/inpaint_mask_utils.dart';
+import 'package:nai_launcher/core/utils/isolate_pool.dart';
 import 'package:nai_launcher/core/utils/pica_lanczos_resizer.dart';
 
 class OutpaintEdges {
@@ -395,7 +396,8 @@ class OutpaintVirtualFrame {
 class InpaintOutpaintUtils {
   InpaintOutpaintUtils._();
 
-  static const int _maxDimension = 4096;
+  /// 扩图画布（含取景框拼接后的整张画布）的单边上限
+  static const int maxDimension = 4096;
   static const int _snapSize = 64;
 
   static OutpaintFrameResizeResult resizeFrame({
@@ -474,7 +476,7 @@ class InpaintOutpaintUtils {
     bool includeEditorOverlay = false,
     int editorOverlayAlpha = 140,
   }) {
-    return Isolate.run(
+    return ComputeGate().runIsolate(
       () => resizeFrame(
         sourceImage: sourceImage,
         existingMask: existingMask,
@@ -494,7 +496,7 @@ class InpaintOutpaintUtils {
     int? targetWidth,
     int? targetHeight,
   }) {
-    return Isolate.run(
+    return ComputeGate().runIsolate(
       () => materializeVirtualFrame(
         sourceImage: sourceImage,
         frame: frame,
@@ -872,7 +874,7 @@ class InpaintOutpaintUtils {
     bool includeEditorOverlay = false,
     int editorOverlayAlpha = 140,
   }) {
-    return Isolate.run(
+    return ComputeGate().runIsolate(
       () => expand(
         sourceImage: sourceImage,
         existingMask: existingMask,
@@ -896,14 +898,14 @@ class InpaintOutpaintUtils {
   }
 
   static void _validateExpandedDimensions(int width, int height) {
-    if (width > _maxDimension || height > _maxDimension) {
+    if (width > maxDimension || height > maxDimension) {
       throw ArgumentError('Expanded image dimensions exceed 4096');
     }
   }
 
   static img.Image? _decodeSourceImage(Uint8List sourceImage) {
     try {
-      return img.decodeImage(sourceImage);
+      return ExifOrientation.decodeUpright(sourceImage);
     } catch (_) {
       throw const FormatException('Unable to decode source image');
     }
@@ -950,37 +952,37 @@ class InpaintOutpaintUtils {
     required int sourceSize,
     required bool snapTo64,
   }) {
-    if (requestedSize > _maxDimension) {
+    if (requestedSize > maxDimension) {
       return requestedSize;
     }
-    final clamped = requestedSize.clamp(_snapSize, _maxDimension).toInt();
+    final clamped = requestedSize.clamp(_snapSize, maxDimension).toInt();
     if (!snapTo64) {
       return clamped;
     }
     final lower = (clamped ~/ _snapSize) * _snapSize;
     final upper = lower == clamped ? lower : lower + _snapSize;
     if (lower == upper) {
-      return lower.clamp(_snapSize, _maxDimension).toInt();
+      return lower.clamp(_snapSize, maxDimension).toInt();
     }
 
     final lowerDistance = (clamped - lower).abs();
     final upperDistance = (upper - clamped).abs();
     if (lowerDistance < upperDistance) {
-      return lower.clamp(_snapSize, _maxDimension).toInt();
+      return lower.clamp(_snapSize, maxDimension).toInt();
     }
     if (upperDistance < lowerDistance) {
-      return upper.clamp(_snapSize, _maxDimension).toInt();
+      return upper.clamp(_snapSize, maxDimension).toInt();
     }
 
-    final clampedSource = sourceSize.clamp(_snapSize, _maxDimension).toInt();
+    final clampedSource = sourceSize.clamp(_snapSize, maxDimension).toInt();
     if (clampedSource % _snapSize == 0 &&
         (clampedSource == lower || clampedSource == upper)) {
       return clampedSource;
     }
 
     return requestedSize >= sourceSize
-        ? upper.clamp(_snapSize, _maxDimension).toInt()
-        : lower.clamp(_snapSize, _maxDimension).toInt();
+        ? upper.clamp(_snapSize, maxDimension).toInt()
+        : lower.clamp(_snapSize, maxDimension).toInt();
   }
 
   static img.Image _createExpandedSource(

@@ -13,6 +13,7 @@ import '../../core/utils/vibe_export_utils.dart';
 import '../../data/services/precise_ref_library_archive_service.dart';
 import '../../data/services/precise_ref_library_storage_service.dart';
 import '../agent_chat/services/agent_resource_resolver.dart';
+import '../agent_chat/services/online_gallery_resource_identity.dart';
 import '../providers/copy_drag_watermark_provider.dart';
 import '../providers/share_image_settings_provider.dart';
 import '../providers/vibe_library_provider.dart';
@@ -33,12 +34,12 @@ class CardResourceDragFactory {
     final stripMetadata = _ref
         .read(shareImageSettingsProvider)
         .effectiveStripMetadataForCopyAndDrag;
-    final name = FileNameSanitizer.sanitize(
+    final name = FileNameSanitizer.segment(
       reference.display['name'] ??
           reference.display['title'] ??
           reference.resourceId,
       fallback: 'resource',
-      maxLength: 80,
+      maxCodePoints: 80,
     );
     var extension = 'png';
     FileFormat format = Formats.png;
@@ -100,16 +101,7 @@ class CardResourceDragFactory {
       default:
         String? originalExtension;
         if (reference.kind == AgentChatResourceKind.onlineGalleryMedia) {
-          final item = _ref
-              .read(onlineGalleryNotifierProvider)
-              .posts
-              .where(
-                (item) =>
-                    item.sourceId.key == reference.source &&
-                    item.sourceWorkId == reference.resourceId,
-              )
-              .firstOrNull;
-          originalExtension = item?.cover.extension ?? item?.fileExt;
+          originalExtension = _onlineMediaExtension(reference);
         } else {
           originalExtension = 'png';
         }
@@ -156,6 +148,32 @@ class CardResourceDragFactory {
       format: format,
       prepare: prepare,
     );
+  }
+
+  String? _onlineMediaExtension(AgentChatResourceReference reference) {
+    final identity = OnlineGalleryResourceIdentity.fromReference(reference);
+    if (identity == null) return null;
+    final item = _ref
+        .read(onlineGalleryNotifierProvider)
+        .posts
+        .where(identity.matches)
+        .firstOrNull;
+    if (item == null) return null;
+    final mediaId = identity.mediaId;
+    final coverExtension = item.coverMediaId == null
+        ? null
+        : item.cover.extension ?? item.fileExt;
+    if (coverExtension != null &&
+        (mediaId == null || mediaId == item.coverMediaId)) {
+      return coverExtension;
+    }
+    final media = _ref
+        .read(onlineGalleryNotifierProvider.notifier)
+        .peekDetail(item)
+        ?.media
+        .where((value) => mediaId == null || value.id == mediaId)
+        .firstOrNull;
+    return media?.extension ?? coverExtension;
   }
 
   static FileFormat _portableFormat(String extension) => SimpleFileFormat(

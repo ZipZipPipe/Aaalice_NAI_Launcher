@@ -6,9 +6,12 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 import '../../../core/utils/app_logger.dart';
 import '../../../data/datasources/remote/nai_image_generation_api_service.dart';
 import '../../../data/models/image/image_params.dart';
+import '../../../data/models/image/image_stream_chunk.dart';
 import 'generation_models.dart';
 import 'generation_settings_notifiers.dart';
 import 'image_generation_service.dart';
+import 'stream_preview_decode.dart';
+import 'stream_preview_publication.dart';
 import '../dlss_provider.dart';
 
 part 'batch_generation_notifier.g.dart';
@@ -190,9 +193,14 @@ class BatchGenerationNotifier extends _$BatchGenerationNotifier {
   final Set<ImageGenerationService> _activeServices = {};
   int _epoch = 0;
   int? _cancelledEpoch;
+  late StreamPreviewPublication _previewPublication;
 
   @override
   BatchGenerationState build() {
+    _previewPublication = StreamPreviewPublication(
+      resolve: ref.read(streamPreviewImageResolverProvider),
+      lifecycle: ref.read(streamPreviewLifecycleReaderProvider),
+    );
     ref.onDispose(_invalidateActiveTasks);
     return const BatchGenerationState();
   }
@@ -206,6 +214,7 @@ class BatchGenerationNotifier extends _$BatchGenerationNotifier {
 
   void _invalidateActiveTasks() {
     _epoch++;
+    _previewPublication.clear();
     for (final service in _activeServices.toList()) {
       service.cancel();
     }
@@ -289,6 +298,7 @@ class BatchGenerationNotifier extends _$BatchGenerationNotifier {
         clearStreamPreview: true,
         errorMessage: failed == count ? '所有生成任务失败' : null,
       );
+      _previewPublication.clear();
 
       AppLogger.d(
         'Batch generation completed: completed=$completed, failed=$failed',
@@ -345,39 +355,7 @@ class BatchGenerationNotifier extends _$BatchGenerationNotifier {
     state = state.copyWith(currentIndex: index + 1);
 
     try {
-      // 为每个图像使用不同的随机种子
-      final singleParams = params.copyWith(
-        nSamples: 1,
-        seed: params.seed == -1 ? -1 : params.seed + index,
-      );
-
-      final service = createService();
-      _activeServices.add(service);
-      late final ImageGenerationResult result;
-      try {
-        result = await service.generateSingle(
-          singleParams,
-          onProgress: (current, total, progress, {previewImage}) {
-            if (!_isCurrent(epoch)) return;
-
-            // 更新单个项目的进度
-            _updateItem(
-              index,
-              (current) => current.copyWith(progress: progress),
-              epoch,
-            );
-
-            // 更新总体进度
-            final overallProgress = (index + progress) / total;
-            state = state.copyWith(
-              overallProgress: overallProgress,
-              streamPreview: previewImage,
-            );
-          },
-        );
-      } finally {
-        _activeServices.remove(service);
-      }
+      final result = await _executeSingle(params, index, epoch, createService);
       if (!_isCurrent(epoch)) return;
 
       if (result.images.isNotEmpty) {
@@ -428,6 +406,59 @@ class BatchGenerationNotifier extends _$BatchGenerationNotifier {
     }
   }
 
+  Future<ImageGenerationResult> _executeSingle(
+    ImageParams params,
+    int index,
+    int epoch,
+    ImageGenerationService Function() createService,
+  ) async {
+    final singleParams = params.copyWith(
+      nSamples: 1,
+      seed: params.seed == -1 ? -1 : params.seed + index,
+    );
+    final service = createService();
+    _activeServices.add(service);
+    try {
+      return await service.generateSingle(
+        singleParams,
+        onProgress: (current, total, progress, {previewImage}) {
+          if (!_isCurrent(epoch)) return;
+          _previewPublication.add(
+            slot: service,
+            frame: previewImage == null
+                ? null
+                : StreamPreviewFrame(bytes: previewImage),
+            isCurrent: () => _isCurrent(epoch) && _cancelledEpoch != epoch,
+            publish: (latest) =>
+                _publishProgress(index, total, progress, previewImage, latest),
+          );
+        },
+        onCompleting: () => _previewPublication.closeSlot(service),
+      );
+    } finally {
+      _previewPublication.closeSlot(service);
+      _activeServices.remove(service);
+    }
+  }
+
+  void _publishProgress(
+    int index,
+    int total,
+    double progress,
+    Uint8List? preview,
+    bool latest,
+  ) {
+    final items = List<BatchGenerationItem>.of(state.items);
+    items[index] = items[index].copyWith(progress: progress);
+    state = state.copyWith(
+      items: items,
+      overallProgress: latest
+          ? (index + progress) / total
+          : state.overallProgress,
+      streamPreview: latest ? preview : state.streamPreview,
+    );
+  }
+
   /// 更新单个项目（使用原子更新模式避免竞态条件）
   ///
   /// 注意：此方法使用 Riverpod 的原子更新模式，通过读取最新的 state 来确保
@@ -452,6 +483,7 @@ class BatchGenerationNotifier extends _$BatchGenerationNotifier {
     // Keep this epoch while completed network images finish cancellation of NR.
     // Starting another batch still invalidates the old epoch normally.
     _cancelledEpoch = _epoch;
+    _previewPublication.clear();
     for (final service in _activeServices) {
       service.cancel();
     }
@@ -471,6 +503,7 @@ class BatchGenerationNotifier extends _$BatchGenerationNotifier {
   void reset() {
     // reset 只清空本地状态，不应把仍由服务端处理的请求解释为用户取消。
     _epoch++;
+    _previewPublication.clear();
     state = const BatchGenerationState();
   }
 

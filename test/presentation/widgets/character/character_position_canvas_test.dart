@@ -12,6 +12,10 @@ import 'package:nai_launcher/presentation/providers/image_generation_provider.da
 import 'package:nai_launcher/presentation/widgets/character/character_position_canvas.dart';
 import 'package:nai_launcher/presentation/widgets/common/composition_guide.dart';
 import 'package:nai_launcher/presentation/widgets/common/decoded_memory_image.dart';
+import 'package:nai_launcher/presentation/widgets/common/drag_claim_notification.dart';
+import 'package:nai_launcher/presentation/widgets/common/surface_ink_well.dart';
+
+import '../../../helpers/ink_expectations.dart';
 
 /// 惰性生成状态：真实 Notifier 内部有持续性任务会阻止测试进程退出
 class _IdleImageGenerationNotifier extends ImageGenerationNotifier {
@@ -342,6 +346,71 @@ void main() {
       await Future<void>.delayed(Duration.zero);
     });
 
+    testWidgets('角色切换芯片的悬停与按压反馈画在芯片底色之上', (tester) async {
+      await tester.pumpWidget(buildTestApp());
+      final container = ProviderScope.containerOf(
+        tester.element(find.byType(CharacterPositionCanvasView)),
+      );
+      final notifier = container.read(characterPromptNotifierProvider.notifier);
+      notifier.addCharacter(CharacterGender.female, name: 'Alice');
+      notifier.addCharacter(CharacterGender.male, name: 'Bob');
+      notifier.setGlobalAiChoice(false);
+      // 预览区 provider 链可能存在持续性 timer，用固定帧替代 pumpAndSettle
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      Finder chip(String name) => find.ancestor(
+        of: find.text(name),
+        matching: find.byType(SurfaceInkWell),
+      );
+      final theme = Theme.of(tester.element(chip('Alice')));
+      final mouse = await hoverOver(tester, chip('Alice'));
+      for (final name in const ['Alice', 'Bob']) {
+        await moveMouseTo(tester, mouse, chip(name));
+        expectInkOnTop(
+          tester,
+          chip(name),
+          ink: theme.hoverColor,
+          below: tester.widget<SurfaceInkWell>(chip(name)).color,
+          reason: name,
+        );
+      }
+
+      final press = await pressAndHold(tester, chip('Alice'));
+      expectInkOnTop(
+        tester,
+        chip('Alice'),
+        ink: theme.highlightColor,
+        below: tester.widget<SurfaceInkWell>(chip('Alice')).color,
+      );
+      await press.up();
+      await tester.pump(const Duration(milliseconds: 300));
+    });
+
+    testWidgets('中间角色禁用后按启用顺序编号，禁用角色不显示编号', (tester) async {
+      await tester.pumpWidget(buildTestApp());
+      final container = ProviderScope.containerOf(
+        tester.element(find.byType(CharacterPositionCanvasView)),
+      );
+      final notifier = container.read(characterPromptNotifierProvider.notifier);
+      notifier.addCharacter(CharacterGender.female, name: 'Alice');
+      notifier.addCharacter(CharacterGender.male, name: 'Bob');
+      notifier.addCharacter(CharacterGender.female, name: 'Carol');
+      notifier.setGlobalAiChoice(false);
+      final bob = container
+          .read(characterPromptNotifierProvider)
+          .characters
+          .singleWhere((character) => character.name == 'Bob');
+      notifier.toggleCharacterEnabled(bob.id);
+      // 预览区 provider 链可能存在持续性 timer，用固定帧替代 pumpAndSettle
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.text('1'), findsWidgets);
+      expect(find.text('2'), findsWidgets);
+      expect(find.text('3'), findsNothing);
+    });
+
     testWidgets('自定义模式显示锚点，AI 选择模式隐藏锚点', (tester) async {
       await tester.pumpWidget(buildTestApp());
       final container = ProviderScope.containerOf(
@@ -436,6 +505,46 @@ void main() {
 
       await dragAnchor();
       expect(columnOf(), greaterThan(withoutGuide));
+    });
+
+    testWidgets('拖动锚点会认领拖拽，外层上下滑快捷手势让位', (tester) async {
+      var claims = 0;
+      await tester.pumpWidget(
+        NotificationListener<DragClaimNotification>(
+          onNotification: (_) {
+            claims++;
+            return false;
+          },
+          child: buildTestApp(),
+        ),
+      );
+      final container = ProviderScope.containerOf(
+        tester.element(find.byType(CharacterPositionCanvasView)),
+      );
+      final notifier = container.read(characterPromptNotifierProvider.notifier);
+      notifier.addCharacter(CharacterGender.female, name: 'Alice');
+      notifier.setGlobalAiChoice(false);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      final characterId = container
+          .read(characterPromptNotifierProvider)
+          .characters
+          .single
+          .id;
+      final gesture = await tester.startGesture(
+        tester.getCenter(
+          find.byKey(ValueKey<String>('canvas-anchor-$characterId')),
+        ),
+      );
+      for (var step = 0; step < 3; step++) {
+        await gesture.moveBy(const Offset(0, -24));
+        await tester.pump();
+      }
+      await gesture.up();
+      await tester.pump();
+
+      expect(claims, 1);
     });
 
     testWidgets('极矮画布真实拖动不抛异常并限制背景解码尺寸', (tester) async {

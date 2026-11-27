@@ -2,7 +2,7 @@ import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hive/hive.dart';
+import 'package:hive_ce/hive_ce.dart';
 import 'package:nai_launcher/core/constants/storage_keys.dart';
 import 'package:nai_launcher/core/storage/local_storage_service.dart';
 import 'package:nai_launcher/core/watermark/watermark_logo_service.dart';
@@ -86,6 +86,46 @@ void main() {
     expect(
       storage.getSetting<String>(StorageKeys.watermarkLogoPathV1),
       'C:/private/logo.png',
+    );
+  });
+
+  test('logo availability follows the stored path and logo style', () async {
+    final logoFile = File('${directory.path}/logo.png')
+      ..writeAsBytesSync(const [1, 2, 3]);
+    final container = createContainer();
+    final notifier = container.read(watermarkSettingsProvider.notifier);
+
+    expect(
+      await container.read(watermarkLocalLogoMissingProvider.future),
+      isFalse,
+      reason: 'a disabled logo style never reports a missing file',
+    );
+
+    await notifier.updateConfiguration(
+      const WatermarkSettings(logoStyle: WatermarkLogoStyle(enabled: true)),
+    );
+    expect(
+      await container.read(watermarkLocalLogoMissingProvider.future),
+      isTrue,
+    );
+
+    await notifier.updateLocalLogoPath(logoFile.path);
+    expect(
+      await container.read(watermarkLocalLogoMissingProvider.future),
+      isFalse,
+    );
+
+    logoFile.deleteSync();
+    container.invalidate(watermarkLocalLogoMissingProvider);
+    expect(
+      await container.read(watermarkLocalLogoMissingProvider.future),
+      isTrue,
+    );
+
+    await notifier.clearLocalLogoPath();
+    expect(
+      await container.read(watermarkLocalLogoMissingProvider.future),
+      isTrue,
     );
   });
 

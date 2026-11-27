@@ -1,6 +1,8 @@
 import 'package:freezed_annotation/freezed_annotation.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../../core/utils/emphasis_weight_format.dart';
+
 part 'prompt_tag.freezed.dart';
 part 'prompt_tag.g.dart';
 
@@ -19,7 +21,7 @@ enum WeightSyntaxType {
 /// 提示词标签数据模型
 /// 用于可视化标签管理
 @freezed
-class PromptTag with _$PromptTag {
+abstract class PromptTag with _$PromptTag {
   const PromptTag._();
 
   const factory PromptTag({
@@ -116,13 +118,7 @@ class PromptTag with _$PromptTag {
     switch (syntaxType) {
       case WeightSyntaxType.numeric:
         // 数值语法: weight::content::
-        final weightStr = weight == weight.truncateToDouble()
-            ? weight.toInt().toString()
-            : weight
-                .toStringAsFixed(2)
-                .replaceAll(RegExp(r'0+$'), '')
-                .replaceAll(RegExp(r'\.$'), '');
-        return '$weightStr::$text::';
+        return '${formatEmphasisWeight(weight)}::$text::';
 
       case WeightSyntaxType.bracket:
       case WeightSyntaxType.none:
@@ -182,12 +178,6 @@ class PromptTag with _$PromptTag {
       return '$layers';
     }
     return '';
-  }
-
-  /// 获取权重百分比显示
-  String get weightPercentText {
-    final percent = (weight * 100).round();
-    return '$percent%';
   }
 }
 

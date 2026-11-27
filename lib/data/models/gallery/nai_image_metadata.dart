@@ -1,11 +1,16 @@
 import 'dart:convert';
 
 import 'package:freezed_annotation/freezed_annotation.dart';
-import 'package:hive/hive.dart';
+import 'package:hive_ce/hive_ce.dart';
 
+import '../../../core/constants/api_constants.dart';
+import '../../../core/constants/model_capabilities.dart';
+import '../../../core/enums/image_model_mode.dart';
+import '../../../core/utils/novelai_dataset_prefix.dart';
 import '../image/image_params.dart';
 import '../fixed_tag/fixed_tag_usage_snapshot.dart';
 import '../vibe/vibe_reference.dart';
+import 'fixed_tag_usage_projection.dart';
 import 'nai_image_metadata_raw_decoder.dart';
 import 'nai_metadata_prompt_projection.dart';
 
@@ -17,7 +22,7 @@ part 'nai_image_metadata.g.dart';
 /// 用于存储V4多角色提示词的详细信息
 @HiveType(typeId: 25)
 @freezed
-class CharacterPromptInfo with _$CharacterPromptInfo {
+abstract class CharacterPromptInfo with _$CharacterPromptInfo {
   const factory CharacterPromptInfo({
     /// 角色提示词内容
     @HiveField(0) required String prompt,
@@ -47,7 +52,7 @@ class CharacterPromptInfo with _$CharacterPromptInfo {
 /// 从 PNG 图片的 stealth_pngcomp 隐写数据中提取的生成参数
 @HiveType(typeId: 24)
 @freezed
-class NaiImageMetadata with _$NaiImageMetadata {
+abstract class NaiImageMetadata with _$NaiImageMetadata {
   const factory NaiImageMetadata({
     /// 正向提示词
     @HiveField(0) @Default('') String prompt,
@@ -186,6 +191,12 @@ class NaiImageMetadata with _$NaiImageMetadata {
 
   const NaiImageMetadata._();
 
+  /// 挂载固定词使用快照，并同步投影出四个固定词列表。
+  ///
+  /// 所有挂快照的入口都必须走这里，漏投影会让固定词对全应用隐身。
+  NaiImageMetadata withFixedTagUsageData(Map<String, dynamic>? data) =>
+      projectFixedTagUsageSnapshot(copyWith(fixedTagUsageData: data));
+
   FixedTagUsageSnapshot? get fixedTagUsageSnapshot {
     final data = fixedTagUsageData;
     if (data == null) return null;
@@ -199,16 +210,45 @@ class NaiImageMetadata with _$NaiImageMetadata {
   String? get sourceModel =>
       NaiImageMetadataRawDecoder.modelIdFromSource(source);
 
-  /// 用于导入/展示的模型 ID。Source 是官方图片的模型来源，优先级高于旧缓存中的 model。
-  String? get effectiveModel => sourceModel ?? model;
+  /// 官网对认不出指纹的 Source 的家族归类。
+  String? get sourceDefaultModel =>
+      NaiImageMetadataRawDecoder.defaultModelIdFromSource(source);
+
+  /// 用于导入/展示的模型 ID。Source 是官方图片的模型来源，优先级高于旧缓存中的 model；
+  /// 旧版本缓存的 model 不含家族归类，最后再补。
+  String? get effectiveModel => sourceModel ?? model ?? sourceDefaultModel;
+
+  /// 可以直接用于生成的模型 ID，取值顺序同 [effectiveModel]；都无法识别时为 null。
+  String? get importableModel =>
+      ImageModels.importableModelId(sourceModel) ??
+      ImageModels.importableModelId(model) ??
+      ImageModels.importableModelId(sourceDefaultModel);
+
+  /// 生成时使用的 Anime / Furry 模式，模型没有该模式或无法判断时为 null。
+  ImageModelMode? get modelMode {
+    final model = effectiveModel;
+    final recorded = originalPrompt;
+    if (model == null || recorded == null) return null;
+    return NovelAiDatasetPrefix.strip(
+      recorded,
+      capabilities: ModelCapabilityRegistry.of(model),
+    ).mode;
+  }
 
   NaiImageMetadata upgradeFromRawJsonIfNeeded() {
     final sourceResolvedModel = sourceModel;
     final base = sourceResolvedModel != null && model != sourceResolvedModel
         ? copyWith(model: sourceResolvedModel)
         : this;
+    // Source 认不出具体模型时，缓存的 model 可能只是家族默认值，Comment 记录的模型要重解析才能取代它
+    final modelMayBeFallback =
+        base.model == null ||
+        (sourceResolvedModel == null && base.model == base.sourceDefaultModel);
     final raw = base.rawJson;
-    if (raw == null || raw.isEmpty || !_rawJsonMayContainUpgrade(raw)) {
+    if (raw == null ||
+        raw.isEmpty ||
+        !(_rawJsonMayContainUpgrade(raw) ||
+            (modelMayBeFallback && _rawJsonMayNameModel(raw)))) {
       return base;
     }
 
@@ -220,12 +260,10 @@ class NaiImageMetadata with _$NaiImageMetadata {
       );
       if (reparsed == null || !reparsed.hasData) return base;
       return base.copyWith(
-        prompt:
-            base.prompt == base.originalPrompt &&
-                reparsed.prompt != reparsed.originalPrompt
+        prompt: _adoptsReparsedPrompt(base, reparsed)
             ? reparsed.prompt
             : base.prompt,
-        model: base.model ?? reparsed.model,
+        model: modelMayBeFallback ? reparsed.model ?? base.model : base.model,
         characterPrompts: base.characterPrompts.isEmpty
             ? reparsed.characterPrompts
             : base.characterPrompts,
@@ -242,6 +280,7 @@ class NaiImageMetadata with _$NaiImageMetadata {
             ? reparsed.vibeReferences
             : base.vibeReferences,
         varietyPlus: base.varietyPlus ?? reparsed.varietyPlus,
+        ucPreset: base.ucPreset ?? reparsed.ucPreset,
         qualityToggle: base.qualityToggle ?? reparsed.qualityToggle,
         qualityTier: base.qualityTier ?? reparsed.qualityTier,
         fixedPrefixTags: base.fixedPrefixTags.isEmpty
@@ -293,6 +332,38 @@ class NaiImageMetadata with _$NaiImageMetadata {
     NaiImageMetadataRawDecoder.decode(json, rawJson: rawJson),
   );
 
+  /// 信封自带的 Software/Source 优先于容器旁路字段：旧版 WebP 的 EXIF Software 只写了 "NovelAI"。
+  static ({String? software, String? source}) envelopeAttribution(
+    Map<String, dynamic> envelope, {
+    String? software,
+    String? source,
+  }) => (
+    software: _textField(envelope, 'Software') ?? software,
+    source: _textField(envelope, 'Source') ?? source,
+  );
+
+  /// 官网外层信封（EXIF UserComment 与 alpha 隐写的载荷）只把生成参数放在 Comment 里；
+  /// [raw] 是这种信封时返回其中 Comment 的 JSON 原文，否则原样返回。
+  static String unwrapEnvelopeComment(String raw) {
+    final Object? decoded;
+    try {
+      decoded = jsonDecode(raw);
+    } on FormatException {
+      return raw;
+    }
+    if (decoded is! Map || decoded.containsKey('prompt')) return raw;
+    return switch (decoded['Comment'] ?? decoded['comment']) {
+      final String comment when comment.isNotEmpty => comment,
+      final Map<dynamic, dynamic> comment => jsonEncode(comment),
+      _ => raw,
+    };
+  }
+
+  static String? _textField(Map<String, dynamic> json, String key) {
+    final value = json[key] ?? json[key.toLowerCase()];
+    return value is String && value.isNotEmpty ? value : null;
+  }
+
   bool get hasData => NaiMetadataPromptProjection(this).hasData;
 
   bool get hasRecordedTransparentBackgroundTag =>
@@ -311,8 +382,11 @@ class NaiImageMetadata with _$NaiImageMetadata {
   String get promptWithoutFixedTags =>
       NaiMetadataPromptProjection(this).promptWithoutFixedTags;
 
-  String get negativePromptWithoutFixedTags =>
-      NaiMetadataPromptProjection(this).negativePromptWithoutFixedTags;
+  UcPresetSplit get negativePresetSplit =>
+      NaiMetadataPromptProjection(this).negativePresetSplit;
+
+  String get mainNegativePrompt =>
+      NaiMetadataPromptProjection(this).mainNegativePrompt;
 
   String get fullPrompt => NaiMetadataPromptProjection(this).fullPrompt;
 
@@ -340,6 +414,9 @@ class NaiImageMetadata with _$NaiImageMetadata {
 }
 
 NaiImageMetadata _metadataFromFields(NaiImageMetadataFields fields) =>
+    projectFixedTagUsageSnapshot(_rawMetadataFromFields(fields));
+
+NaiImageMetadata _rawMetadataFromFields(NaiImageMetadataFields fields) =>
     NaiImageMetadata(
       prompt: fields.prompt,
       negativePrompt: fields.negativePrompt,
@@ -395,6 +472,14 @@ NaiImageMetadata _metadataFromFields(NaiImageMetadataFields fields) =>
       hasRecordedFixedTagFields: fields.hasRecordedFixedTagFields,
     );
 
+/// 旧缓存可能早于自动文本段或数据集前缀的剥离规则，此时改用重新解析的结果。
+bool _adoptsReparsedPrompt(NaiImageMetadata base, NaiImageMetadata reparsed) {
+  if (reparsed.prompt == reparsed.originalPrompt) return false;
+  if (base.prompt == base.originalPrompt) return true;
+  return NovelAiDatasetPrefix.hasFurryPrefix(base.prompt) &&
+      !NovelAiDatasetPrefix.hasFurryPrefix(reparsed.prompt);
+}
+
 bool _rawJsonMayContainUpgrade(String raw) {
   final text = raw.toLowerCase();
   const markers = [
@@ -407,6 +492,7 @@ bool _rawJsonMayContainUpgrade(String raw) {
     'skip_cfg_above_sigma',
     'tag_hint_transparent_background',
     'tag_hint_qt',
+    'tag_hint_uc_preset',
     'quality_tier',
     'fixed_prefix',
     'fixed_suffix',
@@ -419,6 +505,10 @@ bool _rawJsonMayContainUpgrade(String raw) {
   return markers.any(text.contains);
 }
 
+// 旧版本缓存只从 Source 取 model，Comment 里记录的 model 要重解析才能补上；信封里的 Comment 是转义过的字符串
+bool _rawJsonMayNameModel(String raw) =>
+    raw.contains('"model"') || raw.contains(r'\"model\"');
+
 NaiImageMetadata? _decodeRawMetadata(
   String raw, {
   String? software,
@@ -428,19 +518,25 @@ NaiImageMetadata? _decodeRawMetadata(
   if (decoded is! Map) return null;
   final data = Map<String, dynamic>.from(decoded);
   final nestedComment = data['Comment'] ?? data['comment'];
-  final resolvedSoftware =
-      software ?? data['Software'] as String? ?? data['software'] as String?;
-  final resolvedSource =
-      source ?? data['Source'] as String? ?? data['source'] as String?;
-  final comment = nestedComment is String && nestedComment.isNotEmpty
+  final envelopeComment = nestedComment is String && nestedComment.isNotEmpty
       ? nestedComment
       : nestedComment is Map
       ? jsonEncode(nestedComment)
-      : raw;
+      : null;
+  final attribution = envelopeComment == null
+      ? (
+          software: software ?? NaiImageMetadata._textField(data, 'Software'),
+          source: source ?? NaiImageMetadata._textField(data, 'Source'),
+        )
+      : NaiImageMetadata.envelopeAttribution(
+          data,
+          software: software,
+          source: source,
+        );
   return NaiImageMetadata.fromNaiComment({
-    'Comment': comment,
-    'Software': resolvedSoftware,
-    'Source': resolvedSource,
+    'Comment': envelopeComment ?? raw,
+    'Software': attribution.software,
+    'Source': attribution.source,
   }, rawJson: raw);
 }
 

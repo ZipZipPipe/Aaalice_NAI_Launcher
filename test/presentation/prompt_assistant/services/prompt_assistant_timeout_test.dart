@@ -4,7 +4,7 @@ import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
-import 'package:nai_launcher/presentation/prompt_assistant/models/prompt_assistant_models.dart';
+import 'package:nai_launcher/data/models/prompt_assistant/prompt_assistant_models.dart';
 import 'package:nai_launcher/presentation/prompt_assistant/services/prompt_assistant_api_client.dart';
 import 'package:nai_launcher/presentation/prompt_assistant/services/provider_adapters/prompt_assistant_adapter.dart';
 
@@ -130,6 +130,46 @@ void main() {
     await pending;
   });
 
+  test('错误 endpoint 不包含认证信息、查询串或片段', () async {
+    final dio = _Dio();
+    final requestOptions = RequestOptions(
+      path: 'https://user:password@example.test/v1/chat/completions'
+          '?key=secret#frag',
+    );
+    when(
+      () => dio.post<dynamic>(
+        any(),
+        data: any(named: 'data'),
+        options: any(named: 'options'),
+        cancelToken: any(named: 'cancelToken'),
+      ),
+    ).thenThrow(
+      DioException(
+        requestOptions: requestOptions,
+        response: Response<dynamic>(
+          requestOptions: requestOptions,
+          statusCode: 500,
+        ),
+        type: DioExceptionType.badResponse,
+        message: 'failed',
+      ),
+    );
+
+    await expectLater(
+      PromptAssistantApiClient(dio: dio)
+          .complete(request: _request(ProviderProtocol.openaiChatCompletions))
+          .toList(),
+      throwsA(
+        isA<PromptAssistantRequestException>().having(
+          (error) => error.message,
+          'message',
+          'LLM request failed: HTTP 500: provider=Test: model=test: '
+              'endpoint=https://example.test/v1/chat/completions: failed',
+        ),
+      ),
+    );
+  });
+
   test('接收超时错误保留等待时长和调整入口', () async {
     final dio = _Dio();
     when(
@@ -153,10 +193,18 @@ void main() {
         isA<StateError>().having(
           (e) => e.message,
           'message',
-          contains('timeout=900s'),
+          allOf(contains('timeout=900s'), isNot(contains('endpoint='))),
         ),
       ),
     );
+    verify(
+      () => dio.post<dynamic>(
+        any(),
+        data: any(named: 'data'),
+        options: any(named: 'options'),
+        cancelToken: any(named: 'cancelToken'),
+      ),
+    ).called(1);
   });
 }
 

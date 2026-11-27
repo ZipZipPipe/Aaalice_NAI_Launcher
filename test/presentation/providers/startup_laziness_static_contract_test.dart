@@ -41,6 +41,20 @@ void main() {
     expect(criticalStart, greaterThanOrEqualTo(0));
     expect(mainShellStart, greaterThan(criticalStart));
     expect(deferredStart, greaterThan(mainShellStart));
+    final criticalSource = initializationSource.substring(
+      criticalStart,
+      mainShellStart,
+    );
+    expect(
+      criticalSource,
+      isNot(
+        matches(
+          RegExp(
+            r'HiveStartupBoxOpener\.openBox(?:<[^>]+>)?\(\s*StorageKeys\.historyBox\b',
+          ),
+        ),
+      ),
+    );
     final mainShellSource = initializationSource.substring(
       mainShellStart,
       deferredStart,
@@ -50,7 +64,7 @@ void main() {
     expect(mainShellSource, contains('tagLibraryNotifierProvider.notifier'));
     expect(mainShellSource, contains('officialWordlistDataProvider.future'));
     expect(mainShellSource, contains('layoutState.rightPanelExpanded'));
-    expect(mainShellSource, contains('rightPanelTab == 0'));
+    expect(mainShellSource, contains('chatVisibleAtStartup'));
     expect(mainShellSource, contains('agentChatNotifierProvider.notifier'));
     expect(mainShellSource, contains('tagGroupCacheServiceProvider'));
     expect(mainShellSource, contains('onlineGalleryNotifierProvider'));
@@ -77,7 +91,7 @@ void main() {
     ).readAsStringSync();
     expect(
       agentNotifierSource,
-      contains('AgentChatNotifier(ref, initializeImmediately: false)'),
+      contains('AgentChatNotifier(initializeImmediately: false)'),
     );
     final agentPanelSource = File(
       'lib/presentation/agent_chat/widgets/agent_chat_panel.dart',

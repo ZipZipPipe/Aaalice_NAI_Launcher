@@ -1,12 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 
 import '../../models/agent_protocol.dart';
-import '../../models/prompt_assistant_models.dart';
+import '../llm_request_retry_policy.dart';
+import 'reasoning_rejection.dart';
 
 /// SSE（Server-Sent Events）增量解析器。
 ///
@@ -86,56 +86,56 @@ class AgentSseParser {
   }
 }
 
+// 自动重试只按错误文本分类，Dart 传输异常的原文（含本地化的系统错误）不在
+// 分类词表里，需显式标注。
+const _networkErrorLabel = 'network error';
+
 /// 把 dio/网络异常映射为线错误事件。
-AgentWireError agentWireErrorFrom(Object error, ProviderConfig provider) {
+AgentWireError agentWireErrorFrom(Object error, AgentChatRequest request) {
+  final provider = request.provider;
+  final networkLabel = _isTransientConnectionError(error)
+      ? ': $_networkErrorLabel'
+      : '';
   if (error is DioException) {
     if (error.type == DioExceptionType.cancel) {
       return const AgentWireError('aborted');
     }
     final status = error.response?.statusCode;
-    final detail = _extractDetail(error.response?.data) ?? error.message ?? '';
-    final transient =
-        status == 429 ||
-        (status != null && status >= 500) ||
-        error.type == DioExceptionType.receiveTimeout ||
-        error.type == DioExceptionType.connectionTimeout ||
-        error.type == DioExceptionType.connectionError;
-    final lowered = detail.toLowerCase();
-    final overloaded =
-        lowered.contains('overloaded') || lowered.contains('rate limit');
+    final field = rejectedReasoningField(error);
+    final responseDetail = providerErrorDetail(error.response?.data);
+    final detail =
+        responseDetail ??
+        (field == null ? error.message : error.response?.data.toString()) ??
+        error.error?.toString() ??
+        '';
     return AgentWireError(
       'LLM request failed'
       '${status != null ? ': HTTP $status' : ''}'
+      '$networkLabel'
       ': provider=${provider.name}'
+      '${field == null ? '' : ', model=${request.model}'}'
       '${detail.trim().isNotEmpty ? ': $detail' : ''}',
-      transient: transient || overloaded,
+      retryMessage: status == null
+          ? '$detail$networkLabel'
+          : [
+              'HTTP $status',
+              if (responseDetail != null) responseDetail,
+            ].join(': '),
+      rejectedReasoningField: field,
     );
   }
+  if (error is ProviderResponseError) {
+    return AgentWireError(
+      error.describe(provider.name, request.model),
+      retryMessage: error.message,
+      rejectedReasoningField: error.field,
+    );
+  }
+  final detail = error.toString();
   return AgentWireError(
-    'LLM request failed: provider=${provider.name}: '
-    '${error.toString()}',
+    'LLM request failed$networkLabel: provider=${provider.name}: $detail',
+    retryMessage: '$detail$networkLabel',
   );
-}
-
-String? _extractDetail(dynamic data) {
-  if (data is Map) {
-    if (data['error'] is Map) {
-      final message = data['error']['message'];
-      if (message is String && message.trim().isNotEmpty) {
-        return message;
-      }
-    }
-    if (data['error'] is String) {
-      return data['error'] as String;
-    }
-    if (data['message'] is String) {
-      return data['message'] as String;
-    }
-  }
-  if (data is String && data.trim().isNotEmpty) {
-    return data;
-  }
-  return null;
 }
 
 /// 解析一条 SSE data 为 JSON 对象；非 JSON 返回 null。
@@ -155,48 +155,6 @@ Map<String, dynamic>? parseSseJson(String data) {
   return null;
 }
 
-/// 流式 POST：返回 SSE 字节流。
-Stream<Uint8List> agentStreamPost(
-  Dio dio, {
-  required String endpoint,
-  required Object payload,
-  required Map<String, dynamic> headers,
-  required CancelToken cancelToken,
-  Duration? receiveTimeout = const Duration(minutes: 5),
-}) async* {
-  var receivedBytes = false;
-  for (var attempt = 0; ; attempt++) {
-    if (cancelToken.cancelError case final error?) throw error;
-    try {
-      await for (final chunk in _agentStreamPostOnce(
-        dio,
-        endpoint: endpoint,
-        payload: payload,
-        headers: headers,
-        cancelToken: cancelToken,
-        receiveTimeout: receiveTimeout,
-      )) {
-        if (chunk.isNotEmpty) receivedBytes = true;
-        yield chunk;
-      }
-      return;
-    } on Object catch (error) {
-      if (cancelToken.cancelError case final cancelled?) throw cancelled;
-      // Never replay a stream after bytes have reached its parser, even if
-      // those bytes have not yet produced a visible text or tool event.
-      if (receivedBytes ||
-          attempt >= 2 ||
-          !_isTransientConnectionError(error)) {
-        rethrow;
-      }
-      await _waitForRetry(
-        Duration(milliseconds: 500 * (1 << attempt)),
-        cancelToken,
-      );
-    }
-  }
-}
-
 bool _isTransientConnectionError(Object error) {
   if (error is DioException) {
     if (error.response != null) return false;
@@ -210,33 +168,17 @@ bool _isTransientConnectionError(Object error) {
       _ => false,
     };
   }
-  if (error is HandshakeException) {
-    // Certificate failures require configuration changes, not another request.
-    return error.message.toLowerCase().contains(
-      'connection terminated during handshake',
-    );
-  }
-  return error is SocketException || error is TimeoutException;
+  return error is TimeoutException || isTransientNetworkFailure(error);
 }
 
-Future<void> _waitForRetry(Duration delay, CancelToken cancelToken) async {
-  final ready = Completer<void>();
-  final timer = Timer(delay, ready.complete);
-  try {
-    await Future.any([ready.future, cancelToken.whenCancel]);
-    if (cancelToken.cancelError case final error?) throw error;
-  } finally {
-    timer.cancel();
-  }
-}
-
-Stream<Uint8List> _agentStreamPostOnce(
+/// 流式 POST：返回 SSE 字节流。只发一次请求，重试预算由智能体外层统一管理。
+Stream<Uint8List> agentStreamPost(
   Dio dio, {
   required String endpoint,
   required Object payload,
   required Map<String, dynamic> headers,
   required CancelToken cancelToken,
-  required Duration? receiveTimeout,
+  Duration? receiveTimeout = const Duration(minutes: 5),
 }) async* {
   late final Response<ResponseBody> response;
   try {

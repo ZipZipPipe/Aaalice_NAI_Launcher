@@ -8,7 +8,10 @@ import '../../statistics_state.dart';
 /// Animated refresh button with hover effects and rotation animation
 /// 带悬停效果和旋转动画的刷新按钮
 class AnimatedRefreshButton extends ConsumerStatefulWidget {
-  const AnimatedRefreshButton({super.key});
+  const AnimatedRefreshButton({super.key, this.iconOnly = false});
+
+  /// 窄屏或大字号时只显示图标，文字改由提示和语义标签提供
+  final bool iconOnly;
 
   @override
   ConsumerState<AnimatedRefreshButton> createState() =>
@@ -65,7 +68,7 @@ class _AnimatedRefreshButtonState extends ConsumerState<AnimatedRefreshButton>
       _rotationController.reset();
     }
 
-    return MouseRegion(
+    final button = MouseRegion(
       onEnter: (_) => setState(() => _isHovered = true),
       onExit: (_) => setState(() => _isHovered = false),
       child: GestureDetector(
@@ -87,39 +90,45 @@ class _AnimatedRefreshButtonState extends ConsumerState<AnimatedRefreshButton>
             mainAxisSize: MainAxisSize.min,
             children: [
               // Animated rotating icon
-              AnimatedBuilder(
-                animation: _rotationController,
-                builder: (context, child) {
-                  return Transform.rotate(
-                    angle: _rotationController.value * 2 * 3.14159,
-                    child: Icon(
-                      Icons.refresh_rounded,
-                      size: 16,
-                      color: _isHovered && !isLoading
-                          ? colorScheme.primary
-                          : colorScheme.onSurfaceVariant,
-                    ),
-                  );
-                },
-              ),
-              const SizedBox(width: 6),
-              // Text with animated color
-              AnimatedDefaultTextStyle(
-                duration: reducedMotion
-                    ? Duration.zero
-                    : theme.appTheme.fastDuration,
-                style: theme.textTheme.bodySmall!.copyWith(
-                  color: _isHovered && !isLoading
-                      ? colorScheme.primary
-                      : colorScheme.onSurfaceVariant,
-                  fontWeight: FontWeight.w500,
+              RepaintBoundary(
+                child: AnimatedBuilder(
+                  animation: _rotationController,
+                  builder: (context, child) {
+                    return Transform.rotate(
+                      angle: _rotationController.value * 2 * 3.14159,
+                      child: Icon(
+                        Icons.refresh_rounded,
+                        size: 16,
+                        color: _isHovered && !isLoading
+                            ? colorScheme.primary
+                            : colorScheme.onSurfaceVariant,
+                      ),
+                    );
+                  },
                 ),
-                child: Text(l10n.statistics_refresh),
               ),
+              if (!widget.iconOnly) ...[
+                const SizedBox(width: 6),
+                // Text with animated color
+                AnimatedDefaultTextStyle(
+                  duration: reducedMotion
+                      ? Duration.zero
+                      : theme.appTheme.fastDuration,
+                  style: theme.textTheme.bodySmall!.copyWith(
+                    color: _isHovered && !isLoading
+                        ? colorScheme.primary
+                        : colorScheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w500,
+                  ),
+                  child: Text(l10n.statistics_refresh),
+                ),
+              ],
             ],
           ),
         ),
       ),
     );
+    if (!widget.iconOnly) return button;
+    return Tooltip(message: l10n.statistics_refresh, child: button);
   }
 }

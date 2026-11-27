@@ -1,34 +1,46 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/misc.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hive_flutter/hive_flutter.dart';
+import 'package:hive_ce_flutter/hive_ce_flutter.dart';
 import 'package:image/image.dart' as img;
 import 'package:mocktail/mocktail.dart';
 import 'package:nai_launcher/core/constants/api_constants.dart';
+import 'package:nai_launcher/core/utils/focused_inpaint_input_exception.dart';
+import 'package:nai_launcher/core/utils/focused_inpaint_utils.dart';
 import 'package:nai_launcher/core/utils/image_save_utils.dart';
 import 'package:nai_launcher/core/constants/storage_keys.dart';
 import 'package:nai_launcher/data/datasources/remote/nai_image_enhancement_api_service.dart';
 import 'package:nai_launcher/data/datasources/remote/nai_image_generation_api_service.dart';
 import 'package:nai_launcher/data/models/fixed_tag/fixed_tag_entry.dart';
 import 'package:nai_launcher/data/models/fixed_tag/fixed_tag_prompt_type.dart';
+import 'package:nai_launcher/data/models/gallery/gallery_index_admission.dart';
 import 'package:nai_launcher/data/models/gallery/nai_image_metadata.dart';
 import 'package:nai_launcher/data/services/metadata/unified_metadata_parser.dart';
 import 'package:nai_launcher/data/models/image/image_params.dart';
 import 'package:nai_launcher/data/models/image/image_stream_chunk.dart';
 import 'package:nai_launcher/data/models/user/user_subscription.dart';
 import 'package:nai_launcher/data/models/vibe/vibe_reference.dart';
-import 'package:nai_launcher/presentation/providers/auth_provider.dart';
+import 'package:nai_launcher/data/services/auth_provider.dart';
 import 'package:nai_launcher/presentation/providers/generation/image_workflow_controller.dart';
+import 'package:nai_launcher/presentation/providers/generation/generation_request_resolution.dart';
+import 'package:nai_launcher/presentation/providers/generation/stream_preview_decode.dart';
 import 'package:nai_launcher/presentation/providers/image_generation_provider.dart';
 import 'package:nai_launcher/presentation/providers/image_save_settings_provider.dart';
 import 'package:nai_launcher/presentation/providers/local_gallery_provider.dart';
 import 'package:nai_launcher/presentation/providers/subscription_provider.dart';
 import 'package:nai_launcher/presentation/providers/notification_settings_provider.dart';
+import 'package:nai_launcher/presentation/services/generation_history_storage_service.dart';
+import 'package:path/path.dart' as p;
+
+import '../../helpers/controlled_preview_images.dart';
+import '../../helpers/corrupt_png.dart';
 
 class MockNAIImageGenerationApiService extends Mock
     implements NAIImageGenerationApiService {}
@@ -49,6 +61,9 @@ ProviderContainer _createAuthenticatedContainer({
   return ProviderContainer(
     overrides: [
       authNotifierProvider.overrideWith(_AuthenticatedAuthNotifier.new),
+      streamPreviewImageResolverProvider.overrideWithValue(
+        resolvedPreviewImage,
+      ),
       ...overrides,
     ],
   );
@@ -85,8 +100,9 @@ class TestLocalGalleryNotifier extends LocalGalleryNotifier {
   LocalGalleryState build() => const LocalGalleryState(isInitialized: true);
 
   @override
-  Future<int> addNewlySavedImages(List<String> filePaths) async =>
-      filePaths.length;
+  Future<GalleryIndexAdmission> addNewlySavedImages(
+    List<String> filePaths,
+  ) async => GalleryIndexAdmission.added;
 }
 
 void main() {
@@ -99,7 +115,7 @@ void main() {
     hiveTempDir = await Directory.systemTemp.createTemp('nai_launcher_hive_');
     Hive.init(hiveTempDir.path);
     await Hive.openBox(StorageKeys.settingsBox);
-    await Hive.openBox(StorageKeys.historyBox);
+    await Hive.openLazyBox<dynamic>(StorageKeys.historyBox);
     await Hive.openBox(StorageKeys.statisticsCacheBox);
   });
 
@@ -107,12 +123,17 @@ void main() {
     await Hive.close();
     if (!await hiveTempDir.exists()) return;
 
-    for (var attempt = 0; attempt < 5; attempt++) {
+    const attempts = 50;
+    for (var attempt = 1; attempt <= attempts; attempt++) {
       try {
         await hiveTempDir.delete(recursive: true);
         return;
       } on FileSystemException {
-        if (attempt == 4) rethrow;
+        if (attempt == attempts) {
+          // Windows 可能在关闭后仍持有句柄；hosted runner 用完即弃，交给系统回收
+          if (Platform.isWindows) return;
+          rethrow;
+        }
         await Future<void>.delayed(const Duration(milliseconds: 100));
       }
     }
@@ -150,18 +171,13 @@ void main() {
       },
     );
 
-    test('image comparison source accepts enhance grid rounding only', () {
+    test('image comparison source accepts enhance grid rounding', () {
       final sourceBytes = _validImageBytes(width: 832, height: 1216);
       final source = ImageComparisonSource.fromBytes(sourceBytes);
 
       expect(source, isNotNull);
       expect(source!.bytes, orderedEquals(sourceBytes));
       expect(source.bytes, isNot(same(sourceBytes)));
-      expect(source.isCompatibleWithDimensions(1664, 2432), isTrue);
-      expect(source.isCompatibleWithDimensions(1280, 1792), isTrue);
-      expect(source.isCompatibleWithDimensions(1280, 1856), isTrue);
-      expect(source.isCompatibleWithDimensions(1792, 1792), isFalse);
-      expect(source.isCompatibleWithDimensions(1280, 2048), isFalse);
 
       final compatible = GeneratedImage.create(
         _validImageBytes(width: 1280, height: 1792),
@@ -244,6 +260,180 @@ void main() {
       },
     );
 
+    test(
+      'ordinary inpaint and a focus fallback reject the illegal whole size before transport',
+      () async {
+        final api = MockNAIImageGenerationApiService();
+        final local = _createAuthenticatedContainer(
+          overrides: [
+            naiImageGenerationApiServiceProvider.overrideWithValue(api),
+          ],
+        );
+        addTearDown(local.dispose);
+        final params = ImageParams(
+          width: 1664,
+          height: 2432,
+          action: ImageGenerationAction.infill,
+          sourceImage: _validImageBytes(width: 384, height: 256),
+          maskImage: _validMaskBytes(width: 320, height: 256),
+        );
+        for (final enabled in [false, true]) {
+          await local
+              .read(imageGenerationNotifierProvider.notifier)
+              .generate(
+                params,
+                focusedOverride: GenerationFocusedSnapshot(
+                  enabled: enabled,
+                  minimumContextMegaPixels: 96,
+                ),
+              );
+          expect(
+            local.read(imageGenerationNotifierProvider).errorMessage,
+            'GENERATION_ERROR_INVALID_RESOLUTION|1664|2432|1472|2112',
+          );
+        }
+        verifyZeroInteractions(api);
+      },
+    );
+
+    test(
+      'invalid frames and an overlong focused request never reach transport',
+      () async {
+        final api = MockNAIImageGenerationApiService();
+        final local = _createAuthenticatedContainer(
+          overrides: [
+            naiImageGenerationApiServiceProvider.overrideWithValue(api),
+          ],
+        );
+        addTearDown(local.dispose);
+        final source = _validImageBytes(width: 512, height: 256);
+        final mask = _validMaskBytes(width: 512, height: 256);
+        for (final (frame, expected) in [
+          (
+            const Rect.fromLTWH(-1, 0, 256, 256),
+            equals(FocusedInpaintInputException.invalidCropCode),
+          ),
+          (
+            const Rect.fromLTWH(0, 0, 64, 64),
+            equals(FocusedInpaintInputException.invalidCropCode),
+          ),
+          (
+            const Rect.fromLTWH(0, 100, 512, 16),
+            startsWith('GENERATION_ERROR_INVALID_RESOLUTION|5760|128|'),
+          ),
+        ]) {
+          local
+              .read(imageWorkflowControllerProvider.notifier)
+              .applyInpaintEditorResult(
+                sourceImage: source,
+                sourceWidth: 512,
+                sourceHeight: 256,
+                maskImage: mask,
+                sourceIsOutpaint: false,
+                focusedInpaintEnabled: true,
+                minimumContextMegaPixels: 96,
+                focusedSelectionRect: null,
+                focusedContextCrop: frame,
+              );
+          await local
+              .read(imageGenerationNotifierProvider.notifier)
+              .generate(local.read(generationParamsNotifierProvider));
+          expect(
+            local.read(imageGenerationNotifierProvider).errorMessage,
+            expected,
+          );
+        }
+        verifyZeroInteractions(api);
+      },
+    );
+
+    test('unreadable focused images fail locally before transport', () async {
+      final api = MockNAIImageGenerationApiService();
+      final local = _createAuthenticatedContainer(
+        overrides: [
+          naiImageGenerationApiServiceProvider.overrideWithValue(api),
+        ],
+      );
+      addTearDown(local.dispose);
+      final source = _validImageBytes(width: 128, height: 128);
+      final mask = _validMaskBytes(width: 128, height: 128);
+      for (final (sourceInput, maskInput) in [
+        (corruptPngPixelData(source), mask),
+        (source, corruptPngPixelData(mask)),
+        (Uint8List.fromList([0]), mask),
+      ]) {
+        await local
+            .read(imageGenerationNotifierProvider.notifier)
+            .generate(
+              ImageParams(
+                width: 128,
+                height: 128,
+                action: ImageGenerationAction.infill,
+                sourceImage: sourceInput,
+                maskImage: maskInput,
+              ),
+              focusedOverride: const GenerationFocusedSnapshot(
+                enabled: true,
+                minimumContextMegaPixels: 96,
+              ),
+            );
+        final state = local.read(imageGenerationNotifierProvider);
+        expect(state.status, GenerationStatus.error);
+        expect(
+          state.errorMessage,
+          FocusedInpaintInputException.decodeFailedCode,
+        );
+      }
+      verifyZeroInteractions(api);
+    });
+
+    test(
+      'a cancelled preflight cannot overwrite a newer input error',
+      () async {
+        final started = Completer<void>();
+        final previous = Completer<FocusedInpaintGeometry?>();
+        final api = MockNAIImageGenerationApiService();
+        final local = _createAuthenticatedContainer(
+          overrides: [
+            naiImageGenerationApiServiceProvider.overrideWithValue(api),
+            focusedRequestGeometryProvider.overrideWith((ref, input) {
+              started.complete();
+              return previous.future;
+            }),
+          ],
+        );
+        addTearDown(local.dispose);
+        final generation = local.read(imageGenerationNotifierProvider.notifier);
+        final pending = generation.generate(
+          ImageParams(
+            width: 128,
+            height: 128,
+            action: ImageGenerationAction.infill,
+            sourceImage: _validImageBytes(width: 128, height: 128),
+            maskImage: _validMaskBytes(width: 128, height: 128),
+          ),
+          focusedOverride: const GenerationFocusedSnapshot(
+            enabled: true,
+            minimumContextMegaPixels: 96,
+          ),
+        );
+        await started.future;
+        generation.cancel();
+        await generation.generate(const ImageParams(width: 1080, height: 1920));
+        previous.completeError(
+          const FocusedInpaintInputException.decodeFailed(
+            FocusedInpaintInput.source,
+          ),
+        );
+        await pending;
+        expect(
+          local.read(imageGenerationNotifierProvider).errorMessage,
+          'GENERATION_ERROR_INVALID_RESOLUTION|1080|1920|1088|1920',
+        );
+        verifyZeroInteractions(api);
+      },
+    );
+
     test('rejects non-64-grid resolution before sending a request', () async {
       container.read(subscriptionNotifierProvider);
       final params = container
@@ -285,6 +475,79 @@ void main() {
           state.errorMessage,
           'GENERATION_ERROR_UNSUPPORTED_RANDOM_MODEL|future-unknown-model',
         );
+      },
+    );
+
+    test(
+      'externally supplied prompts bypass random mode while page runs keep it',
+      () async {
+        final mockApiService = MockNAIImageGenerationApiService();
+        ImageParams? capturedParams;
+        when(
+          () => mockApiService.generateImage(
+            any(),
+            onProgress: any(named: 'onProgress'),
+            focusedInpaintEnabled: any(named: 'focusedInpaintEnabled'),
+            minimumContextMegaPixels: any(named: 'minimumContextMegaPixels'),
+            focusedSelectionRect: any(named: 'focusedSelectionRect'),
+          ),
+        ).thenAnswer((invocation) async {
+          capturedParams = invocation.positionalArguments.first as ImageParams;
+          return ([_validImageBytes(width: 512, height: 768)], <int, String>{});
+        });
+        when(
+          () => mockApiService.generateImageStream(
+            any(),
+            focusedInpaintEnabled: any(named: 'focusedInpaintEnabled'),
+            minimumContextMegaPixels: any(named: 'minimumContextMegaPixels'),
+            focusedSelectionRect: any(named: 'focusedSelectionRect'),
+          ),
+        ).thenAnswer((_) => const Stream.empty());
+        container.dispose();
+        container = _createAuthenticatedContainer(
+          overrides: [
+            naiImageGenerationApiServiceProvider.overrideWithValue(
+              mockApiService,
+            ),
+            subscriptionNotifierProvider.overrideWith(
+              TestSubscriptionNotifier.new,
+            ),
+          ],
+        );
+        await container
+            .read(notificationSettingsNotifierProvider.notifier)
+            .setSoundEnabled(false);
+        container.read(subscriptionNotifierProvider);
+        container.read(randomPromptModeProvider.notifier).set(true);
+        final params = container
+            .read(generationParamsNotifierProvider)
+            .copyWith(
+              model: 'future-unknown-model',
+              prompt: 'agent prompt',
+              width: 512,
+              height: 768,
+            );
+
+        final notifier = container.read(
+          imageGenerationNotifierProvider.notifier,
+        );
+
+        await notifier.generate(params);
+        expect(
+          container.read(imageGenerationNotifierProvider).errorMessage,
+          'GENERATION_ERROR_UNSUPPORTED_RANDOM_MODEL|future-unknown-model',
+        );
+        expect(capturedParams, isNull);
+
+        await notifier.generate(
+          params,
+          preserveCharacterSnapshot: true,
+          bypassRandomPrompt: true,
+        );
+        final state = container.read(imageGenerationNotifierProvider);
+        expect(state.status, GenerationStatus.completed);
+        expect(capturedParams?.prompt, 'agent prompt');
+        expect(container.read(randomPromptModeProvider), isTrue);
       },
     );
 
@@ -756,6 +1019,74 @@ void main() {
     );
 
     test(
+      'clearHistory removes unreadable and queued records before new saves',
+      () async {
+        final box = Hive.lazyBox<dynamic>(StorageKeys.historyBox);
+        const orderKey = 'generation_history_v1_order';
+        const recordPrefix = 'generation_history_v1_record_';
+        final bytes = _validImageBytes(width: 64, height: 64);
+        final raw = {'bytes': bytes, 'width': 64, 'height': 64};
+        await box.putAll({
+          orderKey: ['kept', 'unreadable'],
+          '${recordPrefix}kept': raw,
+          '${recordPrefix}unreadable': {...raw, 'kind': 42},
+        });
+
+        final storage = GenerationHistoryStorageService();
+        final historyContainer = _createAuthenticatedContainer(
+          overrides: [
+            generationHistoryStorageServiceProvider.overrideWithValue(storage),
+            localGalleryNotifierProvider.overrideWith(
+              TestLocalGalleryNotifier.new,
+            ),
+          ],
+        );
+        addTearDown(() async {
+          historyContainer.dispose();
+          await storage.flush();
+          await box.clear();
+        });
+        final notifier = historyContainer.read(
+          imageGenerationNotifierProvider.notifier,
+        );
+        await notifier.ensureGenerationHistoryRestored();
+        expect(
+          historyContainer
+              .read(imageGenerationNotifierProvider)
+              .history
+              .single
+              .id,
+          'kept',
+        );
+
+        final earlierSave = storage.persistImages(
+          changedImages: [
+            GeneratedImage(id: 'queued', bytes: bytes, width: 64, height: 64),
+          ],
+          order: const ['queued', 'kept'],
+        );
+        notifier.clearHistory();
+        await earlierSave;
+        await notifier.flushGenerationHistory();
+        expect(box.keys.toSet(), {orderKey});
+        expect(await box.get(orderKey), isEmpty);
+
+        await notifier.registerExternalImage(
+          bytes,
+          params: const ImageParams(),
+          embedNaiMetadata: false,
+        );
+        await notifier.flushGenerationHistory();
+        final newImage = historyContainer
+            .read(imageGenerationNotifierProvider)
+            .history
+            .single;
+        expect(await box.get(orderKey), [newImage.id]);
+        expect(box.keys.toSet(), {orderKey, '$recordPrefix${newImage.id}'});
+      },
+    );
+
+    test(
       'registerExternalImage should save image locally when requested',
       () async {
         final notifier = container.read(
@@ -781,6 +1112,60 @@ void main() {
             .first;
         expect(savedImage.filePath, isNotNull);
         expect(File(savedImage.filePath!).existsSync(), isTrue);
+      },
+    );
+
+    test(
+      'registerExternalImage with a shared createdAt names sibling outputs identically except the suffix',
+      () async {
+        final notifier = container.read(
+          imageGenerationNotifierProvider.notifier,
+        );
+        final params = container.read(generationParamsNotifierProvider);
+        final tempDir = await Directory.systemTemp.createTemp(
+          'nai_launcher_director_siblings_',
+        );
+        addTearDown(() => tempDir.delete(recursive: true));
+        final createdAt = DateTime(2026, 1, 2, 3, 4, 5);
+        const suffixes = <String>['_blend', '_generated', '_masked'];
+
+        final savedPaths = <String>[];
+        for (final suffix in suffixes) {
+          final savedPath = await notifier.registerExternalImage(
+            _validImageBytes(width: 512, height: 768),
+            params: params,
+            saveToLocal: true,
+            saveDirectoryPath: tempDir.path,
+            syncToGalleryIndex: false,
+            fileNameSuffix: suffix,
+            createdAt: createdAt,
+          );
+          savedPaths.add(savedPath!);
+        }
+
+        final history = container
+            .read(imageGenerationNotifierProvider)
+            .history
+            .take(suffixes.length);
+        expect(history.map((image) => image.createdAt).toSet(), {createdAt});
+        expect(
+          {for (final image in history) image.filePath: image.fileNameSuffix},
+          {
+            for (final (index, path) in savedPaths.indexed)
+              path: suffixes[index],
+          },
+        );
+        final stems = savedPaths.map(p.basenameWithoutExtension).toList();
+        final sharedStems = <String>{
+          for (final (index, stem) in stems.indexed)
+            stem.substring(0, stem.length - suffixes[index].length),
+        };
+        for (final (index, stem) in stems.indexed) {
+          expect(stem, endsWith(suffixes[index]));
+        }
+        expect(sharedStems, hasLength(1));
+        expect(sharedStems.single, startsWith('03-04-05'));
+        expect(savedPaths.map(p.dirname).toSet(), hasLength(1));
       },
     );
 
@@ -829,11 +1214,9 @@ void main() {
         expect(savedImage.preserveOriginalBytesOnSave, isTrue);
         expect(savedImage.bytes, orderedEquals(originalBytes));
         expect(savedBytes, orderedEquals(originalBytes));
-        expect(
-          UnifiedMetadataParser.extractPngTextData(savedBytes)['prompt'],
-          comfyPrompt,
-        );
-        expect(ImageSaveUtils.hasEmbeddedNovelAiMetadata(savedBytes), isFalse);
+        final textData = UnifiedMetadataParser.extractPngTextData(savedBytes);
+        expect(textData['prompt'], comfyPrompt);
+        expect(textData, isNot(contains('Comment')));
       },
     );
 
@@ -979,6 +1362,16 @@ void main() {
       final mockApiService = MockNAIImageGenerationApiService();
       final originalSource = _validImageBytes(width: 640, height: 960);
       final originalMask = _validMaskBytes(width: 640, height: 960);
+      // API 服务贴回后的结果自带服务端元数据，尺寸已校正为整图。
+      final composedResult = await _buildImageWithEmbeddedMetadata(
+        imageWidth: 640,
+        imageHeight: 960,
+        metadataWidth: 640,
+        metadataHeight: 960,
+        prompt: 'focused server prompt',
+        negativePrompt: 'focused server negative',
+        seed: 9876,
+      );
       when(
         () => mockApiService.generateImage(
           any(),
@@ -997,7 +1390,7 @@ void main() {
         ),
       ).thenAnswer(
         (_) => Stream<ImageStreamChunk>.fromIterable([
-          ImageStreamChunk.complete(_validImageBytes(width: 640, height: 960)),
+          ImageStreamChunk.complete(composedResult),
         ]),
       );
 
@@ -1049,7 +1442,7 @@ void main() {
 
       final params = container
           .read(generationParamsNotifierProvider)
-          .copyWith(width: 1792, height: 896);
+          .copyWith(width: 1664, height: 2432);
       await notifier.generate(params);
 
       final updatedParams = container.read(generationParamsNotifierProvider);
@@ -1068,6 +1461,8 @@ void main() {
         await File(generationState.history.single.filePath!).readAsBytes(),
       );
       expect(savedResult.success, isTrue);
+      expect(savedResult.metadata?.prompt, equals('focused server prompt'));
+      expect(savedResult.metadata?.seed, equals(9876));
       expect(savedResult.metadata?.width, equals(640));
       expect(savedResult.metadata?.height, equals(960));
 
@@ -1738,8 +2133,13 @@ Uint8List _validImageBytes({
 Uint8List _validMaskBytes({required int width, required int height}) {
   final mask = img.Image(width: width, height: height);
   img.fill(mask, color: img.ColorRgb8(0, 0, 0));
-  for (var y = 100; y < 180; y++) {
-    for (var x = 200; x < 280; x++) {
+  const patchSize = 80;
+  final right = math.min(width, 200 + patchSize);
+  final bottom = math.min(height, 100 + patchSize);
+  final left = math.max(0, right - patchSize);
+  final top = math.max(0, bottom - patchSize);
+  for (var y = top; y < bottom; y++) {
+    for (var x = left; x < right; x++) {
       mask.setPixelRgb(x, y, 255, 255, 255);
     }
   }

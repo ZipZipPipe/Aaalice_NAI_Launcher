@@ -1,11 +1,11 @@
 import 'package:dio/dio.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../../core/constants/api_constants.dart';
 import '../../../core/network/dio_client.dart';
 import '../../../core/network/nai_api_endpoint.dart';
 import '../../../core/utils/app_logger.dart';
+import '../../../core/utils/log_url_redaction.dart';
 
 part 'nai_auth_api_service.g.dart';
 
@@ -38,7 +38,7 @@ class NaiEndpointIncompatibleException implements Exception {
 
   @override
   String toString() =>
-      'NaiEndpointIncompatibleException(status: $statusCode, url: $probedUrl)';
+      'NaiEndpointIncompatibleException(status: $statusCode, url: ${redactUrlsInLogText(probedUrl)})';
 }
 
 /// NovelAI Authentication API 服务
@@ -96,8 +96,9 @@ class NAIAuthApiService {
       'NAIAuth',
     );
 
+    final Response<dynamic> response;
     try {
-      final response = await _dio.get(
+      response = await _dio.get(
         endpoint.userUrl(ApiConstants.userSubscriptionEndpoint),
         options: Options(
           headers: {'Authorization': authHeader},
@@ -105,25 +106,6 @@ class NAIAuthApiService {
           sendTimeout: _timeout,
         ),
       );
-
-      final data = response.data;
-      if (data is! Map<String, dynamic>) {
-        // 站点把未知路径兜底成网页时会 200 返回 HTML，视同缺失订阅端点。
-        if (endpoint.isThirdParty) {
-          AppLogger.w(
-            'Third-party /user/subscription returned non-JSON body, '
-            'falling back to image endpoint probe',
-            'NAIAuth',
-          );
-          return _probeThirdPartyImageAuth(endpoint, authHeader);
-        }
-        throw StateError(
-          'Unexpected /user/subscription payload: ${data.runtimeType}',
-        );
-      }
-
-      AppLogger.i('Token validation successful', 'NAIAuth');
-      return TokenValidationResult.subscribed(data);
     } on DioException catch (e) {
       if (endpoint.isThirdParty && e.response?.statusCode == 404) {
         AppLogger.w(
@@ -155,6 +137,25 @@ class NAIAuthApiService {
       }
       rethrow;
     }
+
+    final data = response.data;
+    if (data is! Map<String, dynamic>) {
+      // 站点把未知路径兜底成网页时会 200 返回 HTML，视同缺失订阅端点。
+      if (endpoint.isThirdParty) {
+        AppLogger.w(
+          'Third-party /user/subscription returned non-JSON body, '
+          'falling back to image endpoint probe',
+          'NAIAuth',
+        );
+        return _probeThirdPartyImageAuth(endpoint, authHeader);
+      }
+      throw StateError(
+        'Unexpected /user/subscription payload: ${data.runtimeType}',
+      );
+    }
+
+    AppLogger.i('Token validation successful', 'NAIAuth');
+    return TokenValidationResult.subscribed(data);
   }
 
   /// 用生成端点对第三方 Token 做鉴权探测。
@@ -167,7 +168,10 @@ class NAIAuthApiService {
     String authHeader,
   ) async {
     final probeUrl = endpoint.imageUrl(ApiConstants.generateImageEndpoint);
-    AppLogger.i('Probing third-party auth via $probeUrl', 'NAIAuth');
+    AppLogger.i(
+      'Probing third-party auth via ${redactUrlsInLogText(probeUrl)}',
+      'NAIAuth',
+    );
 
     final response = await _dio.post<dynamic>(
       probeUrl,
@@ -205,7 +209,7 @@ class NAIAuthApiService {
         (status >= 400 && status != 404 && status != 405);
     if (!routeExists) {
       AppLogger.w(
-        'No NAI-compatible image endpoint at $probeUrl (status=$status)',
+        'No NAI-compatible image endpoint at ${redactUrlsInLogText(probeUrl)} (status=$status)',
         'NAIAuth',
       );
       throw NaiEndpointIncompatibleException(

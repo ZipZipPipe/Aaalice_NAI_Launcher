@@ -1,9 +1,9 @@
 import 'dart:typed_data';
 
-import 'package:crypto/crypto.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../core/constants/api_constants.dart';
+import '../../../core/utils/byte_content.dart';
 import '../../../core/utils/nai_resolution_adapter.dart';
 import '../../../data/models/gallery/nai_image_metadata.dart';
 import '../../../data/models/fixed_tag/fixed_tag_usage_snapshot.dart';
@@ -23,13 +23,13 @@ class ImageComparisonSource {
     required this.bytes,
     required this.width,
     required this.height,
-    required String contentDigest,
-  }) : _contentDigest = contentDigest;
+    required int contentFingerprint,
+  }) : _contentFingerprint = contentFingerprint;
 
   final Uint8List bytes;
   final int width;
   final int height;
-  final String _contentDigest;
+  final int _contentFingerprint;
 
   static ImageComparisonSource? fromBytes(
     Uint8List bytes, {
@@ -40,11 +40,10 @@ class ImageComparisonSource {
     final size = NaiResolutionAdapter.readImageSize(bytes);
     if (size == null || size.$1 <= 0 || size.$2 <= 0) return null;
 
-    final contentDigest = sha256.convert(bytes).toString();
+    final contentFingerprint = ByteContent.fingerprint(bytes);
     for (final candidate in reuseCandidates) {
-      if (candidate._contentDigest == contentDigest &&
-          candidate.bytes.length == bytes.length &&
-          _sameBytes(candidate.bytes, bytes)) {
+      if (candidate._contentFingerprint == contentFingerprint &&
+          ByteContent.equals(candidate.bytes, bytes)) {
         return candidate;
       }
     }
@@ -53,30 +52,34 @@ class ImageComparisonSource {
       bytes: Uint8List.fromList(bytes).asUnmodifiableView(),
       width: size.$1,
       height: size.$2,
-      contentDigest: contentDigest,
+      contentFingerprint: contentFingerprint,
     );
   }
 
-  static bool _sameBytes(Uint8List first, Uint8List second) {
-    for (var index = 0; index < first.length; index++) {
-      if (first[index] != second[index]) return false;
-    }
-    return true;
-  }
-
-  /// Accepts an exact aspect ratio or NovelAI Enhance's per-edge grid rounding.
+  /// Accepts an exact ratio, Enhance's grid rounding or per-edge scaler drift.
   bool isCompatibleWithDimensions(int targetWidth, int targetHeight) {
     if (targetWidth <= 0 || targetHeight <= 0) return false;
     if (width * targetHeight == height * targetWidth) return true;
 
     // Enhance rounds each target edge independently to the nearest 64 pixels.
     const grid = ApiConstants.dimensionGrid;
-    if (targetWidth % grid != 0 || targetHeight % grid != 0) return false;
-    const halfGrid = grid ~/ 2;
-    return (targetWidth - halfGrid) * height <=
-            (targetHeight + halfGrid) * width &&
-        (targetHeight - halfGrid) * width <= (targetWidth + halfGrid) * height;
+    if (targetWidth % grid == 0 && targetHeight % grid == 0) {
+      const halfGrid = grid ~/ 2;
+      if ((targetWidth - halfGrid) * height <=
+              (targetHeight + halfGrid) * width &&
+          (targetHeight - halfGrid) * width <=
+              (targetWidth + halfGrid) * height) {
+        return true;
+      }
+    }
+
+    final sourceRatio = width / height;
+    return (targetWidth / targetHeight - sourceRatio).abs() <=
+        sourceRatio * _maxRoundingAspectDrift;
   }
+
+  // Edge rounding drifts the ratio by far less than any recomposition.
+  static const double _maxRoundingAspectDrift = 0.04;
 }
 
 /// 生成的图像（带唯一ID）
@@ -99,6 +102,9 @@ class GeneratedImage {
   /// 保存时跳过启动器的 PNG 元数据补写，保持接收到的文件字节不变。
   final bool preserveOriginalBytesOnSave;
 
+  /// 按命名规则保存时追加在文件名末尾，区分同一次操作返回的多张结果。
+  final String fileNameSuffix;
+
   /// 已保存的文件路径（如果有）
   /// 当图像被保存到磁盘后，此字段会被填充
   final String? filePath;
@@ -115,25 +121,30 @@ class GeneratedImage {
     this.postprocessError,
     this.comparisonSource,
     this.preserveOriginalBytesOnSave = false,
+    this.fileNameSuffix = '',
     this.filePath,
   }) : createdAt = createdAt ?? DateTime.now();
 
-  /// 创建新的生成图像（自动生成ID）
+  /// 创建新的生成图像；未指定 [id] 时自动生成。
   factory GeneratedImage.create(
     Uint8List bytes, {
     required int width,
     required int height,
+    String? id,
+    DateTime? createdAt,
     GeneratedImageKind kind = GeneratedImageKind.completed,
     NaiImageMetadata? metadata,
     FixedTagUsageSnapshot? fixedTagUsageSnapshot,
     String? postprocessError,
     ImageComparisonSource? comparisonSource,
     bool preserveOriginalBytesOnSave = false,
+    String fileNameSuffix = '',
   }) {
     final encodedSize = NaiResolutionAdapter.readImageSize(bytes);
     return GeneratedImage(
-      id: const Uuid().v4(),
+      id: id ?? const Uuid().v4(),
       bytes: bytes,
+      createdAt: createdAt,
       width: encodedSize?.$1 ?? width,
       height: encodedSize?.$2 ?? height,
       kind: kind,
@@ -142,6 +153,7 @@ class GeneratedImage {
       postprocessError: postprocessError,
       comparisonSource: comparisonSource,
       preserveOriginalBytesOnSave: preserveOriginalBytesOnSave,
+      fileNameSuffix: fileNameSuffix,
     );
   }
 
@@ -158,6 +170,7 @@ class GeneratedImage {
       fixedTagUsageSnapshot: fixedTagUsageSnapshot,
       comparisonSource: comparisonSource,
       preserveOriginalBytesOnSave: preserveOriginalBytesOnSave,
+      fileNameSuffix: fileNameSuffix,
       filePath: path,
       postprocessError: postprocessError,
     );
@@ -272,6 +285,7 @@ class ImageGenerationState {
 
   /// 一次生成调用是否仍在进行：从点击到整条调用结算（含读盘、编码、跑批与收尾）。
   final bool isSubmitting;
+  final bool preparationCancelled;
 
   const ImageGenerationState({
     this.status = GenerationStatus.idle,
@@ -291,6 +305,7 @@ class ImageGenerationState {
     this.displayWidth,
     this.displayHeight,
     this.isSubmitting = false,
+    this.preparationCancelled = false,
   });
 
   ImageGenerationState copyWith({
@@ -313,6 +328,7 @@ class ImageGenerationState {
     int? displayWidth,
     int? displayHeight,
     bool? isSubmitting,
+    bool preparationCancelled = false,
   }) {
     return ImageGenerationState(
       status: status ?? this.status,
@@ -339,6 +355,7 @@ class ImageGenerationState {
       displayWidth: displayWidth ?? this.displayWidth,
       displayHeight: displayHeight ?? this.displayHeight,
       isSubmitting: isSubmitting ?? this.isSubmitting,
+      preparationCancelled: preparationCancelled,
     );
   }
 
@@ -358,7 +375,17 @@ class ImageGenerationState {
       streamPreviewSlots.any((slot) => slot.previewBytes?.isNotEmpty == true);
 }
 
-extension ImageGenerationStateImages on ImageGenerationState {
+/// The image lists a panel shell needs, projected out of the full state.
+///
+/// Record equality compares the three lists by identity, so subscribers stay
+/// quiet while streaming previews rewrite the rest of the state.
+typedef GenerationPanelImages = ({
+  List<GeneratedImage> currentImages,
+  List<GeneratedImage> history,
+  List<GeneratedImage> displayImages,
+});
+
+extension GenerationPanelImagesProjection on GenerationPanelImages {
   /// Images in the same order as the history panel: current batch first, then
   /// newest-to-oldest history, with duplicate ids removed.
   List<GeneratedImage> get mergedPanelImages {
@@ -396,4 +423,22 @@ extension ImageGenerationStateImages on ImageGenerationState {
     if (display.any((image) => image.id == target.id)) return display;
     return [target];
   }
+}
+
+extension ImageGenerationStateImages on ImageGenerationState {
+  GenerationPanelImages get panelImages => (
+    currentImages: currentImages,
+    history: history,
+    displayImages: displayImages,
+  );
+
+  List<GeneratedImage> get mergedPanelImages => panelImages.mergedPanelImages;
+
+  List<GeneratedImage> get selectableMergedImages =>
+      panelImages.selectableMergedImages;
+
+  GeneratedImage? findImageById(String? id) => panelImages.findImageById(id);
+
+  List<GeneratedImage> detailSequenceFor(GeneratedImage target) =>
+      panelImages.detailSequenceFor(target);
 }

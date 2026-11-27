@@ -4,6 +4,8 @@ import 'dart:typed_data';
 import 'package:image/image.dart' as img;
 
 import '../constants/api_constants.dart';
+import 'decoded_image_size.dart';
+import 'exif_orientation.dart';
 import 'isolate_pool.dart';
 import 'pica_lanczos_resizer.dart';
 
@@ -259,7 +261,7 @@ class NaiResolutionAdapter {
     img.Image? decoded;
     final imageSize = readImageSize(imageBytes);
     if (imageSize == null) {
-      decoded = img.decodeImage(imageBytes);
+      decoded = ExifOrientation.decodeUpright(imageBytes);
       if (decoded == null) return null;
     }
 
@@ -284,7 +286,7 @@ class NaiResolutionAdapter {
       );
     }
 
-    decoded ??= img.decodeImage(imageBytes);
+    decoded ??= ExifOrientation.decodeUpright(imageBytes);
     if (decoded == null) return null;
     final resized = PicaLanczosResizer.resizeImage(
       decoded,
@@ -345,20 +347,22 @@ class NaiResolutionAdapter {
     required int targetHeight,
   }) {
     // 先读元数据：尺寸已匹配时不解码、不重采样也不重新编码。
-    if (_imageSizeMatches(imageBytes, targetWidth, targetHeight)) {
+    if (_sendsUnchanged(imageBytes, targetWidth, targetHeight)) {
       return imageBytes;
     }
 
     final img.Image? decoded;
     try {
-      decoded = img.decodeImage(imageBytes);
+      decoded = ExifOrientation.decodeUpright(imageBytes);
     } catch (_) {
       return null;
     }
     if (decoded == null) return null;
 
     if (decoded.width == targetWidth && decoded.height == targetHeight) {
-      return imageBytes;
+      return ExifOrientation.transformsPixels(imageBytes)
+          ? ExifOrientation.encodeUpload(decoded)
+          : imageBytes;
     }
 
     final resized = PicaLanczosResizer.resizeImage(
@@ -416,7 +420,7 @@ class NaiResolutionAdapter {
     img.Image? decoded;
     final imageSize = readImageSize(imageBytes);
     if (imageSize == null) {
-      decoded = img.decodeImage(imageBytes);
+      decoded = ExifOrientation.decodeUpright(imageBytes);
       if (decoded == null) return null;
     }
 
@@ -462,7 +466,7 @@ class NaiResolutionAdapter {
       );
     }
 
-    decoded ??= img.decodeImage(imageBytes);
+    decoded ??= ExifOrientation.decodeUpright(imageBytes);
     if (decoded == null) return null;
     final resized = PicaLanczosResizer.resizeImage(
       decoded,
@@ -496,7 +500,7 @@ class NaiResolutionAdapter {
     required int targetHeight,
   }) {
     // 尺寸已匹配时直接短路，连 isolate 往返都省掉。
-    if (_imageSizeMatches(imageBytes, targetWidth, targetHeight)) {
+    if (_sendsUnchanged(imageBytes, targetWidth, targetHeight)) {
       return Future.value(imageBytes);
     }
     return ComputeGate().runIsolate(
@@ -511,25 +515,22 @@ class NaiResolutionAdapter {
   // ==================== 内部方法 ====================
 
   /// 源图比例与当前请求尺寸一致且不更大时，官网会沿用当前尺寸并在发送前放大源图。
-  static ({int width, int height, double scaleFactor})? _reuseCurrentRequestSize(
+  static ({int width, int height, double scaleFactor})?
+  _reuseCurrentRequestSize(
     int sourceWidth,
     int sourceHeight, {
     required int? currentWidth,
     required int? currentHeight,
   }) {
-    if (currentWidth == null || currentHeight == null) return null;
-
-    final sourceAspect = sourceWidth / sourceHeight;
-    if (currentWidth / currentHeight != sourceAspect) return null;
-
-    var orientedWidth = sourceWidth;
-    var orientedHeight = sourceHeight;
-    if (sourceAspect > 1) {
-      final temp = orientedWidth;
-      orientedWidth = orientedHeight;
-      orientedHeight = temp;
+    if (currentWidth == null ||
+        currentHeight == null ||
+        !isGenerationCompatible(currentWidth, currentHeight)) {
+      return null;
     }
-    if (orientedWidth > currentWidth || orientedHeight > currentHeight) {
+
+    if (sourceWidth > currentWidth ||
+        sourceHeight > currentHeight ||
+        sourceWidth / sourceHeight != currentWidth / currentHeight) {
       return null;
     }
 
@@ -561,62 +562,17 @@ class NaiResolutionAdapter {
     return nearest <= 0 ? _officialGridSize : nearest;
   }
 
-  static bool _isPng(Uint8List bytes) {
-    return bytes.length >= 8 &&
-        bytes[0] == 0x89 &&
-        bytes[1] == 0x50 &&
-        bytes[2] == 0x4E &&
-        bytes[3] == 0x47 &&
-        bytes[4] == 0x0D &&
-        bytes[5] == 0x0A &&
-        bytes[6] == 0x1A &&
-        bytes[7] == 0x0A;
-  }
-
-  static bool _imageSizeMatches(Uint8List bytes, int width, int height) {
+  // 官网只发经 canvas 转正的 PNG，带方向的 JPEG 与 WebP 不能原样直通
+  static bool _sendsUnchanged(Uint8List bytes, int width, int height) {
+    if (ExifOrientation.transformsPixels(bytes)) return false;
     final size = readImageSize(bytes);
     return size != null && size.$1 == width && size.$2 == height;
   }
 
-  /// 只解析编码头获取画布尺寸，不解码任何像素帧。
-  static (int, int)? readImageSize(Uint8List bytes) {
-    final pngSize = _tryReadPngSize(bytes);
-    if (pngSize != null) {
-      return pngSize;
-    }
-    try {
-      final decoder = img.findDecoderForData(bytes);
-      final info = decoder?.startDecode(bytes);
-      if (info == null || info.width <= 0 || info.height <= 0) {
-        return null;
-      }
-      return (info.width, info.height);
-    } catch (_) {
-      return null;
-    }
-  }
-
-  /// 从 PNG IHDR 直接读取宽高（签名 8 字节 + 长度 4 字节 + 'IHDR' + w/h）。
-  /// 非 PNG 或头部异常时返回 null，由调用方回退到完整解码。
-  static (int, int)? _tryReadPngSize(Uint8List bytes) {
-    if (bytes.length < 24 || !_isPng(bytes)) {
-      return null;
-    }
-    if (bytes[12] != 0x49 ||
-        bytes[13] != 0x48 ||
-        bytes[14] != 0x44 ||
-        bytes[15] != 0x52) {
-      return null;
-    }
-    final width =
-        (bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19];
-    final height =
-        (bytes[20] << 24) | (bytes[21] << 16) | (bytes[22] << 8) | bytes[23];
-    if (width <= 0 || height <= 0) {
-      return null;
-    }
-    return (width, height);
-  }
+  /// 只解析编码头得到转正后的像素宽高：JPEG 与 WebP 计入 EXIF 方向，
+  /// PNG/JPEG/WebP 以外的格式取编码头声明的画布尺寸。
+  static (int, int)? readImageSize(Uint8List bytes) =>
+      DecodedImageSize.readDeclaredSize(bytes);
 
   static double _combinedScale(int srcW, int srcH, int dstW, int dstH) {
     final scaleW = dstW / srcW;
@@ -638,8 +594,10 @@ class NaiGenerationResolutionIssue {
   final int suggestedWidth;
   final int suggestedHeight;
 
+  static const errorCodePrefix = 'GENERATION_ERROR_INVALID_RESOLUTION';
+
   String get errorCode =>
-      'GENERATION_ERROR_INVALID_RESOLUTION|$width|$height|$suggestedWidth|$suggestedHeight';
+      '$errorCodePrefix|$width|$height|$suggestedWidth|$suggestedHeight';
 }
 
 /// 适配后的图像数据

@@ -7,13 +7,14 @@ import '../../../../core/comfyui/comfyui_models.dart';
 import '../../../../core/comfyui/seedvr2_support.dart';
 import '../../../../core/utils/localization_extension.dart';
 import '../../../providers/comfyui/comfyui_provider.dart';
+import '../../../providers/generation/image_upscale_coordinator.dart';
 import '../../../providers/generation/image_workflow_controller.dart';
 import '../../../providers/generation/novel_ai_upscale_task_provider.dart';
 import '../../../providers/image_generation_provider.dart';
 import '../../../widgets/common/anlas_cost_badge.dart';
 import '../../../widgets/common/app_toast.dart';
 import '../../../widgets/common/editable_double_field.dart';
-import 'img2img_upscale_coordinator.dart';
+import '../../../widgets/common/themed_slider.dart';
 
 class Img2ImgUpscaleSection extends ConsumerStatefulWidget {
   const Img2ImgUpscaleSection({super.key, required this.workflow});
@@ -388,40 +389,48 @@ class _Img2ImgUpscaleSectionState extends ConsumerState<Img2ImgUpscaleSection> {
   }
 
   Future<void> _run() async {
-    final result = await ref.read(img2ImgUpscaleCoordinatorProvider).run();
+    final result = await ref
+        .read(imageUpscaleCoordinatorProvider)
+        .runFromGenerationPage();
     if (!mounted ||
-        result is Img2ImgUpscaleSuccess &&
-            result.kind == Img2ImgUpscaleKind.novelAi) {
+        result is ImageUpscaleSuccess &&
+            result.kind == ImageUpscaleKind.novelAi) {
       return;
     }
-    if (result case Img2ImgUpscaleSuccess(
+    if (result case ImageUpscaleSuccess(
       :final kind,
       :final width,
       :final height,
     )) {
       final message = switch (kind) {
-        Img2ImgUpscaleKind.regular =>
-          context.l10n.img2img_regularUpscaleComplete(width!, height!),
-        Img2ImgUpscaleKind.rtx => context.l10n.img2img_rtxUpscaleComplete(
+        ImageUpscaleKind.regular => context.l10n.img2img_regularUpscaleComplete(
+          width!,
+          height!,
+        ),
+        ImageUpscaleKind.rtx => context.l10n.img2img_rtxUpscaleComplete(
           width!,
           height!,
         ),
         _ => context.l10n.img2img_upscaleComplete(width!, height!),
       };
       AppToast.success(context, message);
-    } else if (result case Img2ImgUpscaleRejected(:final reason)) {
+    } else if (result case ImageUpscaleRejected(:final reason)) {
       final message = switch (reason) {
-        Img2ImgUpscaleFailure.engineUnavailable ||
-        Img2ImgUpscaleFailure.nativeVaeUnavailable =>
+        ImageUpscaleFailure.engineUnavailable ||
+        ImageUpscaleFailure.nativeVaeUnavailable =>
           context.l10n.img2img_seedvr2EngineUnavailable,
-        Img2ImgUpscaleFailure.regularModelUnavailable =>
+        ImageUpscaleFailure.regularModelUnavailable =>
           context.l10n.img2img_noAvailableRegularUpscaleModel,
-        Img2ImgUpscaleFailure.seedVr2ModelUnavailable =>
+        ImageUpscaleFailure.seedVr2ModelUnavailable =>
           context.l10n.img2img_noAvailableSeedvr2Model,
-        Img2ImgUpscaleFailure.sourceDecodeFailed =>
+        ImageUpscaleFailure.sourceDecodeFailed =>
           context.l10n.img2img_decodeSourceFailed,
-        Img2ImgUpscaleFailure.sourceMissing ||
-        Img2ImgUpscaleFailure.noResult => null,
+        // NovelAI 的忙碌、未登录与请求失败已由任务状态和登录弹窗呈现。
+        ImageUpscaleFailure.sourceMissing ||
+        ImageUpscaleFailure.noResult ||
+        ImageUpscaleFailure.busy ||
+        ImageUpscaleFailure.authenticationRequired ||
+        ImageUpscaleFailure.requestFailed => null,
       };
       if (message != null) AppToast.error(context, message);
     }
@@ -464,9 +473,12 @@ class _ScaleControl extends StatelessWidget {
   final UpscaleWorkflowSettings settings;
   final ImageWorkflowController controller;
 
+  static const _decimals = 1;
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final label = context.l10n.upscale_scale;
     final value = settings.comfyScale.clamp(
       UpscaleWorkflowSettings.minScale,
       UpscaleWorkflowSettings.maxScale,
@@ -475,17 +487,13 @@ class _ScaleControl extends StatelessWidget {
       children: [
         Row(
           children: [
-            Expanded(
-              child: Text(
-                context.l10n.upscale_scale,
-                style: theme.textTheme.bodyMedium,
-              ),
-            ),
+            Expanded(child: Text(label, style: theme.textTheme.bodyMedium)),
             EditableDoubleField(
               value: value,
+              semanticLabel: label,
               min: UpscaleWorkflowSettings.minScale,
               max: UpscaleWorkflowSettings.maxScale,
-              decimals: 1,
+              decimals: _decimals,
               width: 60,
               onChanged: controller.updateUpscaleComfyScale,
               textStyle: theme.textTheme.bodySmall?.copyWith(
@@ -500,7 +508,10 @@ class _ScaleControl extends StatelessWidget {
             thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
             overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
           ),
-          child: Slider(
+          child: NamedSlider(
+            label: label,
+            valueText: (v) =>
+                EditableDoubleField.format(v, decimals: _decimals),
             value: value,
             min: UpscaleWorkflowSettings.minScale,
             max: UpscaleWorkflowSettings.maxScale,
@@ -645,6 +656,8 @@ class _IntegerControl extends StatelessWidget {
   final ValueChanged<double> onChanged;
   final String? hint;
 
+  static const _decimals = 0;
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -657,9 +670,10 @@ class _IntegerControl extends StatelessWidget {
             Expanded(child: Text(label, style: theme.textTheme.bodyMedium)),
             EditableDoubleField(
               value: current,
+              semanticLabel: label,
               min: min.toDouble(),
               max: max.toDouble(),
-              decimals: 0,
+              decimals: _decimals,
               width: 72,
               onChanged: onChanged,
             ),
@@ -671,7 +685,10 @@ class _IntegerControl extends StatelessWidget {
             thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
             overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
           ),
-          child: Slider(
+          child: NamedSlider(
+            label: label,
+            valueText: (v) =>
+                EditableDoubleField.format(v, decimals: _decimals),
             value: current,
             min: min.toDouble(),
             max: max.toDouble(),

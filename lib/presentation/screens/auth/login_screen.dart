@@ -10,12 +10,14 @@ import '../../../core/utils/localization_extension.dart';
 import '../../../data/models/auth/saved_account.dart';
 import '../../adaptive/adaptive_layout.dart';
 import '../../adaptive/adaptive_presenter.dart';
-import '../../providers/account_manager_provider.dart';
+import '../../../data/services/account_manager_provider.dart';
 import '../../providers/auth_mode_provider.dart';
-import '../../providers/auth_provider.dart';
+import '../../../data/services/auth_provider.dart';
 import '../../widgets/auth/account_avatar.dart';
 import '../../widgets/auth/login_form_container.dart';
 import '../../widgets/auth/network_troubleshooting_dialog.dart';
+import '../../widgets/auth/saved_account_removal_flow.dart';
+import '../../widgets/auth/saved_account_token_reader.dart';
 import '../../widgets/common/app_toast.dart';
 import '../../widgets/common/themed_divider.dart';
 import '../../widgets/common/update_notice_banner.dart';
@@ -29,10 +31,6 @@ class LoginScreen extends ConsumerStatefulWidget {
 }
 
 class _LoginScreenState extends ConsumerState<LoginScreen> {
-  final _avatarService = AvatarService();
-  final _authErrorService = AuthErrorService();
-  final _dateFormattingService = DateFormattingService();
-
   OverlayEntry? _loadingOverlayEntry;
   bool _showTroubleshootingButton = false;
 
@@ -224,12 +222,13 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     );
 
     final l10n = context.l10n;
-    final errorText = _authErrorService.getErrorText(
+    final authErrorService = ref.read(authErrorServiceProvider);
+    final errorText = authErrorService.getErrorText(
       l10n,
       state.errorCode!,
       state.httpStatusCode,
     );
-    final recoveryHint = _authErrorService.getErrorRecoveryHint(
+    final recoveryHint = authErrorService.getErrorRecoveryHint(
       l10n,
       state.errorCode!,
       state.httpStatusCode,
@@ -262,13 +261,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     // 如果已经认证，不执行
     if (ref.read(authNotifierProvider).isAuthenticated) return;
 
-    final token = await accountNotifier.getAccountToken(account.id);
-
-    if (!context.mounted) return;
-    if (token == null) {
-      AppToast.info(context, context.l10n.auth_tokenNotFound);
-      return;
-    }
+    final token = await readSavedAccountTokenForSwitch(
+      context: context,
+      ref: ref,
+      account: account,
+    );
+    if (token == null || !context.mounted) return;
 
     // 再次检查是否已认证
     if (ref.read(authNotifierProvider).isAuthenticated) return;
@@ -300,6 +298,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     List<SavedAccount> accounts,
     SavedAccount currentAccount,
   ) {
+    final dateFormattingService = ref.read(dateFormattingServiceProvider);
     final sortedAccounts = List<SavedAccount>.from(accounts)
       ..sort((a, b) {
         final aTime = a.lastUsedAt ?? a.createdAt;
@@ -322,12 +321,13 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
               account: account,
               isSelected: account.id == currentAccount.id,
               isDefault: account.id == defaultAccount.id,
-              createdDate: _dateFormattingService.formatDate(account.createdAt),
+              createdDate: dateFormattingService.formatDate(account.createdAt),
               onTap: () {
                 Navigator.pop(panelContext);
                 _handleQuickLogin(context, ref, account);
               },
-              onDelete: () => _showDeleteAccountDialog(context, ref, account),
+              onDelete: () =>
+                  _removeSavedAccount(context, panelContext, account),
             ),
           ),
           const ThemedDivider(),
@@ -351,40 +351,17 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     );
   }
 
-  void _showDeleteAccountDialog(
+  Future<void> _removeSavedAccount(
     BuildContext context,
-    WidgetRef ref,
+    BuildContext panelContext,
     SavedAccount account,
-  ) {
-    final theme = Theme.of(context);
-
-    showDialog(
+  ) async {
+    await confirmAndRemoveSavedAccount(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text(context.l10n.auth_deleteAccount),
-        content: Text(
-          context.l10n.auth_deleteAccountConfirm(account.displayName),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: Text(context.l10n.common_cancel),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: theme.colorScheme.error,
-            ),
-            onPressed: () {
-              ref
-                  .read(accountManagerNotifierProvider.notifier)
-                  .removeAccount(account.id);
-              Navigator.pop(dialogContext);
-              Navigator.pop(context);
-            },
-            child: Text(context.l10n.common_delete),
-          ),
-        ],
-      ),
+      ref: ref,
+      account: account,
+      // 选择面板的列表在打开时固定，移除前关闭以免残留已删除项
+      beforeRemove: () async => Navigator.pop(panelContext),
     );
   }
 
@@ -454,14 +431,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     WidgetRef ref,
     SavedAccount account,
   ) async {
+    final avatarService = ref.read(avatarServiceProvider);
+    final accountNotifier = ref.read(accountManagerNotifierProvider.notifier);
     try {
-      final result = await _avatarService.pickAndSaveAvatar(account);
+      final result = await avatarService.pickAndSaveAvatar(account);
 
       if (result.isSuccess && result.path != null) {
         final updatedAccount = account.copyWith(avatarPath: result.path);
-        await ref
-            .read(accountManagerNotifierProvider.notifier)
-            .updateAccount(updatedAccount);
+        await accountNotifier.updateAccount(updatedAccount);
 
         if (context.mounted) {
           AppToast.success(context, context.l10n.common_success);
@@ -484,12 +461,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     WidgetRef ref,
     SavedAccount account,
   ) async {
+    final avatarService = ref.read(avatarServiceProvider);
+    final accountNotifier = ref.read(accountManagerNotifierProvider.notifier);
     try {
-      await _avatarService.removeAvatar(account);
+      await avatarService.removeAvatar(account);
       final updatedAccount = account.copyWith(avatarPath: null);
-      await ref
-          .read(accountManagerNotifierProvider.notifier)
-          .updateAccount(updatedAccount);
+      await accountNotifier.updateAccount(updatedAccount);
 
       if (context.mounted) {
         AppToast.success(context, context.l10n.common_success);
@@ -947,8 +924,10 @@ class _AccountListItem extends StatelessWidget {
         ),
       ),
       trailing: IconButton(
+        key: ValueKey('login-account-remove-${account.id}'),
+        tooltip: context.l10n.auth_removeSavedAccount,
         icon: Icon(
-          Icons.delete_outline,
+          Icons.person_remove_outlined,
           color: theme.colorScheme.onSurfaceVariant,
         ),
         onPressed: onDelete,

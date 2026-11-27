@@ -5,14 +5,19 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 import 'package:nai_launcher/core/comfyui/seedvr2_support.dart';
+import 'package:nai_launcher/core/utils/focused_inpaint_utils.dart';
 import 'package:nai_launcher/l10n/app_localizations.dart';
 import 'package:nai_launcher/core/storage/local_storage_service.dart';
 import 'package:nai_launcher/presentation/providers/comfyui/comfyui_provider.dart';
 import 'package:nai_launcher/presentation/providers/cost_estimate_provider.dart';
 import 'package:nai_launcher/presentation/providers/generation/image_workflow_controller.dart';
+import 'package:nai_launcher/presentation/providers/generation/generation_params_notifier.dart';
 import 'package:nai_launcher/presentation/providers/generation/novel_ai_upscale_task_provider.dart';
 import 'package:nai_launcher/presentation/screens/generation/widgets/img2img_panel.dart';
+import 'package:nai_launcher/presentation/screens/generation/widgets/img2img_source_preview.dart';
+import 'package:nai_launcher/presentation/widgets/image_editor/image_editor_types.dart';
 
+import '../../../../helpers/ink_expectations.dart';
 import '../../../../helpers/light_theme_contrast.dart';
 
 void main() {
@@ -108,6 +113,49 @@ void main() {
       await tester.binding.setSurfaceSize(null);
     });
 
+    testWidgets('绘制草图沿用编辑器明确选择的压缩尺寸', (tester) async {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      container
+          .read(generationParamsNotifierProvider.notifier)
+          .updateSize(1024, 1024, persist: false);
+      container
+          .read(imageWorkflowControllerProvider.notifier)
+          .setPanelExpanded(true);
+      final navigator = GlobalKey<NavigatorState>();
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp(
+            navigatorKey: navigator,
+            locale: const Locale('zh'),
+            supportedLocales: AppLocalizations.supportedLocales,
+            localizationsDelegates: AppLocalizations.localizationsDelegates,
+            home: const Scaffold(
+              body: SingleChildScrollView(child: Img2ImgPanel()),
+            ),
+          ),
+        ),
+      );
+      final button = find.byKey(const ValueKey('img2img-draw-source'));
+      await tester.ensureVisible(button);
+      await tester.tap(button);
+      expect(navigator.currentState!.canPop(), isTrue);
+      final bytes = img.encodePng(img.Image(width: 768, height: 768));
+      navigator.currentState!.pop(
+        ImageEditorResult(
+          modifiedImage: bytes,
+          outputWidth: 768,
+          outputHeight: 768,
+          compressionApplied: true,
+        ),
+      );
+      await tester.pumpAndSettle();
+      final params = container.read(generationParamsNotifierProvider);
+      expect((params.width, params.height), (768, 768));
+      expect(params.sourceImage, same(bytes));
+    });
+
     testWidgets('点击导演工具会导航到独立页面而不抛异常', (tester) async {
       final container = ProviderContainer();
       addTearDown(container.dispose);
@@ -168,6 +216,102 @@ void main() {
       expect(find.text('Focused Inpainting（聚焦重绘）'), findsOneWidget);
       expect(find.textContaining('Minimum Context Area'), findsNothing);
       expect(find.textContaining('重绘编辑器左上角按钮'), findsOneWidget);
+    });
+
+    testWidgets('聚焦框取自费用预估共用的蒙版外接矩形，有选区时不再计算', (tester) async {
+      const extent = FocusedInpaintMaskExtent(
+        maskWidth: 8,
+        maskHeight: 8,
+        bounds: FocusedInpaintCrop(x: 2, y: 2, width: 3, height: 3),
+      );
+      var extentBuilds = 0;
+      final container = ProviderContainer(
+        overrides: [
+          focusedInpaintMaskExtentProvider.overrideWith((ref) {
+            extentBuilds += 1;
+            return extent;
+          }),
+        ],
+      );
+      addTearDown(container.dispose);
+      await tester.binding.setSurfaceSize(const Size(1400, 1600));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final controller = container.read(
+        imageWorkflowControllerProvider.notifier,
+      );
+      controller.replaceSourceImage(_testImageBytes);
+      controller.enterInpaintMode();
+      controller.setFocusedInpaintEnabled(true);
+      controller.onMaskChanged(_testImageBytes);
+      controller.setPanelExpanded(true);
+      Img2ImgSourcePreview preview() =>
+          tester.widget(find.byType(Img2ImgSourcePreview));
+
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: const MaterialApp(
+            locale: Locale('zh'),
+            supportedLocales: AppLocalizations.supportedLocales,
+            localizationsDelegates: AppLocalizations.localizationsDelegates,
+            home: Scaffold(body: Img2ImgPanel()),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(preview().maskExtent.value, same(extent));
+      expect(extentBuilds, 1);
+
+      controller.setFocusedSelectionRect(const Rect.fromLTWH(1, 1, 4, 4));
+      await tester.pumpAndSettle();
+
+      expect(preview().maskExtent.value, isNull);
+      expect(extentBuilds, 1);
+    });
+
+    testWidgets('增强面板里的开关行按压反馈画在面板底色之上', (tester) async {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      await tester.binding.setSurfaceSize(const Size(1400, 1600));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      final controller = container.read(
+        imageWorkflowControllerProvider.notifier,
+      );
+      controller.replaceSourceImage(_testImageBytes);
+      controller.enterEnhanceMode();
+      controller.setPanelExpanded(true);
+
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: const MaterialApp(
+            locale: Locale('zh'),
+            supportedLocales: AppLocalizations.supportedLocales,
+            localizationsDelegates: AppLocalizations.localizationsDelegates,
+            home: Scaffold(body: SingleChildScrollView(child: Img2ImgPanel())),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final toggle = find.byType(SwitchListTile);
+      await tester.ensureVisible(toggle);
+      await tester.pumpAndSettle();
+      final panel = find
+          .ancestor(of: toggle, matching: find.byType(Container))
+          .first;
+      final theme = Theme.of(tester.element(panel));
+      final press = await pressAndHold(tester, toggle);
+      expectInkOnTop(
+        tester,
+        panel,
+        ink: theme.highlightColor,
+        below: theme.colorScheme.surfaceContainerHigh,
+      );
+      await press.cancel();
+      await tester.pumpAndSettle();
     });
 
     testWidgets('超分模型下拉项不重复显示当前模块前缀', (tester) async {

@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:hive/hive.dart';
+import 'package:hive_ce/hive_ce.dart';
 import 'package:synchronized/synchronized.dart';
 
 import '../../../core/utils/app_logger.dart';
@@ -832,41 +832,6 @@ class ScanStateManager {
       await waitForResume();
     }
   }
-}
-
-/// 统一的进度回调类型定义
-typedef UnifiedScanProgressCallback = void Function(ScanProgressInfo progress);
-
-/// 进度回调转换器
-///
-/// 将旧的回调格式转换为新的统一格式
-ScanProgressCallback adaptProgressCallback(
-  UnifiedScanProgressCallback? callback,
-) {
-  return ({
-    required int processed,
-    required int total,
-    String? currentFile,
-    required String phase,
-    int? filesSkipped, // 新增：传递跳过的文件数
-  }) {
-    callback?.call(
-      ScanProgressInfo(
-        processed: processed,
-        total: total,
-        currentFile: currentFile,
-        phase: _adaptPhase(phase),
-      ),
-    );
-  };
-}
-
-/// 阶段字符串转枚举
-ScanPhase _adaptPhase(String phase) {
-  return ScanPhase.values.firstWhere(
-    (e) => e.name == phase,
-    orElse: () => ScanPhase.scanning,
-  );
 }
 
 /// 旧的进度回调类型（保持兼容）

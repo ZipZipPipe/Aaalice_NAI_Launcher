@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import '../../../core/utils/contiguous_region_selector.dart';
 import '../../../core/utils/editor_compression_utils.dart';
+import '../../../core/utils/inpaint_mask_utils.dart';
 import '../../../core/utils/inpaint_outpaint_utils.dart';
 import '../../../data/services/efficient_vit_sam_service.dart';
 import 'effects/editor_effects.dart';
@@ -46,6 +47,11 @@ class ImageEditorProcessingService {
   Future<EditorEffectResult> applyEffect(EditorEffectJob job) =>
       _effects.apply(job);
 
+  Future<EditorEffectResult?> previewEffect(
+    EditorEffectJob job, {
+    required bool Function() isCurrent,
+  }) => _effects.preview(job, isCurrent: isCurrent);
+
   Future<ContiguousRegionSelection> selectMagicWand({
     required EditorRawRgbaImage source,
     required int startX,
@@ -83,6 +89,12 @@ class ImageEditorProcessingService {
     required int width,
     required int height,
   }) => _mask.resize(mask, width: width, height: height);
+
+  Future<Uint8List> resizeBinaryMask(
+    BinaryMask mask, {
+    required int width,
+    required int height,
+  }) => _mask.resizeBinary(mask, width: width, height: height);
 
   void dispose() => _magicWand.dispose();
 }

@@ -1,8 +1,6 @@
-/// Runtime context shared across one `RandomPreset` generation.
-///
-/// The context is intentionally mutable and scoped to one generation call. It
-/// lets category, dependency, visibility, branch, variable replacement, and
-/// post-process rules observe tags selected earlier in the same generation.
+import '../models/prompt/diy_category_references.dart';
+
+/// 一次预设生成内共享的可变上下文，让后续规则能看到本轮先选出的标签与变量
 class RandomPresetGenerationContext {
   RandomPresetGenerationContext({
     DateTime? generationTime,
@@ -13,9 +11,12 @@ class RandomPresetGenerationContext {
   })  : generationTime = generationTime ?? DateTime.now(),
         categoryTags = categoryTags ?? <String, List<String>>{},
         variables = variables ?? <String, String>{} {
-    this.variables.putIfAbsent('character_count', () => '$characterCount');
+    this.variables.putIfAbsent(
+      characterCountReference,
+      () => '$characterCount',
+    );
     if (characterGender != null) {
-      this.variables['character_gender'] = characterGender!;
+      this.variables[characterGenderVariable] = characterGender!;
     }
   }
 
@@ -64,16 +65,19 @@ class RandomPresetGenerationContext {
     }
   }
 
+  /// 源的结果数：类别为已选标签数，角色数量为人数，其他变量有取值时为 1
   int countFor(String key) {
-    if (key == 'character_count') return characterCount;
-    return categoryTags[key]?.length ?? 0;
+    if (key == characterCountReference) return characterCount;
+    return valuesFor(key).length;
   }
 
-  String firstValueFor(String key) {
-    if (key == 'character_count') return '$characterCount';
-    final values = categoryTags[key];
-    return variables[key] ??
-        (values == null || values.isEmpty ? '' : values.first);
+  /// 源的结果：类别为已选标签，角色数量为人数，其他变量为本轮的取值
+  List<String> valuesFor(String key) {
+    if (key == characterCountReference) return ['$characterCount'];
+    final tags = categoryTags[key];
+    if (tags != null) return tags;
+    final value = variables[key];
+    return value == null || value.isEmpty ? const [] : [value];
   }
 
   RandomPresetGenerationContext forCharacter(String gender) {

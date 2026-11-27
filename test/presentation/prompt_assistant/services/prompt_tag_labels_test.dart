@@ -7,9 +7,10 @@ import 'package:nai_launcher/core/autocomplete/tag_translation_lookup.dart';
 import 'package:nai_launcher/core/autocomplete/autocomplete_providers.dart';
 import 'package:nai_launcher/core/autocomplete/zh_dictionary_service.dart';
 import 'package:nai_launcher/core/constants/storage_keys.dart';
+import 'package:nai_launcher/core/database/datasources/translation_data_source.dart';
 import 'package:nai_launcher/core/storage/local_storage_service.dart';
 import 'package:nai_launcher/core/storage/secure_storage_service.dart';
-import 'package:nai_launcher/presentation/prompt_assistant/models/prompt_assistant_models.dart';
+import 'package:nai_launcher/data/models/prompt_assistant/prompt_assistant_models.dart';
 import 'package:nai_launcher/presentation/prompt_assistant/services/prompt_assistant_api_client.dart';
 import 'package:nai_launcher/presentation/prompt_assistant/services/prompt_assistant_service.dart';
 import 'package:nai_launcher/presentation/prompt_assistant/services/provider_adapters/prompt_assistant_adapter.dart';
@@ -26,6 +27,8 @@ class _Secure extends Fake implements SecureStorageService {
 }
 
 class _Dictionary extends ZhDictionaryService {
+  _Dictionary() : super(translations: TranslationDataSource());
+
   @override
   ZhDictionaryState get state => const ZhDictionaryState(isInstalled: true);
   @override
@@ -88,7 +91,9 @@ void main() {
         localStorageServiceProvider.overrideWith((ref) => storage),
         secureStorageServiceProvider.overrideWithValue(_Secure()),
         tagTranslationLookupProvider.overrideWithValue(lookup),
-        zhDictionaryServiceProvider.overrideWith((ref) => _Dictionary()),
+        zhDictionaryServiceProvider.overrideWith(
+          () => ZhDictionaryNotifier(_Dictionary()),
+        ),
         promptAssistantServiceProvider.overrideWith(
           (ref) => PromptAssistantService(ref: ref, apiClient: api),
         ),

@@ -4,10 +4,11 @@ import 'dart:typed_data';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hive_flutter/hive_flutter.dart';
+import 'package:hive_ce_flutter/hive_ce_flutter.dart';
 import 'package:nai_launcher/core/constants/api_constants.dart';
 import 'package:nai_launcher/core/constants/storage_keys.dart';
 import 'package:nai_launcher/core/enums/precise_ref_type.dart';
+import 'package:nai_launcher/data/models/character/character_prompt.dart';
 import 'package:nai_launcher/data/models/gallery/nai_image_metadata.dart';
 import 'package:nai_launcher/data/models/fixed_tag/fixed_tag_entry.dart';
 import 'package:nai_launcher/data/models/fixed_tag/fixed_tag_prompt_type.dart';
@@ -31,12 +32,12 @@ void main() {
     );
     Hive.init(hiveTempDir.path);
     await Hive.openBox(StorageKeys.settingsBox);
-    await Hive.openBox(StorageKeys.historyBox);
+    await Hive.openLazyBox<dynamic>(StorageKeys.historyBox);
   });
 
   tearDown(() async {
     await Hive.box(StorageKeys.settingsBox).clear();
-    await Hive.box(StorageKeys.historyBox).clear();
+    await Hive.lazyBox<dynamic>(StorageKeys.historyBox).clear();
   });
 
   tearDownAll(() async {
@@ -87,7 +88,7 @@ void main() {
         selectedPreciseReferenceIndices: [0],
       );
 
-      final appliedCount = await MetadataImportCoordinator.apply(
+      final outcome = await MetadataImportCoordinator.apply(
         read: container.read,
         metadata: metadata,
         options: options,
@@ -96,7 +97,7 @@ void main() {
 
       final params = container.read(generationParamsNotifierProvider);
       final characters = container.read(characterPromptNotifierProvider);
-      expect(appliedCount, 4);
+      expect(outcome.appliedCount, 4);
       expect(params.prompt, '1girl, sunset');
       expect(params.vibeReferencesV4, hasLength(1));
       expect(params.vibeReferencesV4.single.vibeEncoding, 'encoded-style');
@@ -122,6 +123,38 @@ void main() {
       );
     },
   );
+
+  test('metadata import preserves the precise outfit preference', () async {
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    const metadata = NaiImageMetadata(
+      preciseReferenceImages: ['AQI='],
+      preciseReferenceTypes: ['character_mainoutfit'],
+    );
+    await MetadataImportCoordinator.apply(
+      read: container.read,
+      metadata: metadata,
+      options: const MetadataImportOptions(
+        importPrompt: false,
+        importNegativePrompt: false,
+        importFixedTags: false,
+        importQualityTags: false,
+        importCharacterPrompts: false,
+        importVibeReferences: false,
+        selectedPreciseReferenceIndices: [0],
+      ),
+      l10n: AppLocalizationsEn(),
+    );
+    final reference = container
+        .read(generationParamsNotifierProvider)
+        .preciseReferences
+        .single;
+    expect(reference.type, PreciseRefType.character);
+    expect(reference.preferSameOutfit, isTrue);
+    await container
+        .read(generationParamsNotifierProvider.notifier)
+        .saveGenerationState();
+  });
 
   test(
     'official centers are retained while use_coords false restores AI mode',
@@ -159,6 +192,110 @@ void main() {
       expect(characters.characters.single.customPosition?.row, 0.2);
     },
   );
+
+  group('character selection', () {
+    const metadata = NaiImageMetadata(
+      characterPrompts: ['girl A', 'girl B', 'girl C'],
+      characterNegativePrompts: ['neg A', 'neg B', 'neg C'],
+      characterInfos: [
+        CharacterPromptInfo(
+          prompt: 'girl A',
+          negativePrompt: 'neg A',
+          centerX: 0.1,
+          centerY: 0.1,
+        ),
+        CharacterPromptInfo(
+          prompt: 'girl B',
+          negativePrompt: 'neg B',
+          centerX: 0.5,
+          centerY: 0.5,
+        ),
+        CharacterPromptInfo(
+          prompt: 'girl C',
+          negativePrompt: 'neg C',
+          centerX: 0.9,
+          centerY: 0.9,
+        ),
+      ],
+      characterUseCoords: true,
+    );
+
+    MetadataImportOptions charactersOnly(List<int> indices) =>
+        MetadataImportOptions(
+          importPrompt: false,
+          importNegativePrompt: false,
+          importFixedTags: false,
+          importQualityTags: false,
+          selectedCharacterIndices: indices,
+        );
+
+    List<String> importedPrompts(ProviderContainer container) => container
+        .read(characterPromptNotifierProvider)
+        .characters
+        .map((character) => character.prompt)
+        .toList();
+
+    test('imports only checked characters in their original order', () async {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+
+      final outcome = await MetadataImportCoordinator.apply(
+        read: container.read,
+        metadata: metadata,
+        options: charactersOnly(const [2, 0]),
+        l10n: AppLocalizationsEn(),
+      );
+
+      final characters = container
+          .read(characterPromptNotifierProvider)
+          .characters;
+      expect(outcome.appliedCount, 1);
+      expect(importedPrompts(container), ['girl A', 'girl C']);
+      expect(characters.map((character) => character.negativePrompt), [
+        'neg A',
+        'neg C',
+      ]);
+      expect(characters.map((character) => character.name), [
+        'Character 1',
+        'Character 2',
+      ]);
+      expect(characters.last.customPosition?.column, closeTo(0.9, 0.0001));
+    });
+
+    test('keeps current characters when none is checked', () async {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      container.read(characterPromptNotifierProvider.notifier)
+        ..clearAllCharacters()
+        ..addCharacter(CharacterGender.female, prompt: 'existing');
+
+      final outcome = await MetadataImportCoordinator.apply(
+        read: container.read,
+        metadata: metadata,
+        options: charactersOnly(const []),
+        l10n: AppLocalizationsEn(),
+      );
+
+      expect(outcome.appliedCount, 0);
+      expect(importedPrompts(container), ['existing']);
+    });
+
+    test('legacy metadata without character details imports all', () async {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+
+      await MetadataImportCoordinator.apply(
+        read: container.read,
+        metadata: const NaiImageMetadata(
+          characterPrompts: ['girl A', 'girl B'],
+        ),
+        options: charactersOnly(const []),
+        l10n: AppLocalizationsEn(),
+      );
+
+      expect(importedPrompts(container), ['girl A', 'girl B']);
+    });
+  });
 
   test('reimporting the same weighted comma fixed tag stays unique', () async {
     final container = ProviderContainer();
@@ -223,7 +360,7 @@ void main() {
       importModel: true,
     );
 
-    final appliedCount = await MetadataImportCoordinator.apply(
+    final outcome = await MetadataImportCoordinator.apply(
       read: container.read,
       metadata: metadata,
       options: options,
@@ -231,10 +368,129 @@ void main() {
     );
 
     final params = container.read(generationParamsNotifierProvider);
-    expect(appliedCount, 2);
+    expect(outcome.appliedCount, 2);
     expect(params.model, ImageModels.animeDiffusionV45Full);
     expect(params.scale, 5.5);
   });
+
+  test(
+    'model import keeps the previous model memory free of image values',
+    () async {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final notifier = container.read(
+        generationParamsNotifierProvider.notifier,
+      );
+      notifier.updateModel(ImageModels.animeDiffusionV45Full);
+      notifier
+        ..updateSteps(30)
+        ..updateScale(6.0)
+        ..updateSampler(Samplers.kDpmpp2m);
+
+      const metadata = NaiImageMetadata(
+        model: ImageModels.animeDiffusionV5Full,
+        steps: 28,
+        scale: 4.0,
+        sampler: Samplers.kEulerAncestral,
+      );
+      const options = MetadataImportOptions(
+        importPrompt: false,
+        importNegativePrompt: false,
+        importFixedTags: false,
+        importQualityTags: false,
+        importCharacterPrompts: false,
+        importVibeReferences: false,
+        importPreciseReferences: false,
+        importSteps: true,
+        importScale: true,
+        importSampler: true,
+        importModel: true,
+      );
+
+      await MetadataImportCoordinator.apply(
+        read: container.read,
+        metadata: metadata,
+        options: options,
+        l10n: AppLocalizationsEn(),
+      );
+      var params = container.read(generationParamsNotifierProvider);
+      expect(params.model, ImageModels.animeDiffusionV5Full);
+      expect(params.steps, 28);
+      expect(params.scale, 4.0);
+      expect(params.sampler, Samplers.kEulerAncestral);
+
+      notifier.updateModel(ImageModels.animeDiffusionV45Full);
+      params = container.read(generationParamsNotifierProvider);
+      expect(params.steps, 30);
+      expect(params.scale, 6.0);
+      expect(params.sampler, Samplers.kDpmpp2m);
+    },
+  );
+
+  test(
+    'a model-only import round trip persists restored sampling settings',
+    () async {
+      final first = ProviderContainer();
+      try {
+        final initial = first.read(generationParamsNotifierProvider);
+        expect(initial.model, ImageModels.animeDiffusionV5Full);
+        expect(initial.steps, 28);
+        expect(initial.scale, 4.0);
+
+        await MetadataImportCoordinator.apply(
+          read: first.read,
+          metadata: const NaiImageMetadata(
+            model: ImageModels.animeDiffusionV45Full,
+            steps: 23,
+            scale: 5.0,
+          ),
+          options: const MetadataImportOptions(
+            importPrompt: false,
+            importNegativePrompt: false,
+            importFixedTags: false,
+            importQualityTags: false,
+            importCharacterPrompts: false,
+            importVibeReferences: false,
+            importPreciseReferences: false,
+            importModel: true,
+          ),
+          l10n: AppLocalizationsEn(),
+        );
+        final imported = first.read(generationParamsNotifierProvider);
+        expect(imported.model, ImageModels.animeDiffusionV45Full);
+        expect(imported.steps, 28);
+        expect(imported.scale, 4.0);
+        final settings = Hive.box(StorageKeys.settingsBox);
+        expect(settings.containsKey(StorageKeys.defaultSteps), isFalse);
+        expect(settings.containsKey(StorageKeys.defaultScale), isFalse);
+
+        first.read(generationParamsNotifierProvider.notifier)
+          ..updateModel(ImageModels.animeDiffusionV5Full)
+          ..updateModel(ImageModels.animeDiffusionV45Full);
+        final restored = first.read(generationParamsNotifierProvider);
+        expect(restored.steps, 28);
+        expect(restored.scale, 4.0);
+      } finally {
+        first.dispose();
+      }
+
+      await Hive.box(StorageKeys.settingsBox).close();
+      final settings = await Hive.openBox(StorageKeys.settingsBox);
+      final restarted = ProviderContainer();
+      addTearDown(restarted.dispose);
+
+      final params = restarted.read(generationParamsNotifierProvider);
+      expect(params.model, ImageModels.animeDiffusionV45Full);
+      expect(params.steps, 28);
+      expect(params.scale, 4.0);
+      expect(settings.get(StorageKeys.defaultSteps), params.steps);
+      expect(settings.get(StorageKeys.defaultScale), params.scale);
+      expect(settings.get(StorageKeys.lastCfgRescale), params.cfgRescale);
+      expect(settings.get(StorageKeys.defaultSampler), params.sampler);
+      expect(settings.get(StorageKeys.lastNoiseSchedule), params.noiseSchedule);
+      expect(settings.get(StorageKeys.lastVarietyPlus), params.varietyPlus);
+    },
+  );
 
   test('structured fixed tags replace the enabled scope', () async {
     final container = ProviderContainer();
@@ -323,6 +579,83 @@ void main() {
     expect(params.prompt, '1girl, blue eyes');
     expect(params.negativePrompt, 'watermark');
     expect(restoredFixed.enabled, isTrue);
+  });
+
+  group('UC 预设在负向固定前缀之前', () {
+    const model = ImageModels.animeDiffusionV45Full;
+    final heavy = UcPresets.getPresetContent(model, UcPresetType.heavy);
+
+    Future<({ProviderContainer container, NaiImageMetadata metadata})>
+    serverWrittenImage() async {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final negativeFixed = await container
+          .read(fixedTagsNotifierProvider.notifier)
+          .addEntry(
+            name: 'negative fixed',
+            content: 'lowres, bad anatomy',
+            promptType: FixedTagPromptType.negative,
+            enabled: false,
+          );
+      final snapshot = FixedTagUsageSnapshot(
+        entries: [FixedTagUsageEntry.fromFixedTag(negativeFixed, order: 0)],
+      );
+      container.read(generationParamsNotifierProvider.notifier)
+        ..updateNegativePrompt('previous negative')
+        ..updateUcPreset(UcPresets.noneApiValue);
+      final metadata = NaiImageMetadata.fromNaiComment({
+        'Comment': jsonEncode({
+          'prompt': '1girl, blue eyes',
+          'uc': '$heavy, lowres, bad anatomy, watermark',
+          'tag_hint_uc_preset': 2,
+        }),
+        'Source': 'NovelAI Diffusion V4.5 4BDE2A90',
+      }).withFixedTagUsageData(snapshot.toJson());
+      return (container: container, metadata: metadata);
+    }
+
+    test('负面框只留主负面，发送时与原图负面一致', () async {
+      final image = await serverWrittenImage();
+
+      await MetadataImportCoordinator.apply(
+        read: image.container.read,
+        metadata: image.metadata,
+        options: MetadataImportOptions.all(),
+        l10n: AppLocalizationsEn(),
+      );
+
+      final params = image.container.read(generationParamsNotifierProvider);
+      final withFixedTags = image.container
+          .read(fixedTagsNotifierProvider)
+          .applyToNegativePrompt(params.negativePrompt);
+      expect(params.negativePrompt, 'watermark');
+      expect(params.ucPreset, UcPresets.heavyApiValue);
+      expect(
+        UcPresets.applyPresetWithNsfwCheck(
+          withFixedTags,
+          params.prompt,
+          model,
+          params.ucPreset,
+        ),
+        image.metadata.negativePrompt,
+      );
+    });
+
+    test('不导入 UC 预设时保留预设文字，仍去掉固定词', () async {
+      final image = await serverWrittenImage();
+
+      await MetadataImportCoordinator.apply(
+        read: image.container.read,
+        metadata: image.metadata,
+        options: MetadataImportOptions.all().copyWith(importUcPreset: false),
+        l10n: AppLocalizationsEn(),
+      );
+
+      expect(
+        image.container.read(generationParamsNotifierProvider).negativePrompt,
+        '$heavy, watermark',
+      );
+    });
   });
 
   test('fixed-tag restoration changes only the four selected scopes', () async {

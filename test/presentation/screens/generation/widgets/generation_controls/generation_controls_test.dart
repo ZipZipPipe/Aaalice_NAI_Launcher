@@ -1,14 +1,21 @@
+import 'dart:async';
+import 'dart:typed_data';
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/misc.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:nai_launcher/core/constants/storage_keys.dart';
 import 'package:nai_launcher/core/storage/local_storage_service.dart';
+import 'package:nai_launcher/core/utils/focused_inpaint_utils.dart';
+import 'package:nai_launcher/data/models/image/image_params.dart';
 import 'package:nai_launcher/data/models/user/user_subscription.dart';
 import 'package:nai_launcher/l10n/app_localizations.dart';
-import 'package:nai_launcher/presentation/providers/auth_provider.dart';
+import 'package:nai_launcher/data/services/auth_provider.dart';
 import 'package:nai_launcher/presentation/providers/cost_estimate_provider.dart';
+import 'package:nai_launcher/presentation/providers/generation/image_workflow_controller.dart';
 import 'package:nai_launcher/presentation/providers/image_generation_provider.dart';
 import 'package:nai_launcher/presentation/providers/krita/krita_bridge_notifier.dart';
 import 'package:nai_launcher/presentation/providers/queue_execution_provider.dart';
@@ -20,7 +27,10 @@ import 'package:nai_launcher/presentation/screens/generation/widgets/generation_
 import 'package:nai_launcher/presentation/widgets/anlas/anlas_balance_chip.dart';
 import 'package:nai_launcher/presentation/widgets/anlas/opus_usage_chip.dart';
 import 'package:nai_launcher/presentation/widgets/common/draggable_number_input.dart';
+import 'package:nai_launcher/presentation/widgets/common/surface_ink_well.dart';
 import 'package:nai_launcher/presentation/widgets/generation/auto_save_toggle_chip.dart';
+
+import '../../../../../helpers/ink_expectations.dart';
 
 void main() {
   testWidgets('compact controls keep the auto-save toggle visible', (
@@ -33,24 +43,7 @@ void main() {
 
     await tester.pumpWidget(
       ProviderScope(
-        overrides: [
-          authNotifierProvider.overrideWith(_AuthenticatedAuthNotifier.new),
-          localStorageServiceProvider.overrideWith((ref) => storage),
-          kritaBridgeNotifierProvider.overrideWith(
-            (ref) => _TestKritaBridgeNotifier(),
-          ),
-          replicationQueueNotifierProvider.overrideWith(
-            _TestReplicationQueueNotifier.new,
-          ),
-          queueExecutionNotifierProvider.overrideWith(
-            _TestQueueExecutionNotifier.new,
-          ),
-          subscriptionNotifierProvider.overrideWith(
-            _TestSubscriptionNotifier.new,
-          ),
-          estimatedCostProvider.overrideWith((ref) => 0),
-          isFreeGenerationProvider.overrideWith((ref) => true),
-        ],
+        overrides: _footerOverrides(storage: storage),
         child: const MaterialApp(
           locale: Locale('zh'),
           supportedLocales: AppLocalizations.supportedLocales,
@@ -112,24 +105,7 @@ void main() {
       ]) {
         await tester.pumpWidget(
           ProviderScope(
-            overrides: [
-              authNotifierProvider.overrideWith(_AuthenticatedAuthNotifier.new),
-              localStorageServiceProvider.overrideWith((ref) => storage),
-              kritaBridgeNotifierProvider.overrideWith(
-                (ref) => _TestKritaBridgeNotifier(),
-              ),
-              replicationQueueNotifierProvider.overrideWith(
-                _TestReplicationQueueNotifier.new,
-              ),
-              queueExecutionNotifierProvider.overrideWith(
-                _TestQueueExecutionNotifier.new,
-              ),
-              subscriptionNotifierProvider.overrideWith(
-                _TestSubscriptionNotifier.new,
-              ),
-              estimatedCostProvider.overrideWith((ref) => 0),
-              isFreeGenerationProvider.overrideWith((ref) => true),
-            ],
+            overrides: _footerOverrides(storage: storage),
             child: MaterialApp(
               locale: const Locale('zh'),
               supportedLocales: AppLocalizations.supportedLocales,
@@ -282,27 +258,10 @@ void main() {
 
     await tester.pumpWidget(
       ProviderScope(
-        overrides: [
-          authNotifierProvider.overrideWith(_AuthenticatedAuthNotifier.new),
-          imageGenerationNotifierProvider.overrideWith(
-            _TestImageGenerationNotifier.new,
-          ),
-          localStorageServiceProvider.overrideWith((ref) => storage),
-          kritaBridgeNotifierProvider.overrideWith(
-            (ref) => _TestKritaBridgeNotifier(),
-          ),
-          replicationQueueNotifierProvider.overrideWith(
-            _TestReplicationQueueNotifier.new,
-          ),
-          queueExecutionNotifierProvider.overrideWith(
-            _TestQueueExecutionNotifier.new,
-          ),
-          subscriptionNotifierProvider.overrideWith(
-            _TestSubscriptionNotifier.new,
-          ),
-          estimatedCostProvider.overrideWith((ref) => 0),
-          isFreeGenerationProvider.overrideWith((ref) => true),
-        ],
+        overrides: _footerOverrides(
+          storage: storage,
+          imageGeneration: _TestImageGenerationNotifier.new,
+        ),
         child: Consumer(
           builder: (context, ref, _) {
             container = ProviderScope.containerOf(context);
@@ -389,27 +348,10 @@ void main() {
 
     await tester.pumpWidget(
       ProviderScope(
-        overrides: [
-          authNotifierProvider.overrideWith(_AuthenticatedAuthNotifier.new),
-          imageGenerationNotifierProvider.overrideWith(
-            _TestImageGenerationNotifier.new,
-          ),
-          localStorageServiceProvider.overrideWith((ref) => storage),
-          kritaBridgeNotifierProvider.overrideWith(
-            (ref) => _TestKritaBridgeNotifier(),
-          ),
-          replicationQueueNotifierProvider.overrideWith(
-            _TestReplicationQueueNotifier.new,
-          ),
-          queueExecutionNotifierProvider.overrideWith(
-            _TestQueueExecutionNotifier.new,
-          ),
-          subscriptionNotifierProvider.overrideWith(
-            _TestSubscriptionNotifier.new,
-          ),
-          estimatedCostProvider.overrideWith((ref) => 0),
-          isFreeGenerationProvider.overrideWith((ref) => true),
-        ],
+        overrides: _footerOverrides(
+          storage: storage,
+          imageGeneration: _TestImageGenerationNotifier.new,
+        ),
         child: Consumer(
           builder: (context, ref, _) {
             container = ProviderScope.containerOf(context);
@@ -545,6 +487,45 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('批次选项的悬停与按压反馈画在选项底色之上', (tester) async {
+    await _pumpBatchSettingsForm(tester);
+    final option = _batchOption('3');
+    final theme = Theme.of(tester.element(option));
+    final resting = theme.colorScheme.surfaceContainerHighest;
+
+    await hoverOver(tester, option);
+    expectInkOnTop(tester, option, ink: theme.hoverColor, below: resting);
+
+    final press = await pressAndHold(tester, option);
+    expectInkOnTop(tester, option, ink: theme.highlightColor, below: resting);
+    await press.up();
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets(
+    '键盘聚焦到已选批次时焦点高亮不被主色底盖住',
+    (tester) async {
+      await _pumpBatchSettingsForm(tester);
+      final option = _batchOption('1');
+      final theme = Theme.of(tester.element(option));
+
+      await tabUntilFocused(
+        tester,
+        find.descendant(of: option, matching: find.byType(InkWell)),
+      );
+      expectInkOnTop(
+        tester,
+        option,
+        ink: theme.focusColor,
+        below: theme.colorScheme.primary,
+      );
+    },
+    variant: const TargetPlatformVariant({
+      TargetPlatform.windows,
+      TargetPlatform.macOS,
+    }),
+  );
+
   testWidgets('signed-out generate button opens login directly', (
     tester,
   ) async {
@@ -577,24 +558,10 @@ void main() {
 
     await tester.pumpWidget(
       ProviderScope(
-        overrides: [
-          authNotifierProvider.overrideWith(_UnauthenticatedAuthNotifier.new),
-          localStorageServiceProvider.overrideWith((ref) => storage),
-          kritaBridgeNotifierProvider.overrideWith(
-            (ref) => _TestKritaBridgeNotifier(),
-          ),
-          replicationQueueNotifierProvider.overrideWith(
-            _TestReplicationQueueNotifier.new,
-          ),
-          queueExecutionNotifierProvider.overrideWith(
-            _TestQueueExecutionNotifier.new,
-          ),
-          subscriptionNotifierProvider.overrideWith(
-            _TestSubscriptionNotifier.new,
-          ),
-          estimatedCostProvider.overrideWith((ref) => 0),
-          isFreeGenerationProvider.overrideWith((ref) => true),
-        ],
+        overrides: _footerOverrides(
+          storage: storage,
+          authStatus: AuthStatus.unauthenticated,
+        ),
         child: MaterialApp.router(
           locale: const Locale('zh'),
           supportedLocales: AppLocalizations.supportedLocales,
@@ -625,24 +592,10 @@ void main() {
     for (final width in const [497.0, 520.0, 590.0]) {
       await tester.pumpWidget(
         ProviderScope(
-          overrides: [
-            authNotifierProvider.overrideWith(_AuthenticatedAuthNotifier.new),
-            localStorageServiceProvider.overrideWith((ref) => storage),
-            kritaBridgeNotifierProvider.overrideWith(
-              (ref) => _TestKritaBridgeNotifier(),
-            ),
-            replicationQueueNotifierProvider.overrideWith(
-              _TestReplicationQueueNotifier.new,
-            ),
-            queueExecutionNotifierProvider.overrideWith(
-              _TestQueueExecutionNotifier.new,
-            ),
-            subscriptionNotifierProvider.overrideWith(
-              _OpusSubscriptionNotifier.new,
-            ),
-            estimatedCostProvider.overrideWith((ref) => 0),
-            isFreeGenerationProvider.overrideWith((ref) => true),
-          ],
+          overrides: _footerOverrides(
+            storage: storage,
+            subscription: _opusSubscription,
+          ),
           child: MaterialApp(
             locale: const Locale('zh'),
             supportedLocales: AppLocalizations.supportedLocales,
@@ -688,24 +641,10 @@ void main() {
     for (final width in const [320.0, 360.0, 400.0]) {
       await tester.pumpWidget(
         ProviderScope(
-          overrides: [
-            authNotifierProvider.overrideWith(_AuthenticatedAuthNotifier.new),
-            localStorageServiceProvider.overrideWith((ref) => storage),
-            kritaBridgeNotifierProvider.overrideWith(
-              (ref) => _TestKritaBridgeNotifier(),
-            ),
-            replicationQueueNotifierProvider.overrideWith(
-              _TestReplicationQueueNotifier.new,
-            ),
-            queueExecutionNotifierProvider.overrideWith(
-              _TestQueueExecutionNotifier.new,
-            ),
-            subscriptionNotifierProvider.overrideWith(
-              _OpusSubscriptionNotifier.new,
-            ),
-            estimatedCostProvider.overrideWith((ref) => 0),
-            isFreeGenerationProvider.overrideWith((ref) => true),
-          ],
+          overrides: _footerOverrides(
+            storage: storage,
+            subscription: _opusSubscription,
+          ),
           child: MaterialApp(
             locale: const Locale('zh'),
             supportedLocales: AppLocalizations.supportedLocales,
@@ -746,7 +685,283 @@ void main() {
       expect(tester.takeException(), isNull);
     }
   });
+
+  testWidgets('额外用量追加显示后底栏在窄屏与大字号下仍完整可达', (tester) async {
+    final storage = _MemoryLocalStorageService({
+      StorageKeys.autoSaveImages: false,
+      StorageKeys.showRandomPromptTools: true,
+    });
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    for (final scenario in const [
+      (width: 320.0, textScale: 1.0, compact: true),
+      (width: 400.0, textScale: 1.0, compact: true),
+      (width: 600.0, textScale: 1.0, compact: true),
+      (width: 840.0, textScale: 1.0, compact: true),
+      (width: 320.0, textScale: 3.0, compact: true),
+      (width: 600.0, textScale: 3.0, compact: true),
+      (width: 840.0, textScale: 3.0, compact: true),
+      (width: 840.0, textScale: 1.0, compact: false),
+      (width: 1180.0, textScale: 1.0, compact: false),
+      (width: 1600.0, textScale: 1.0, compact: false),
+      (width: 840.0, textScale: 3.0, compact: false),
+      (width: 1180.0, textScale: 3.0, compact: false),
+      (width: 1600.0, textScale: 3.0, compact: false),
+    ]) {
+      await tester.binding.setSurfaceSize(Size(scenario.width, 900));
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: _footerOverrides(
+            storage: storage,
+            subscription: _opusExtraUsageSubscription,
+          ),
+          child: MaterialApp(
+            locale: const Locale('zh'),
+            supportedLocales: AppLocalizations.supportedLocales,
+            localizationsDelegates: AppLocalizations.localizationsDelegates,
+            builder: (context, child) => MediaQuery(
+              data: MediaQuery.of(
+                context,
+              ).copyWith(textScaler: TextScaler.linear(scenario.textScale)),
+              child: child!,
+            ),
+            home: Scaffold(
+              body: Align(
+                alignment: Alignment.topLeft,
+                child: SizedBox(
+                  key: const ValueKey('footer-test-bounds'),
+                  width: scenario.width,
+                  height: 600,
+                  child: GenerationControls(compact: scenario.compact),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      final reason =
+          'width=${scenario.width}, textScale=${scenario.textScale}, '
+          'compact=${scenario.compact}';
+      final footerRect = tester
+          .getRect(find.byKey(const ValueKey('footer-test-bounds')))
+          .inflate(0.01);
+      final primary = find.byKey(
+        const ValueKey('generation-footer-primary-action'),
+      );
+      final actions = <Finder>[
+        primary,
+        find.byType(OpusUsageChip),
+        find.byType(AnlasBalanceChip),
+        find.byType(RandomModeToggle),
+        find.byType(DraggableNumberInput),
+        if (scenario.compact) ...[
+          find.byType(AutoSaveToggleChip),
+          find.byType(BatchSettingsButton),
+        ],
+      ];
+
+      expect(find.text('45%'), findsOneWidget, reason: reason);
+      expect(find.text('+200%').hitTestable(), findsOneWidget, reason: reason);
+      expect(find.text('生成'), findsOneWidget, reason: reason);
+      for (final action in actions) {
+        final rect = tester.getRect(action);
+        expect(
+          footerRect.contains(rect.topLeft) &&
+              footerRect.contains(rect.bottomRight),
+          isTrue,
+          reason: '$reason clipped $action at $rect',
+        );
+        expect(action.hitTestable(), findsOneWidget, reason: '$reason $action');
+      }
+      expect(tester.takeException(), isNull, reason: reason);
+    }
+  });
+  for (final switchAccount in [false, true]) {
+    testWidgets(
+      switchAccount
+          ? 'switching accounts while waiting for the mask abandons generation'
+          : 'the billing dialog and submission use the request at click time',
+      (tester) async {
+        final mask = Uint8List.fromList([1]);
+        final extent = Completer<FocusedInpaintMaskExtent>();
+        final generation = _RecordingGeneration();
+        final clicked = ImageParams(
+          prompt: 'snapshot prompt',
+          model: 'nai-diffusion-4-5-full',
+          width: 1536,
+          height: 1536,
+          steps: 28,
+          nSamples: 3,
+          action: ImageGenerationAction.infill,
+          inpaintStrength: 1,
+          sourceImage: Uint8List.fromList([2]),
+          maskImage: mask,
+        );
+        final container = await _pumpBillingControls(
+          tester,
+          clicked: clicked,
+          generation: generation,
+          overrides: [
+            focusedMaskExtentByImageProvider(mask).overrideWith(
+              (ref) => extent.future,
+            ),
+          ],
+        );
+        await tester.tap(find.text('Generate'));
+        await tester.pump();
+        expect(generation.submitted, isEmpty);
+        expect(find.text('Continue Generation'), findsNothing);
+
+        if (switchAccount) {
+          final auth = container.read(authNotifierProvider.notifier)
+              as _SwitchableBillingAuth;
+          auth.switchToSecondAccount();
+        } else {
+          final params =
+              container.read(generationParamsNotifierProvider.notifier)
+                  as _BillingTestParams;
+          params.setBatchCount(1);
+          container.read(imagesPerRequestProvider.notifier).set(2);
+          container.read(imageWorkflowControllerProvider.notifier)
+            ..setMinimumContextMegaPixels(128)
+            ..setFocusedInpaintEnabled(false);
+        }
+        extent.complete(
+          const FocusedInpaintMaskExtent(
+            maskWidth: 1536,
+            maskHeight: 1536,
+            bounds: FocusedInpaintCrop(x: 576, y: 576, width: 384, height: 384),
+          ),
+        );
+        await tester.pumpAndSettle();
+        if (switchAccount) {
+          expect(find.text('Continue Generation'), findsNothing);
+          expect(generation.submitted, isEmpty);
+          return;
+        }
+
+        expect(
+          find.textContaining('estimated to cost 60 Anlas'),
+          findsOneWidget,
+        );
+        expect(generation.submitted, isEmpty);
+        await tester.tap(find.text('Continue Generation'));
+        await tester.pumpAndSettle();
+        expect(generation.submitted.single.params, clicked);
+        expect(generation.submitted.single.batchSize, 1);
+        expect(generation.submitted.single.focus?.enabled, isTrue);
+        expect(generation.submitted.single.focus?.minimumContextMegaPixels, 64);
+      },
+    );
+  }
+
+  const low = OpusUsageInfo(percent: 4.99);
+  const overdrawn = OpusUsageInfo(isNegative: true);
+  for (final (label, usage, steps, threshold, warning) in [
+    ('worst case reaches threshold', low, 28, 30, 'costs up to 30 Anlas'),
+    ('worst case below threshold', low, 28, 31, null),
+    ('both estimates equal', low, 29, 30, 'estimated to cost 30 Anlas'),
+    ('overdrawn quota', overdrawn, 28, 30, 'estimated to cost 30 Anlas'),
+  ]) {
+    testWidgets('generation confirmation when $label', (tester) async {
+      final generation = _RecordingGeneration();
+      await _pumpBillingControls(
+        tester,
+        clicked: ImageParams(prompt: 'quota warning', steps: steps),
+        generation: generation,
+        subscription: _opusSubscription.copyWith(usage: usage),
+        threshold: threshold,
+      );
+      await tester.tap(find.text('Generate'));
+      await tester.pumpAndSettle();
+
+      final confirm = find.text('Continue Generation');
+      if (warning != null) {
+        expect(find.textContaining(warning), findsOneWidget);
+        expect(
+          find.textContaining('$threshold Anlas warning threshold'),
+          findsOneWidget,
+        );
+        expect(generation.submitted, isEmpty);
+        await tester.tap(confirm);
+        await tester.pumpAndSettle();
+      }
+      expect(confirm, findsNothing);
+      expect(generation.submitted, hasLength(1));
+    });
+  }
 }
+
+Future<ProviderContainer> _pumpBillingControls(
+  WidgetTester tester, {
+  required ImageParams clicked,
+  required _RecordingGeneration generation,
+  UserSubscription subscription = _plainSubscription,
+  int threshold = 50,
+  List<Override> overrides = const [],
+}) async {
+  final container = ProviderContainer(
+    overrides: [
+      ..._footerOverrides(
+        storage: _MemoryLocalStorageService({
+          StorageKeys.protectionMode: true,
+          StorageKeys.protectionHighAnlasCostThreshold: threshold,
+        }),
+        subscription: subscription,
+        imageGeneration: () => generation,
+        auth: _SwitchableBillingAuth.new,
+      ),
+      generationParamsNotifierProvider.overrideWith(
+        () => _BillingTestParams(clicked),
+      ),
+      imageWorkflowControllerProvider.overrideWith(_BillingTestWorkflow.new),
+      ...overrides,
+    ],
+  );
+  addTearDown(container.dispose);
+  await tester.pumpWidget(
+    UncontrolledProviderScope(
+      container: container,
+      child: const MaterialApp(
+        locale: Locale('en'),
+        supportedLocales: AppLocalizations.supportedLocales,
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        home: Scaffold(body: GenerationControls(compact: true)),
+      ),
+    ),
+  );
+  return container;
+}
+
+Future<void> _pumpBatchSettingsForm(WidgetTester tester) async {
+  tester.view.devicePixelRatio = 1;
+  tester.view.physicalSize = const Size(1000, 800);
+  addTearDown(tester.view.resetDevicePixelRatio);
+  addTearDown(tester.view.resetPhysicalSize);
+  await tester.pumpWidget(
+    ProviderScope(
+      overrides: [
+        localStorageServiceProvider.overrideWith(
+          (ref) => _MemoryLocalStorageService({}),
+        ),
+      ],
+      child: const MaterialApp(
+        locale: Locale('zh'),
+        supportedLocales: AppLocalizations.supportedLocales,
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        home: Scaffold(body: Center(child: BatchSettingsButton())),
+      ),
+    ),
+  );
+  await tester.pump();
+  await tester.tap(find.byType(BatchSettingsButton));
+  await tester.pumpAndSettle();
+}
+
+Finder _batchOption(String value) =>
+    find.ancestor(of: find.text(value), matching: find.byType(SurfaceInkWell));
 
 Future<_TestImageGenerationNotifier> _pumpLargeTextBatchControls(
   WidgetTester tester,
@@ -758,25 +973,10 @@ Future<_TestImageGenerationNotifier> _pumpLargeTextBatchControls(
     StorageKeys.showRandomPromptTools: true,
   });
   final container = ProviderContainer(
-    overrides: [
-      authNotifierProvider.overrideWith(_AuthenticatedAuthNotifier.new),
-      imageGenerationNotifierProvider.overrideWith(
-        _TestImageGenerationNotifier.new,
-      ),
-      localStorageServiceProvider.overrideWith((ref) => storage),
-      kritaBridgeNotifierProvider.overrideWith(
-        (ref) => _TestKritaBridgeNotifier(),
-      ),
-      replicationQueueNotifierProvider.overrideWith(
-        _TestReplicationQueueNotifier.new,
-      ),
-      queueExecutionNotifierProvider.overrideWith(
-        _TestQueueExecutionNotifier.new,
-      ),
-      subscriptionNotifierProvider.overrideWith(_TestSubscriptionNotifier.new),
-      estimatedCostProvider.overrideWith((ref) => 0),
-      isFreeGenerationProvider.overrideWith((ref) => true),
-    ],
+    overrides: _footerOverrides(
+      storage: storage,
+      imageGeneration: _TestImageGenerationNotifier.new,
+    ),
   );
   addTearDown(container.dispose);
   await tester.pumpWidget(
@@ -810,14 +1010,70 @@ Future<_TestImageGenerationNotifier> _pumpLargeTextBatchControls(
       as _TestImageGenerationNotifier;
 }
 
-class _AuthenticatedAuthNotifier extends AuthNotifier {
+class _FixedAuthNotifier extends AuthNotifier {
+  _FixedAuthNotifier(this.status);
+
+  final AuthStatus status;
+
   @override
-  AuthState build() => const AuthState(status: AuthStatus.authenticated);
+  AuthState build() => AuthState(status: status);
 }
 
-class _UnauthenticatedAuthNotifier extends AuthNotifier {
+class _SwitchableBillingAuth extends AuthNotifier {
   @override
-  AuthState build() => const AuthState(status: AuthStatus.unauthenticated);
+  AuthState build() =>
+      const AuthState(status: AuthStatus.authenticated, accountId: 'first');
+
+  void switchToSecondAccount() => state = state.copyWith(accountId: 'second');
+}
+
+class _BillingTestParams extends GenerationParamsNotifier {
+  _BillingTestParams(this.clicked);
+
+  final ImageParams clicked;
+
+  @override
+  ImageParams build() => clicked;
+
+  void setBatchCount(int count) => state = state.copyWith(nSamples: count);
+}
+
+class _BillingTestWorkflow extends ImageWorkflowController {
+  @override
+  ImageWorkflowState build() => const ImageWorkflowState(
+    focusedInpaintEnabled: true,
+    minimumContextMegaPixels: 64,
+  );
+}
+
+class _RecordingGeneration extends ImageGenerationNotifier {
+  final submitted =
+      <
+        ({ImageParams params, int? batchSize, GenerationFocusedSnapshot? focus})
+      >[];
+
+  @override
+  ImageGenerationState build() => const ImageGenerationState();
+
+  @override
+  generate(
+    ImageParams params, {
+    int? batchSizeOverride,
+    bool preserveCharacterSnapshot = false,
+    GenerationFocusedSnapshot? focusedOverride,
+    bool bypassRandomPrompt = false,
+  }) {
+    submitted.add((
+      params: params,
+      batchSize: batchSizeOverride,
+      focus: focusedOverride,
+    ));
+    // 走生成器的忙碌保护，只记录提交参数。
+    state = const ImageGenerationState(isSubmitting: true);
+    final outcome = super.generate(params);
+    state = const ImageGenerationState();
+    return outcome;
+  }
 }
 
 class _TestImageGenerationNotifier extends ImageGenerationNotifier {
@@ -888,26 +1144,57 @@ class _TestQueueExecutionNotifier extends QueueExecutionNotifier {
   QueueExecutionState build() => const QueueExecutionState();
 }
 
-class _TestSubscriptionNotifier extends SubscriptionNotifier {
+class _FixedSubscriptionNotifier extends SubscriptionNotifier {
+  _FixedSubscriptionNotifier(this.subscription);
+
+  final UserSubscription subscription;
+
   @override
-  SubscriptionState build() => const SubscriptionState.loaded(
-    UserSubscription(
-      tier: 1,
-      active: true,
-      trainingStepsLeft: TrainingStepsInfo(fixedTrainingStepsLeft: 7384),
-    ),
-  );
+  SubscriptionState build() => SubscriptionState.loaded(subscription);
 }
 
+const _plainSubscription = UserSubscription(
+  tier: 1,
+  active: true,
+  trainingStepsLeft: TrainingStepsInfo(fixedTrainingStepsLeft: 7384),
+);
+
 /// tier 3 且带配额，才会让 Opus 徽章真正占位（默认模型 V5 有配额上限）。
-class _OpusSubscriptionNotifier extends SubscriptionNotifier {
-  @override
-  SubscriptionState build() => const SubscriptionState.loaded(
-    UserSubscription(
-      tier: 3,
-      active: true,
-      trainingStepsLeft: TrainingStepsInfo(fixedTrainingStepsLeft: 7384),
-      usage: OpusUsageInfo(percent: 67),
-    ),
-  );
-}
+const _opusSubscription = UserSubscription(
+  tier: 3,
+  active: true,
+  trainingStepsLeft: TrainingStepsInfo(fixedTrainingStepsLeft: 7384),
+  usage: OpusUsageInfo(percent: 67),
+);
+
+const _opusExtraUsageSubscription = UserSubscription(
+  tier: 3,
+  active: true,
+  trainingStepsLeft: TrainingStepsInfo(fixedTrainingStepsLeft: 7384),
+  usage: OpusUsageInfo(percent: 45, purchasedPercent: 200),
+);
+
+List<Override> _footerOverrides({
+  required LocalStorageService storage,
+  AuthStatus authStatus = AuthStatus.authenticated,
+  UserSubscription subscription = _plainSubscription,
+  ImageGenerationNotifier Function()? imageGeneration,
+  AuthNotifier Function()? auth,
+}) => [
+  authNotifierProvider.overrideWith(
+    auth ?? () => _FixedAuthNotifier(authStatus),
+  ),
+  if (imageGeneration != null)
+    imageGenerationNotifierProvider.overrideWith(imageGeneration),
+  localStorageServiceProvider.overrideWith((ref) => storage),
+  kritaBridgeNotifierProvider.overrideWith(_TestKritaBridgeNotifier.new),
+  replicationQueueNotifierProvider.overrideWith(
+    _TestReplicationQueueNotifier.new,
+  ),
+  queueExecutionNotifierProvider.overrideWith(_TestQueueExecutionNotifier.new),
+  subscriptionNotifierProvider.overrideWith(
+    () => _FixedSubscriptionNotifier(subscription),
+  ),
+  estimatedCostProvider.overrideWith((ref) => 0),
+  isFreeGenerationProvider.overrideWith((ref) => true),
+];

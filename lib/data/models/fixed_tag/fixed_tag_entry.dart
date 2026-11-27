@@ -4,6 +4,7 @@ import 'package:freezed_annotation/freezed_annotation.dart';
 import 'package:uuid/uuid.dart';
 
 import 'fixed_tag_prompt_type.dart';
+import '../../../core/extensions/list_sort_extensions.dart';
 import '../../../core/utils/prompt_edit_document.dart';
 
 part 'fixed_tag_entry.freezed.dart';
@@ -24,7 +25,7 @@ enum FixedTagPosition {
 ///
 /// 用于保存可复用的提示词片段，支持权重调节和位置选择
 @freezed
-class FixedTagEntry with _$FixedTagEntry {
+abstract class FixedTagEntry with _$FixedTagEntry {
   const FixedTagEntry._();
 
   const factory FixedTagEntry({
@@ -322,12 +323,7 @@ extension FixedTagEntryListExtension on List<FixedTagEntry> {
 
   /// 按名称排序
   List<FixedTagEntry> sortedByName() {
-    final sorted = [...this];
-    sorted.sort(
-      (a, b) =>
-          a.displayName.toLowerCase().compareTo(b.displayName.toLowerCase()),
-    );
-    return sorted;
+    return [...this]..sortByKey((entry) => entry.displayName.toLowerCase());
   }
 
   /// 将所有启用的正向固定词按位置和顺序应用到提示词。

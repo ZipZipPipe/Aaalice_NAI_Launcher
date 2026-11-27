@@ -8,7 +8,7 @@ import '../../../core/utils/localization_extension.dart';
 import '../../../data/services/dlss/dlss_options.dart';
 import '../../adaptive/adaptive_presenter.dart';
 import '../../providers/dlss_provider.dart';
-import '../../providers/generation/dlss_enhancement_adopter.dart';
+import '../../providers/generation/derivative_image_adopter.dart';
 import '../../widgets/common/app_toast.dart';
 import '../../widgets/common/image_comparison_view.dart';
 import '../../adaptive/window_size_class.dart';
@@ -108,9 +108,10 @@ class _DlssEnhancementPanelState extends ConsumerState<DlssEnhancementPanel> {
       _error = null;
     });
     try {
-      final path = await ref
-          .read(dlssEnhancementAdopterProvider)
+      final adopted = await ref
+          .read(derivativeImageAdopterProvider)
           .adopt(result: bytes, source: widget.source);
+      final path = adopted?.filePath;
       if (!mounted) return;
       if (path == null) {
         setState(() {
@@ -186,16 +187,13 @@ class _DlssEnhancementPanelState extends ConsumerState<DlssEnhancementPanel> {
   Widget _preview({double? viewportHeight}) {
     final l10n = context.l10n;
     final result = _result;
-    final image = ClipRRect(
-      borderRadius: BorderRadius.circular(12),
-      child: ImageComparisonView(
-        key: _comparisonKey,
-        sourceImageBytes: widget.source,
-        generatedImageBytes: result ?? widget.source,
-        fit: BoxFit.contain,
-        showPixelScaleControls: true,
-        viewportHeight: viewportHeight,
-      ),
+    final image = ImageComparisonView(
+      key: _comparisonKey,
+      sourceImageBytes: widget.source,
+      generatedImageBytes: result ?? widget.source,
+      fit: BoxFit.contain,
+      showPixelScaleControls: true,
+      viewportHeight: viewportHeight,
     );
     return Column(
       mainAxisSize: viewportHeight == null

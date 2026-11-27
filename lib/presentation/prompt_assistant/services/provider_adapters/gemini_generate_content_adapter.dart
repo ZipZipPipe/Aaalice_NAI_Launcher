@@ -4,39 +4,58 @@ import 'package:dio/dio.dart';
 
 import '../../../../core/agent/agent_types.dart';
 import '../../models/agent_protocol.dart';
-import '../../models/prompt_assistant_models.dart';
+import '../../../../data/models/prompt_assistant/prompt_assistant_models.dart';
 import 'agent_wire_helpers.dart';
+import 'gemini_transport.dart';
 import 'prompt_assistant_adapter.dart';
 import 'reasoning_payload.dart';
+import 'reasoning_rejection.dart';
 
 class GeminiGenerateContentAdapter extends PromptAssistantProviderAdapter {
-  const GeminiGenerateContentAdapter();
+  const GeminiGenerateContentAdapter({
+    this.transport = const GoogleAiStudioTransport(),
+  });
+
+  final GeminiTransport transport;
 
   @override
   Future<List<String>> fetchModels({
     required Dio dio,
     required ProviderConfig provider,
     required String? apiKey,
-  }) async {
-    final response = await dio.get<dynamic>(
-      _resolveModelsEndpoint(provider),
-      options: Options(
-        headers: _headers(apiKey),
-        sendTimeout: const Duration(seconds: 20),
-        receiveTimeout: const Duration(seconds: 30),
-      ),
-    );
-    return extractModelNames(response.data);
-  }
+  }) => _guardUnauthorized(
+    apiKey,
+    () => transport.fetchModels(
+      dio: dio,
+      provider: provider,
+      credential: apiKey,
+    ),
+  );
 
   @override
   Future<String> complete({
     required Dio dio,
     required PromptAssistantRequest request,
     required CancelToken cancelToken,
+  }) => _guardUnauthorized(
+    request.apiKey,
+    () => _complete(dio: dio, request: request, cancelToken: cancelToken),
+  );
+
+  Future<String> _complete({
+    required Dio dio,
+    required PromptAssistantRequest request,
+    required CancelToken cancelToken,
   }) async {
+    final target = await transport.resolve(
+      dio: dio,
+      provider: request.provider,
+      credential: request.apiKey,
+      model: request.model,
+      method: GeminiMethod.generateContent,
+    );
     final response = await dio.post<dynamic>(
-      _resolveGenerateEndpoint(request.provider, request.model),
+      target.endpoint,
       data: {
         if (request.systemPrompt.isNotEmpty)
           'systemInstruction': {
@@ -59,13 +78,31 @@ class GeminiGenerateContentAdapter extends PromptAssistantProviderAdapter {
         },
       },
       options: Options(
-        headers: _headers(request.apiKey),
+        headers: target.headers,
         sendTimeout: const Duration(seconds: 30),
         receiveTimeout: request.responseTimeout,
       ),
       cancelToken: cancelToken,
     );
-    return _extractResponseContent(response.data);
+    return _extractResponseContent(checkedProviderResponse(response));
+  }
+
+  Future<T> _guardUnauthorized<T>(
+    String? credential,
+    Future<T> Function() request,
+  ) async {
+    try {
+      return await request();
+    } on DioException catch (error) {
+      _forgetSessionOnUnauthorized(error, credential);
+      rethrow;
+    }
+  }
+
+  void _forgetSessionOnUnauthorized(Object error, String? credential) {
+    if (error is DioException && error.response?.statusCode == 401) {
+      transport.onUnauthorized(credential);
+    }
   }
 
   @override
@@ -74,10 +111,8 @@ class GeminiGenerateContentAdapter extends PromptAssistantProviderAdapter {
     required AgentChatRequest request,
     required CancelToken cancelToken,
   }) async* {
-    final endpoint =
-        '${_resolveStreamGenerateEndpoint(request.provider, request.model)}'
-        '?alt=sse';
     final pending = <AgentWireEvent>[];
+    final payload = _buildAgentPayload(request);
 
     var stopReason = StopReason.pending;
     Usage? usage;
@@ -110,10 +145,10 @@ class GeminiGenerateContentAdapter extends PromptAssistantProviderAdapter {
           if (data.trim() == '[DONE]') return;
           throw const FormatException('Google stream returned invalid JSON');
         }
-        final error = extractErrorMessage(json);
-        if (error != null) {
+        if (ProviderResponseError.fromResponse(json, payload)
+            case final error?) {
           sawError = true;
-          pending.add(AgentWireError('LLM service returned an error: $error'));
+          pending.add(agentWireErrorFrom(error, request));
           return;
         }
         final usageRaw = json['usageMetadata'];
@@ -141,7 +176,7 @@ class GeminiGenerateContentAdapter extends PromptAssistantProviderAdapter {
             if (finishReason is String) {
               sawFinishReason = true;
               stopReason = switch (finishReason) {
-                'MAX_TOKENS' => StopReason.length,
+                'MAX_TOKENS' || 'CONTINUATION' => StopReason.length,
                 'STOP' => StopReason.stop,
                 _ => StopReason.error,
               };
@@ -197,7 +232,6 @@ class GeminiGenerateContentAdapter extends PromptAssistantProviderAdapter {
                   }
                   if (functionCall is Map<String, dynamic>) {
                     hasToolCalls = true;
-                    stopReason = StopReason.toolUse;
                     final args = functionCall['args'];
                     pending.add(
                       AgentWireToolCallDone(
@@ -221,11 +255,18 @@ class GeminiGenerateContentAdapter extends PromptAssistantProviderAdapter {
     );
 
     try {
+      final target = await transport.resolve(
+        dio: dio,
+        provider: request.provider,
+        credential: request.apiKey,
+        model: request.model,
+        method: GeminiMethod.streamGenerateContent,
+      );
       final stream = agentStreamPost(
         dio,
-        endpoint: endpoint,
-        payload: _buildAgentPayload(request),
-        headers: _headers(request.apiKey),
+        endpoint: '${target.endpoint}?alt=sse',
+        payload: payload,
+        headers: target.headers,
         cancelToken: cancelToken,
         // Duration.zero overrides Dio's BaseOptions deadline instead of
         // inheriting it. Reasoning models can take minutes before first bytes.
@@ -244,10 +285,11 @@ class GeminiGenerateContentAdapter extends PromptAssistantProviderAdapter {
         pending.clear();
       }
     } on Object catch (error) {
+      _forgetSessionOnUnauthorized(error, request.apiKey);
       if (pending.isNotEmpty) {
         yield* Stream.fromIterable(List.of(pending));
       }
-      yield agentWireErrorFrom(error, request.provider);
+      yield agentWireErrorFrom(error, request);
       return;
     }
 
@@ -263,15 +305,17 @@ class GeminiGenerateContentAdapter extends PromptAssistantProviderAdapter {
   }
 
   Map<String, dynamic> _buildAgentPayload(AgentChatRequest request) {
-    // Gemini 要求 user/model 交替；相邻同角色合并为一个 turn。
     final turns = <Map<String, dynamic>>[];
     final requiresToolCallId = _requiresToolCallId(request.model);
     final supportsMultimodalFunctionResponse =
         _supportsMultimodalFunctionResponse(request.model);
+    // Gemini 要求 user/model 交替，相邻同角色合并为一个 turn；旧模型的读图图片独占一个 turn。
+    String? mergeableRole;
     void appendTurn(String role, Map<String, dynamic> part) {
-      if (turns.isNotEmpty && turns.last['role'] == role) {
+      if (role == mergeableRole) {
         (turns.last['parts'] as List<Map<String, dynamic>>).add(part);
       } else {
+        mergeableRole = role;
         turns.add({
           'role': role,
           'parts': [part],
@@ -306,13 +350,13 @@ class GeminiGenerateContentAdapter extends PromptAssistantProviderAdapter {
                   'thoughtSignature': block.signature,
               });
             case AssistantThinkingContent()
-                when block.thinking.isNotEmpty ||
-                    (sameProviderAndModel &&
+                when sameProviderAndModel &&
+                    (block.thinking.isNotEmpty ||
                         block.signature?.isNotEmpty == true):
               appendTurn('model', {
-                if (sameProviderAndModel) 'thought': true,
+                'thought': true,
                 'text': _sanitizeSurrogates(block.thinking),
-                if (sameProviderAndModel && block.signature?.isNotEmpty == true)
+                if (block.signature?.isNotEmpty == true)
                   'thoughtSignature': block.signature,
               });
             case ToolCallContent():
@@ -338,12 +382,16 @@ class GeminiGenerateContentAdapter extends PromptAssistantProviderAdapter {
                 'inlineData': {'mimeType': image.source.mimeType, 'data': data},
               },
         ];
+        final hasText = message.text.trim().isNotEmpty;
+        final responseText = hasText
+            ? message.text
+            : (imageParts.isNotEmpty ? '(see attached image)' : '');
         appendTurn('user', {
           'functionResponse': {
             'name': message.toolName,
             'response': message.isError
-                ? {'error': _sanitizeSurrogates(message.text)}
-                : {'output': _sanitizeSurrogates(message.text)},
+                ? {'error': _sanitizeSurrogates(responseText)}
+                : {'output': _sanitizeSurrogates(responseText)},
             if (requiresToolCallId)
               'id': _normalizeToolCallId(message.toolCallId),
             if (supportsMultimodalFunctionResponse && imageParts.isNotEmpty)
@@ -351,10 +399,14 @@ class GeminiGenerateContentAdapter extends PromptAssistantProviderAdapter {
           },
         });
         if (!supportsMultimodalFunctionResponse && imageParts.isNotEmpty) {
-          appendTurn('user', {'text': 'Tool result image:'});
-          for (final imagePart in imageParts) {
-            appendTurn('user', imagePart);
-          }
+          turns.add({
+            'role': 'user',
+            'parts': [
+              {'text': 'Tool result image:'},
+              ...imageParts,
+            ],
+          });
+          mergeableRole = null;
         }
       }
     }
@@ -384,19 +436,13 @@ class GeminiGenerateContentAdapter extends PromptAssistantProviderAdapter {
                   'description': tool.description,
                   // Gemini 原生 API 支持完整 JSON Schema；使用旧 parameters
                   // 会把 enum 限定成字符串，导致整数枚举在请求校验阶段失败。
-                  'parametersJsonSchema': tool.parameters,
+                  // Gemini ignores `const` in `parametersJsonSchema` but honors
+                  // single-value `enum` (Pi google-shared.ts rewriteConstAsEnum).
+                  'parametersJsonSchema': _rewriteConstAsEnum(tool.parameters),
                 },
             ],
           },
         ],
-    };
-  }
-
-  Map<String, dynamic> _headers(String? apiKey) {
-    return {
-      'Content-Type': 'application/json',
-      if (apiKey != null && apiKey.trim().isNotEmpty)
-        'x-goog-api-key': apiKey.trim(),
     };
   }
 
@@ -415,40 +461,8 @@ class GeminiGenerateContentAdapter extends PromptAssistantProviderAdapter {
     ];
   }
 
-  String _resolveGenerateEndpoint(ProviderConfig provider, String model) {
-    final base = _resolveGeminiRoot(provider);
-    final normalizedModel = model.startsWith('models/')
-        ? model
-        : 'models/$model';
-    return '$base/$normalizedModel:generateContent';
-  }
-
-  String _resolveStreamGenerateEndpoint(ProviderConfig provider, String model) {
-    final base = _resolveGeminiRoot(provider);
-    final normalizedModel = model.startsWith('models/')
-        ? model
-        : 'models/$model';
-    return '$base/$normalizedModel:streamGenerateContent';
-  }
-
-  String _resolveModelsEndpoint(ProviderConfig provider) {
-    return '${_resolveGeminiRoot(provider)}/models';
-  }
-
-  String _resolveGeminiRoot(ProviderConfig provider) {
-    final base = normalizedBaseUrl(provider.baseUrl);
-    if (base.endsWith('/v1beta') || base.endsWith('/v1')) {
-      return base;
-    }
-    return '$base/v1beta';
-  }
-
   String _extractResponseContent(dynamic raw) {
     if (raw is Map<String, dynamic>) {
-      final error = extractErrorMessage(raw);
-      if (error != null) {
-        throw StateError('LLM service returned an error: $error');
-      }
       final candidates = raw['candidates'];
       if (candidates is List) {
         final parts = <String>[];
@@ -504,6 +518,65 @@ int? _geminiMajorVersion(String modelId) {
 String _normalizeToolCallId(String id) => id
     .replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_')
     .substring(0, id.length > 64 ? 64 : id.length);
+
+const _jsonSchemaNameMaps = <String>{
+  'properties',
+  'patternProperties',
+  r'$defs',
+  'definitions',
+  'dependentSchemas',
+  'dependencies',
+};
+
+const _jsonSchemaSubschemas = <String>{
+  'additionalProperties',
+  'unevaluatedProperties',
+  'propertyNames',
+  'items',
+  'prefixItems',
+  'additionalItems',
+  'unevaluatedItems',
+  'contains',
+  'allOf',
+  'anyOf',
+  'oneOf',
+  'not',
+  'if',
+  'then',
+  'else',
+  'contentSchema',
+};
+
+Object? _rewriteConstAsEnum(Object? schema, {bool isNameMap = false}) {
+  if (schema is List) {
+    return [for (final item in schema) _rewriteConstAsEnum(item)];
+  }
+  if (schema is! Map) {
+    return schema;
+  }
+  final result = <String, dynamic>{};
+  for (final entry in schema.entries) {
+    final key = entry.key.toString();
+    final value = entry.value;
+    if (isNameMap || _jsonSchemaSubschemas.contains(key)) {
+      result[key] = _rewriteConstAsEnum(value);
+    } else if (_jsonSchemaNameMaps.contains(key)) {
+      result[key] = _rewriteConstAsEnum(value, isNameMap: true);
+    } else {
+      result[key] = value;
+    }
+  }
+  if (!isNameMap &&
+      result.containsKey('const') &&
+      !result.containsKey('enum')) {
+    final value = result['const'];
+    if (value is String || value is num) {
+      result.remove('const');
+      result['enum'] = [value];
+    }
+  }
+  return result;
+}
 
 String _sanitizeSurrogates(String value) {
   final units = value.codeUnits;

@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:nai_launcher/presentation/adaptive/interaction_policy.dart';
 import 'package:nai_launcher/presentation/themes/core/input_surface_style.dart';
 import 'package:nai_launcher/presentation/widgets/common/input_surface_container.dart';
 import 'package:nai_launcher/presentation/widgets/common/themed_input.dart';
+
+import '../../../helpers/input_surface_expectations.dart';
 
 void main() {
   group('ThemedInput 平面输入色面', () {
@@ -112,7 +115,233 @@ void main() {
     });
   });
 
+  group('ThemedInput 装饰与下方文字', () {
+    testWidgets('标签与图标显示在色面内，帮助与错误排在色面下方并点亮错误轮廓', (tester) async {
+      await tester.pumpWidget(
+        inputTestApp(
+          const Column(
+            children: [
+              ThemedInput(
+                key: ValueKey('helper'),
+                decoration: InputDecoration(
+                  labelText: 'Weight',
+                  prefixIcon: Icon(Icons.scale),
+                  helperText: 'Shown below',
+                ),
+              ),
+              ThemedInput(
+                key: ValueKey('error'),
+                decoration: InputDecoration(errorText: 'Name taken'),
+              ),
+            ],
+          ),
+        ),
+      );
+
+      expect(insideInputSurface(find.text('Weight')), findsOneWidget);
+      expect(insideInputSurface(find.byIcon(Icons.scale)), findsOneWidget);
+      for (final (key, text, hasError) in [
+        ('helper', 'Shown below', false),
+        ('error', 'Name taken', true),
+      ]) {
+        final field = find.byKey(ValueKey(key));
+        expect(insideInputSurface(find.text(text)), findsNothing);
+        expect(
+          tester.getTopLeft(find.text(text)).dy,
+          greaterThanOrEqualTo(
+            tester
+                .getBottomLeft(
+                  find.descendant(
+                    of: field,
+                    matching: find.byType(InputSurfaceContainer),
+                  ),
+                )
+                .dy,
+          ),
+        );
+        expect(inputSurfaceOf(tester, field).hasError, hasError, reason: key);
+      }
+      expect(innerDecorationOf(tester).helperText, isNull);
+    });
+
+    testWidgets('错误随输入出现和消失时输入框不重建，焦点与输入法连接保持', (tester) async {
+      final controller = TextEditingController();
+      addTearDown(controller.dispose);
+      await tester.pumpWidget(
+        inputTestApp(
+          StatefulBuilder(
+            builder: (context, setState) => ThemedInput(
+              controller: controller,
+              onChanged: (_) => setState(() {}),
+              decoration: InputDecoration(
+                errorText: controller.text == 'bad' ? 'Invalid' : null,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.byType(TextField));
+      await tester.pump();
+      final editable = tester.state(find.byType(EditableText));
+
+      for (final (text, error) in [
+        ('bad', findsOneWidget),
+        ('good', findsNothing),
+      ]) {
+        await tester.enterText(find.byType(TextField), text);
+        await tester.pump();
+        expect(find.text('Invalid'), error, reason: text);
+        expect(tester.state(find.byType(EditableText)), same(editable));
+        expect(tester.testTextInput.hasAnyClients, isTrue);
+      }
+      expect(
+        tester
+            .widget<EditableText>(find.byType(EditableText))
+            .focusNode
+            .hasFocus,
+        isTrue,
+      );
+    });
+
+    testWidgets('没有下方文字时色面填满调用方给定的高度', (tester) async {
+      await tester.pumpWidget(
+        inputTestApp(
+          const SizedBox(
+            height: 56,
+            child: ThemedInput(decoration: InputDecoration(isDense: true)),
+          ),
+        ),
+      );
+
+      expect(tester.getSize(find.byType(InputSurfaceContainer)).height, 56);
+    });
+
+    testWidgets('expands 时错误排在下方，色面填满其余高度', (tester) async {
+      await tester.pumpWidget(
+        inputTestApp(
+          const SizedBox(
+            height: 200,
+            child: ThemedInput(
+              expands: true,
+              maxLines: null,
+              decoration: InputDecoration(errorText: 'Too long'),
+            ),
+          ),
+        ),
+      );
+
+      expect(tester.takeException(), isNull);
+      final surface = tester.getRect(find.byType(InputSurfaceContainer));
+      final error = tester.getRect(find.text('Too long'));
+      expect(error.top, greaterThanOrEqualTo(surface.bottom));
+      expect(error.bottom, lessThanOrEqualTo(surface.top + 200));
+      expect(surface.height, greaterThan(150));
+    });
+  });
+
   group('ThemedInput 清空按钮', () {
+    for (final (policy, extent) in [
+      (InteractionPolicy.touchFirst, 48.0),
+      (InteractionPolicy.neutral, 32.0),
+    ]) {
+      testWidgets('单行输入框的清空按钮 $extent 见方、完整可点，文字不排到按钮下面', (tester) async {
+        final controller = TextEditingController(text: 'a long query text');
+        addTearDown(controller.dispose);
+        await tester.pumpWidget(
+          MaterialApp(
+            builder: (context, child) =>
+                InteractionPolicyScope(initialPolicy: policy, child: child!),
+            home: Scaffold(
+              body: Center(
+                child: SizedBox(
+                  width: 280,
+                  child: ThemedInput(
+                    controller: controller,
+                    showClearButton: true,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+
+        final button = find.ancestor(
+          of: find.byIcon(Icons.close),
+          matching: find.byType(IconButton),
+        );
+        final buttonRect = tester.getRect(button);
+        expect(buttonRect.size, Size(extent, extent));
+        expect(
+          tester
+              .getRect(find.byType(TextField))
+              .inflate(0.01)
+              .contains(buttonRect.topLeft),
+          isTrue,
+        );
+        expect(
+          tester
+              .getRect(find.byType(TextField))
+              .inflate(0.01)
+              .contains(buttonRect.bottomRight),
+          isTrue,
+        );
+        expect(button.hitTestable(), findsOneWidget);
+        expect(
+          tester.getRect(find.byType(EditableText)).right,
+          lessThanOrEqualTo(buttonRect.left),
+        );
+      });
+    }
+
+    testWidgets('之后才开启清空按钮也按内容显隐，卸载后不再监听外部控制器', (tester) async {
+      final controller = TextEditingController();
+      addTearDown(controller.dispose);
+      Future<void> pumpInput({required bool showClearButton}) {
+        return tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: ThemedInput(
+                controller: controller,
+                showClearButton: showClearButton,
+              ),
+            ),
+          ),
+        );
+      }
+
+      await pumpInput(showClearButton: false);
+      await pumpInput(showClearButton: true);
+      await tester.enterText(find.byType(TextField), 'girl');
+      await tester.pump();
+      expect(find.byIcon(Icons.close), findsOneWidget);
+
+      await pumpInput(showClearButton: false);
+      expect(find.byIcon(Icons.close), findsNothing);
+      await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+      controller.text = '';
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('改由内部持有控制器时保留已输入内容', (tester) async {
+      final controller = TextEditingController(text: 'girl');
+      addTearDown(controller.dispose);
+      Future<void> pumpInput(TextEditingController? value) {
+        return tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(body: ThemedInput(controller: value)),
+          ),
+        );
+      }
+
+      await pumpInput(controller);
+      await pumpInput(null);
+      expect(
+        tester.widget<EditableText>(find.byType(EditableText)).controller.text,
+        'girl',
+      );
+    });
+
     testWidgets('文本在空/非空间切换时输入框不重建、焦点不丢失', (tester) async {
       final controller = TextEditingController(text: 'girl');
       final focusNode = FocusNode();

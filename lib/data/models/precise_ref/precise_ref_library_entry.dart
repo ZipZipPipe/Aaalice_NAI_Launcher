@@ -1,8 +1,9 @@
 import 'package:freezed_annotation/freezed_annotation.dart';
-import 'package:hive/hive.dart';
+import 'package:hive_ce/hive_ce.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../core/enums/precise_ref_type.dart';
+import '../../../core/extensions/list_sort_extensions.dart';
 
 part 'precise_ref_library_entry.freezed.dart';
 part 'precise_ref_library_entry.g.dart';
@@ -15,7 +16,7 @@ part 'precise_ref_library_entry.g.dart';
 /// 注意：Hive typeId 26 已被本模型占用，勿在其他模型中复用。
 @HiveType(typeId: 26)
 @freezed
-class PreciseRefLibraryEntry with _$PreciseRefLibraryEntry {
+abstract class PreciseRefLibraryEntry with _$PreciseRefLibraryEntry {
   const PreciseRefLibraryEntry._();
 
   const factory PreciseRefLibraryEntry({
@@ -48,6 +49,8 @@ class PreciseRefLibraryEntry with _$PreciseRefLibraryEntry {
 
     /// 创建时间
     @HiveField(9) required DateTime createdAt,
+
+    @HiveField(10) bool? preferSameOutfit,
   }) = _PreciseRefLibraryEntry;
 
   /// 创建新条目（自动生成 id 与创建时间）
@@ -58,6 +61,7 @@ class PreciseRefLibraryEntry with _$PreciseRefLibraryEntry {
     PreciseRefType type = PreciseRefType.characterAndStyle,
     double strength = 1.0,
     double fidelity = 1.0,
+    bool? preferSameOutfit,
     DateTime? createdAt,
   }) {
     final resolvedId = id ?? const Uuid().v4();
@@ -71,6 +75,7 @@ class PreciseRefLibraryEntry with _$PreciseRefLibraryEntry {
       typeIndex: type.index,
       strength: strength,
       fidelity: fidelity,
+      preferSameOutfit: preferSameOutfit,
       createdAt: createdAt ?? DateTime.now(),
     );
   }
@@ -131,8 +136,7 @@ extension PreciseRefLibraryEntryListExtension on List<PreciseRefLibraryEntry> {
 
   /// 按名称排序
   List<PreciseRefLibraryEntry> sortedByName({bool descending = false}) {
-    final sorted = [...this]
-      ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    final sorted = [...this]..sortByKey((entry) => entry.name.toLowerCase());
     return descending ? sorted.reversed.toList() : sorted;
   }
 

@@ -1,21 +1,25 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hive_flutter/hive_flutter.dart';
+import 'package:hive_ce_flutter/hive_ce_flutter.dart';
 import 'package:image/image.dart' as img;
 import 'package:nai_launcher/core/constants/api_constants.dart';
 import 'package:nai_launcher/core/constants/storage_keys.dart';
+import 'package:nai_launcher/core/enums/generation_effort.dart';
+import 'package:nai_launcher/core/enums/image_model_mode.dart';
 import 'package:nai_launcher/core/enums/precise_ref_type.dart';
 import 'package:nai_launcher/core/services/anlas_calculator.dart';
 import 'package:nai_launcher/core/storage/local_storage_service.dart';
 import 'package:nai_launcher/core/utils/nai_api_utils.dart';
 import 'package:nai_launcher/data/datasources/remote/nai_image_enhancement_api_service.dart';
+import 'package:nai_launcher/data/models/image/image_params.dart';
 import 'package:nai_launcher/data/models/user/user_subscription.dart';
 import 'package:nai_launcher/data/models/vibe/vibe_reference.dart';
 import 'package:nai_launcher/data/services/vibe_library_storage_service.dart';
-import 'package:nai_launcher/presentation/providers/auth_provider.dart';
+import 'package:nai_launcher/data/services/auth_provider.dart';
 import 'package:nai_launcher/presentation/providers/generation/generation_params_notifier.dart';
 import 'package:nai_launcher/presentation/providers/subscription_provider.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -31,7 +35,7 @@ void main() {
     );
     Hive.init(hiveTempDir.path);
     await Hive.openBox(StorageKeys.settingsBox);
-    await Hive.openBox(StorageKeys.historyBox);
+    await Hive.openLazyBox<dynamic>(StorageKeys.historyBox);
   });
 
   tearDownAll(() async {
@@ -43,7 +47,7 @@ void main() {
 
   tearDown(() async {
     await Hive.box(StorageKeys.settingsBox).clear();
-    await Hive.box(StorageKeys.historyBox).clear();
+    await Hive.lazyBox<dynamic>(StorageKeys.historyBox).clear();
   });
 
   test('build should use the V5 generation defaults on first use', () {
@@ -56,6 +60,163 @@ void main() {
     expect(params.steps, 28);
     expect(params.scale, 4.0);
     expect(params.sampler, Samplers.kEulerAncestral);
+  });
+
+  test(
+    'precise outfit preferences persist and type changes reset the preference',
+    () async {
+      final storage = _FakeGenerationStateStorage();
+      final container = ProviderContainer(
+        overrides: [
+          vibeLibraryStorageServiceProvider.overrideWithValue(storage),
+        ],
+      );
+      addTearDown(container.dispose);
+      final notifier = container.read(
+        generationParamsNotifierProvider.notifier,
+      );
+      await notifier.restoreGenerationState();
+      notifier.addPreciseReference(
+        Uint8List.fromList([1, 2]),
+        type: PreciseRefType.costume,
+        preferSameOutfit: true,
+      );
+      notifier.addPreciseReference(
+        Uint8List.fromList([3]),
+        type: PreciseRefType.characterAndStyle,
+      );
+      await notifier.saveGenerationState();
+      final saved = jsonDecode(storage.generationStateJson!) as Map;
+      final records = saved['preciseReferences'] as List;
+      expect(records[0]['type'], 'costume');
+      expect(records[0]['preferSameOutfit'], isTrue);
+      expect((records[1] as Map).containsKey('preferSameOutfit'), isFalse);
+      // 60b212930 保留旧数组与标量，未知类型回退为 character。
+      final legacyTypes = [
+        for (final record in records)
+          switch (record['type']) {
+            'style' => PreciseRefType.style,
+            'character&style' => PreciseRefType.characterAndStyle,
+            _ => PreciseRefType.character,
+          },
+      ];
+      expect(legacyTypes, [
+        PreciseRefType.character,
+        PreciseRefType.characterAndStyle,
+      ]);
+      expect(base64Decode(records[0]['imageBase64'] as String), [1, 2]);
+      final restoredContainer = ProviderContainer(
+        overrides: [
+          vibeLibraryStorageServiceProvider.overrideWithValue(storage),
+        ],
+      );
+      addTearDown(restoredContainer.dispose);
+      final restoredNotifier = restoredContainer.read(
+        generationParamsNotifierProvider.notifier,
+      );
+      await restoredNotifier.restoreGenerationState();
+      expect(
+        restoredContainer
+            .read(generationParamsNotifierProvider)
+            .preciseReferences
+            .first
+            .preferSameOutfit,
+        isTrue,
+      );
+      expect(
+        restoredContainer
+            .read(generationParamsNotifierProvider)
+            .preciseReferences
+            .first
+            .type,
+        PreciseRefType.costume,
+      );
+      notifier.updatePreciseReferenceType(0, PreciseRefType.character);
+      expect(
+        container
+            .read(generationParamsNotifierProvider)
+            .preciseReferences
+            .first
+            .preferSameOutfit,
+        isNull,
+      );
+      notifier.updatePreciseReferencePreferSameOutfit(0, false);
+      expect(
+        container
+            .read(generationParamsNotifierProvider)
+            .preciseReferences
+            .first
+            .preferSameOutfit,
+        isFalse,
+      );
+      notifier.updatePreciseReferencePreferSameOutfit(0, null);
+      expect(
+        container
+            .read(generationParamsNotifierProvider)
+            .preciseReferences
+            .first
+            .preferSameOutfit,
+        isNull,
+      );
+      notifier.updatePreciseReferencePreferSameOutfit(0, true);
+      final beforeInvalid = container.read(generationParamsNotifierProvider);
+      notifier.updatePreciseReferencePreferSameOutfit(-1, false);
+      notifier.updatePreciseReferencePreferSameOutfit(2, false);
+      expect(
+        container.read(generationParamsNotifierProvider),
+        same(beforeInvalid),
+      );
+      notifier.updatePreciseReference(0, type: PreciseRefType.style);
+      expect(
+        container
+            .read(generationParamsNotifierProvider)
+            .preciseReferences
+            .first
+            .preferSameOutfit,
+        isNull,
+      );
+      await notifier.saveGenerationState();
+    },
+  );
+
+  test('reads legacy precise state with a null outfit preference', () async {
+    final storage = _FakeGenerationStateStorage()
+      ..generationStateJson = jsonEncode({
+        'schemaVersion': 2,
+        'preciseReferences': [
+          {'imageBase64': 'AQI=', 'type': 'character&style'},
+        ],
+      });
+    final container = ProviderContainer(
+      overrides: [vibeLibraryStorageServiceProvider.overrideWithValue(storage)],
+    );
+    addTearDown(container.dispose);
+    final notifier = container.read(generationParamsNotifierProvider.notifier);
+    await notifier.restoreGenerationState();
+    final reference = container
+        .read(generationParamsNotifierProvider)
+        .preciseReferences
+        .single;
+    expect(reference.type, PreciseRefType.characterAndStyle);
+    expect(reference.preferSameOutfit, isNull);
+    await notifier.saveGenerationState();
+  });
+
+  // 同一事件内连续两次输入若都延后写入，会留下过期写入并与 prompt_input 的
+  // 回写监听形成永久振荡。非构建阶段必须同步落地。
+  test('prompt updates apply synchronously outside the build phase', () {
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final notifier = container.read(generationParamsNotifierProvider.notifier);
+
+    notifier
+      ..updatePrompt('first')
+      ..updatePrompt('second')
+      ..updateNegativePrompt('negative');
+
+    final params = container.read(generationParamsNotifierProvider);
+    expect(params.prompt, 'second');
+    expect(params.negativePrompt, 'negative');
   });
 
   test('build should preserve stored generation preferences', () async {
@@ -114,6 +275,72 @@ void main() {
     expect(storage.getLastVarietyPlus(), isTrue);
   });
 
+  test('effort round trip keeps every setting Medium locks', () async {
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final notifier = container.read(generationParamsNotifierProvider.notifier);
+    notifier.updateSteps(35);
+    notifier.updateSampler(Samplers.kDpmpp2m);
+    notifier.updateCfgRescale(0.3);
+    notifier.updateNegativePrompt('bad hands');
+    notifier.updateVarietyPlus(true);
+    // 负向提示词经 microtask 写入 state。
+    await Future<void>.delayed(Duration.zero);
+
+    notifier.updateEffort(GenerationEffort.medium);
+    var params = container.read(generationParamsNotifierProvider);
+    expect(params.model, ImageModels.animeDiffusionV5FullMedium);
+    expect(params.steps, 35);
+    expect(params.effectiveSteps, 14);
+    expect(LocalStorageService().getDefaultModel(), params.model);
+
+    notifier.updateEffort(GenerationEffort.high);
+    params = container.read(generationParamsNotifierProvider);
+    expect(params.model, ImageModels.animeDiffusionV5Full);
+    expect(params.steps, 35);
+    expect(params.sampler, Samplers.kDpmpp2m);
+    expect(params.cfgRescale, 0.3);
+    expect(params.negativePrompt, 'bad hands');
+    expect(params.varietyPlus, isTrue);
+  });
+
+  test('effort is ignored on models without effort levels', () {
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final notifier = container.read(generationParamsNotifierProvider.notifier);
+    notifier.updateModel(ImageModels.animeDiffusionV45Full);
+
+    notifier.updateEffort(GenerationEffort.medium);
+
+    expect(
+      container.read(generationParamsNotifierProvider).model,
+      ImageModels.animeDiffusionV45Full,
+    );
+  });
+
+  test('model mode persists and survives restart and reset', () async {
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    container
+        .read(generationParamsNotifierProvider.notifier)
+        .updateModelMode(ImageModelMode.furry);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(LocalStorageService().getImageModelMode(), ImageModelMode.furry);
+
+    final restarted = ProviderContainer();
+    addTearDown(restarted.dispose);
+    expect(
+      restarted.read(generationParamsNotifierProvider).modelMode,
+      ImageModelMode.furry,
+    );
+    restarted.read(generationParamsNotifierProvider.notifier).reset();
+    expect(
+      restarted.read(generationParamsNotifierProvider).modelMode,
+      ImageModelMode.furry,
+    );
+  });
+
   test('alpha mode should default to straight and persist changes', () async {
     final container = ProviderContainer();
     addTearDown(container.dispose);
@@ -147,7 +374,7 @@ void main() {
     addTearDown(container.dispose);
 
     final notifier = container.read(generationParamsNotifierProvider.notifier);
-    expect(container.exists(subscriptionNotifierProvider), isFalse);
+    expect(container.read(subscriptionNotifierProvider.exists), isFalse);
     final imageData = Uint8List.fromList([1, 2, 3, 4]);
 
     final first = await notifier.encodeVibeWithCache(
@@ -842,7 +1069,7 @@ void main() {
   });
 
   test(
-    'addPreciseReferenceFromImage stages original bytes before normalization',
+    'addPreciseReferenceFromImage keeps original bytes beside the cached canvas',
     () async {
       final container = ProviderContainer(
         overrides: [
@@ -857,6 +1084,7 @@ void main() {
         generationParamsNotifierProvider.notifier,
       );
 
+      notifier.updateModel(ImageModels.animeDiffusionV45Full);
       final original = _validPngBytes(width: 8, height: 4);
       final normalization = notifier.addPreciseReferenceFromImage(
         original,
@@ -876,12 +1104,15 @@ void main() {
           .read(generationParamsNotifierProvider)
           .preciseReferences
           .single;
-      final decoded = img.decodeImage(reference.image);
+      final cached = await NAIApiUtils.ensurePngFormatAsync(original);
+      final decoded = img.decodeImage(cached);
 
+      expect(reference.image, same(original));
       expect(
-        NAIApiUtils.isKnownNormalizedPreciseReferencePng(reference.image),
-        isTrue,
+        NAIApiUtils.isKnownNormalizedPreciseReferencePng(original),
+        isFalse,
       );
+      expect(NAIApiUtils.isKnownNormalizedPreciseReferencePng(cached), isTrue);
       expect(decoded, isNotNull);
       expect('${decoded!.width}x${decoded.height}', '1536x1024');
       expect(reference.type, PreciseRefType.character);
@@ -1051,6 +1282,179 @@ void main() {
       expect(container.read(generationParamsNotifierProvider).scale, 5.0);
     });
   });
+
+  group('updateModel per-model sampling memory', () {
+    // 调过的值恰好等于另一模型的出厂值时，切回不能当成未调整。
+    test('switching back keeps values that equal the other model defaults', () {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final notifier = container.read(
+        generationParamsNotifierProvider.notifier,
+      );
+      notifier.updateModel(ImageModels.animeDiffusionV45Full);
+      notifier.updateSteps(28);
+      notifier.updateScale(4.0);
+
+      notifier.updateModel(ImageModels.animeDiffusionV5Full);
+      notifier.updateModel(ImageModels.animeDiffusionV45Full);
+
+      final params = container.read(generationParamsNotifierProvider);
+      expect(params.steps, 28);
+      expect(params.scale, 4.0);
+    });
+
+    test('each model restores its own sampling params', () {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final notifier = container.read(
+        generationParamsNotifierProvider.notifier,
+      );
+      notifier
+        ..updateSteps(35)
+        ..updateScale(3.5)
+        ..updateCfgRescale(0.2)
+        ..updateSampler(Samplers.kDpmpp2m)
+        ..updateNoiseSchedule(NoiseSchedules.exponential);
+
+      notifier.updateModel(ImageModels.animeDiffusionV45Full);
+      notifier
+        ..updateSteps(30)
+        ..updateScale(6.0)
+        ..updateCfgRescale(0.0)
+        ..updateSampler(Samplers.kEuler)
+        ..updateNoiseSchedule(NoiseSchedules.karras);
+
+      notifier.updateModel(ImageModels.animeDiffusionV5Full);
+      var params = container.read(generationParamsNotifierProvider);
+      expect(params.steps, 35);
+      expect(params.scale, 3.5);
+      expect(params.cfgRescale, 0.2);
+      expect(params.sampler, Samplers.kDpmpp2m);
+      expect(params.noiseSchedule, NoiseSchedules.exponential);
+      final storage = LocalStorageService();
+      expect(storage.getDefaultSteps(), 35);
+      expect(storage.getDefaultScale(), 3.5);
+      expect(storage.getLastCfgRescale(), 0.2);
+      expect(storage.getDefaultSampler(), Samplers.kDpmpp2m);
+      expect(storage.getLastNoiseSchedule(), NoiseSchedules.exponential);
+
+      notifier.updateModel(ImageModels.animeDiffusionV45Full);
+      params = container.read(generationParamsNotifierProvider);
+      expect(params.steps, 30);
+      expect(params.scale, 6.0);
+      expect(params.cfgRescale, 0.0);
+      expect(params.sampler, Samplers.kEuler);
+      expect(params.noiseSchedule, NoiseSchedules.karras);
+    });
+
+    test('restores the V4.5 archive after reopening settings', () async {
+      final first = ProviderContainer();
+      try {
+        first.read(generationParamsNotifierProvider.notifier)
+          ..updateModel(ImageModels.animeDiffusionV45Full)
+          ..updateSteps(31)
+          ..updateModel(ImageModels.animeDiffusionV5Full)
+          ..updateSteps(34);
+      } finally {
+        first.dispose();
+      }
+
+      await Hive.box(StorageKeys.settingsBox).close();
+      await Hive.openBox(StorageKeys.settingsBox);
+
+      final restarted = ProviderContainer();
+      addTearDown(restarted.dispose);
+      final params = restarted.read(generationParamsNotifierProvider);
+      expect(params.model, ImageModels.animeDiffusionV5Full);
+      expect(params.steps, 34);
+
+      restarted
+          .read(generationParamsNotifierProvider.notifier)
+          .updateModel(ImageModels.animeDiffusionV45Full);
+
+      expect(restarted.read(generationParamsNotifierProvider).steps, 31);
+    });
+
+    test('Variety+ comes back after a round trip through V5', () {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final notifier = container.read(
+        generationParamsNotifierProvider.notifier,
+      );
+      notifier.updateModel(ImageModels.animeDiffusionV45Full);
+      notifier.updateVarietyPlus(true);
+
+      notifier.updateModel(ImageModels.animeDiffusionV5Full);
+      expect(
+        container.read(generationParamsNotifierProvider).varietyPlus,
+        isFalse,
+      );
+
+      notifier.updateModel(ImageModels.animeDiffusionV45Full);
+      expect(
+        container.read(generationParamsNotifierProvider).varietyPlus,
+        isTrue,
+      );
+    });
+
+    test('metadata imports archive the old model but do not restore', () {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final notifier = container.read(
+        generationParamsNotifierProvider.notifier,
+      );
+      notifier.updateModel(ImageModels.animeDiffusionV45Full);
+      notifier.updateSteps(30);
+
+      notifier.updateModel(
+        ImageModels.animeDiffusionV5Full,
+        followDefaults: false,
+      );
+      expect(container.read(generationParamsNotifierProvider).steps, 30);
+      notifier.updateSteps(40);
+
+      notifier.updateModel(ImageModels.animeDiffusionV45Full);
+      expect(container.read(generationParamsNotifierProvider).steps, 30);
+      notifier.updateModel(ImageModels.animeDiffusionV5Full);
+      expect(container.read(generationParamsNotifierProvider).steps, 40);
+    });
+
+    test('effort switches stay inside one memory slot', () {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final notifier = container.read(
+        generationParamsNotifierProvider.notifier,
+      );
+
+      notifier.updateEffort(GenerationEffort.medium);
+      notifier.updateEffort(GenerationEffort.high);
+
+      expect(
+        LocalStorageService().getSetting<Object?>(
+          StorageKeys.modelSamplingParams,
+        ),
+        isNull,
+      );
+    });
+
+    test('a corrupt archive falls back to default follow-up', () async {
+      await LocalStorageService().setSetting(
+        StorageKeys.modelSamplingParams,
+        '{not json',
+      );
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final notifier = container.read(
+        generationParamsNotifierProvider.notifier,
+      );
+
+      notifier.updateModel(ImageModels.animeDiffusionV45Full);
+
+      final params = container.read(generationParamsNotifierProvider);
+      expect(params.steps, 23);
+      expect(params.scale, 5.0);
+    });
+  });
 }
 
 Uint8List _validPngBytes({required int width, required int height}) =>
@@ -1113,8 +1517,8 @@ class _FakeGenerationStateStorage extends VibeLibraryStorageService {
   String? generationStateJson;
 
   @override
-  Future<void> saveGenerationStateJson(String stateJson) async {
-    generationStateJson = stateJson;
+  Future<void> saveGenerationStateUtf8Json(Uint8List stateJson) async {
+    generationStateJson = utf8.decode(stateJson);
   }
 
   @override

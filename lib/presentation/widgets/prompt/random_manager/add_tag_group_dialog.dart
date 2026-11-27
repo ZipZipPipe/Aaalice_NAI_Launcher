@@ -1,17 +1,23 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:nai_launcher/presentation/themes/core/input_surface_style.dart';
 import 'package:nai_launcher/presentation/themes/core/layered_surface_style.dart';
 
 import '../../../../core/utils/localization_extension.dart';
+import '../../../adaptive/adaptive_form_footer.dart';
 import '../../../adaptive/adaptive_presenter.dart';
+import '../../../adaptive/content_sized_adaptive_form.dart';
+import '../../../adaptive/interaction_policy.dart';
 import '../../../providers/random_preset_provider.dart';
 import '../../../../data/models/prompt/random_category.dart';
 import '../../../../data/models/prompt/random_tag_group.dart';
 import '../../../../data/models/prompt/weighted_tag.dart';
 import '../../common/emoji_picker_dialog.dart';
 import '../../common/hover_preview_card.dart';
+import '../../common/surface_ink_well.dart';
+import '../../common/tab_swipe_detector.dart';
+import '../../common/themed_form_input.dart';
+import '../../common/themed_input.dart';
 import 'danbooru_preview_content.dart';
 import 'random_config_l10n.dart';
 
@@ -36,6 +42,7 @@ class AddTagGroupDialog extends ConsumerStatefulWidget {
     return AdaptivePresenter.showForm<void>(
       context: context,
       dialogWidth: 580,
+      headerScrollsWithContent: true,
       titleBuilder: (panelContext) => Row(
         children: [
           Icon(
@@ -85,12 +92,10 @@ class _AddTagGroupDialogState extends ConsumerState<AddTagGroupDialog>
   String _selectedEmoji = '';
   int _sourceTabIndex = 0; // 0 = 自定义, 1 = Tag Group, 2 = Pool
 
-  // Danbooru 导入相关
   String? _selectedDanbooruGroup;
   int? _selectedPoolId;
   String _searchQuery = '';
 
-  // 预定义 Tag Groups
   static const _tagGroups = [
     ('Hair Color', 'tag_group:hair_color'),
     ('Eye Color', 'tag_group:eye_color'),
@@ -106,7 +111,6 @@ class _AddTagGroupDialogState extends ConsumerState<AddTagGroupDialog>
     ('Body Types', 'tag_group:body_types'),
   ];
 
-  // 预定义 Pools
   static const _popularPools = [
     ('Genshin Characters', 21512),
     ('Blue Archive', 22345),
@@ -136,15 +140,16 @@ class _AddTagGroupDialogState extends ConsumerState<AddTagGroupDialog>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
-    _tabController.addListener(() {
-      if (!_tabController.indexIsChanging) {
-        setState(() {
-          _sourceTabIndex = _tabController.index;
-          _searchQuery = '';
-          _searchController.clear();
-        });
-      }
+    _tabController = TabController(length: 3, vsync: this)
+      ..addListener(_handleSourceTabChanged);
+  }
+
+  void _handleSourceTabChanged() {
+    if (_tabController.index == _sourceTabIndex) return;
+    setState(() {
+      _sourceTabIndex = _tabController.index;
+      _searchQuery = '';
+      _searchController.clear();
     });
   }
 
@@ -163,55 +168,50 @@ class _AddTagGroupDialogState extends ConsumerState<AddTagGroupDialog>
 
     return Form(
       key: _formKey,
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final textScale = MediaQuery.textScalerOf(context).scale(1);
-          final minimumTabHeight = 220 + (textScale - 1).clamp(0, 2) * 140;
-          final preferredTabHeight = constraints.maxHeight - 170;
-          final tabHeight = preferredTabHeight
-              .clamp(minimumTabHeight, 660)
-              .toDouble();
-          return ListView(
-            key: const ValueKey('add-tag-group-form-scroll'),
-            controller: widget.scrollController,
-            padding: EdgeInsets.zero,
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-                child: Text(
-                  context.l10n.randomManager_addTagGroupSubtitle(
-                    context.l10n.randomCategoryName(widget.category),
-                  ),
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: colorScheme.onSurfaceVariant,
-                  ),
-                ),
+      child: ContentSizedAdaptiveForm(
+        scrollController: widget.scrollController,
+        scrollViewKey: const ValueKey('add-tag-group-form-scroll'),
+        padding: EdgeInsets.zero,
+        // 词组与图集列表都很短，直接排在表单里，整个表单只有这一个纵向滚动容器
+        content: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+            child: Text(
+              context.l10n.randomManager_addTagGroupSubtitle(
+                context.l10n.randomCategoryName(widget.category),
               ),
-              _buildNameSection(context),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: sectionSurfaceColor(colorScheme),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  clipBehavior: Clip.antiAlias,
-                  child: Column(
-                    children: [
-                      _buildSourceTabs(context),
-                      if (_sourceTabIndex > 0) _buildSearchBar(context),
-                      SizedBox(
-                        height: tabHeight,
-                        child: _buildTabContent(context),
-                      ),
-                    ],
-                  ),
-                ),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: colorScheme.onSurfaceVariant,
               ),
-              _buildFooter(context),
-            ],
-          );
-        },
+            ),
+          ),
+          _buildNameSection(context),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Container(
+              decoration: BoxDecoration(
+                color: sectionSurfaceColor(colorScheme),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _buildSourceTabs(context),
+                  if (_sourceTabIndex > 0) _buildSearchBar(context),
+                  TabSwipeDetector(
+                    controller: _tabController,
+                    child: KeyedSubtree(
+                      key: ValueKey('add-tag-group-source-$_sourceTabIndex'),
+                      child: _buildTabContent(context),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+        footer: _buildFooter(context),
       ),
     );
   }
@@ -229,15 +229,10 @@ class _AddTagGroupDialogState extends ConsumerState<AddTagGroupDialog>
       child: Row(
         children: [
           Expanded(
-            child: TextFormField(
+            child: ThemedFormInput(
               controller: _nameController,
-              decoration: InputDecoration(
-                labelText: context.l10n.randomManager_tagGroupName,
-                hintText: context.l10n.randomManager_tagGroupNameHint,
-                border: InputBorder.none,
-                filled: true,
-                fillColor: inputSurfaceFillColor(colorScheme),
-              ),
+              labelText: context.l10n.randomManager_tagGroupName,
+              hintText: context.l10n.randomManager_tagGroupNameHint,
               validator: (value) {
                 if (value == null || value.trim().isEmpty) {
                   return context.l10n.randomManager_tagGroupNameRequired;
@@ -264,7 +259,8 @@ class _AddTagGroupDialogState extends ConsumerState<AddTagGroupDialog>
   }
 
   Widget _buildSourceTabs(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(14, 8, 14, 0),
@@ -283,8 +279,7 @@ class _AddTagGroupDialogState extends ConsumerState<AddTagGroupDialog>
             dividerColor: Colors.transparent,
             labelColor: colorScheme.primary,
             unselectedLabelColor: colorScheme.onSurfaceVariant,
-            labelStyle: const TextStyle(
-              fontSize: 12,
+            labelStyle: theme.textTheme.labelMedium?.copyWith(
               fontWeight: FontWeight.w600,
             ),
             tabs: [
@@ -326,49 +321,28 @@ class _AddTagGroupDialogState extends ConsumerState<AddTagGroupDialog>
   }
 
   Widget _buildSearchBar(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-      child: TextField(
+      child: ThemedInput(
         controller: _searchController,
-        textAlignVertical: TextAlignVertical.center,
-        decoration: InputDecoration(
-          hintText: _sourceTabIndex == 1
-              ? context.l10n.randomManager_searchTagGroup
-              : context.l10n.randomManager_searchPool,
-          prefixIcon: const Icon(Icons.search, size: 20),
-          suffixIcon: _searchQuery.isNotEmpty
-              ? IconButton(
-                  icon: const Icon(Icons.clear, size: 18),
-                  onPressed: () {
-                    _searchController.clear();
-                    setState(() => _searchQuery = '');
-                  },
-                )
-              : null,
-          filled: true,
-          fillColor: inputSurfaceFillColor(colorScheme),
-          contentPadding: const EdgeInsets.symmetric(
-            horizontal: 12,
-            vertical: 10,
-          ),
-          isDense: true,
+        hintText: _sourceTabIndex == 1
+            ? context.l10n.randomManager_searchTagGroup
+            : context.l10n.randomManager_searchPool,
+        decoration: const InputDecoration(
+          prefixIcon: Icon(Icons.search, size: 20),
         ),
+        showClearButton: true,
         onChanged: (value) => setState(() => _searchQuery = value),
       ),
     );
   }
 
   Widget _buildTabContent(BuildContext context) {
-    return TabBarView(
-      controller: _tabController,
-      children: [
-        _buildCustomTagsTab(context),
-        _buildTagGroupTab(context),
-        _buildPoolTab(context),
-      ],
-    );
+    return switch (_sourceTabIndex) {
+      1 => _buildTagGroupTab(context),
+      2 => _buildPoolTab(context),
+      _ => _buildCustomTagsTab(context),
+    };
   }
 
   Widget _buildCustomTagsTab(BuildContext context) {
@@ -394,19 +368,14 @@ class _AddTagGroupDialogState extends ConsumerState<AddTagGroupDialog>
             ),
           ),
           const SizedBox(height: 8),
-          Expanded(
-            child: TextFormField(
-              controller: _tagsController,
-              maxLines: null,
-              expands: true,
-              textAlignVertical: TextAlignVertical.top,
-              decoration: InputDecoration(
-                hintText: 'red hair\nblue eyes:2\nlong hair',
-                filled: true,
-                fillColor: inputSurfaceFillColor(colorScheme),
-                contentPadding: const EdgeInsets.all(12),
-              ),
-            ),
+          ThemedInput(
+            controller: _tagsController,
+            minLines: 6,
+            maxLines: null,
+            keyboardType: TextInputType.multiline,
+            textAlignVertical: TextAlignVertical.top,
+            hintText: 'red hair\nblue eyes:2\nlong hair',
+            contentPadding: const EdgeInsets.all(12),
           ),
         ],
       ),
@@ -414,143 +383,79 @@ class _AddTagGroupDialogState extends ConsumerState<AddTagGroupDialog>
   }
 
   Widget _buildTagGroupTab(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
     final filtered = _filteredTagGroups;
 
     return Padding(
       padding: const EdgeInsets.all(16),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Row(
-            children: [
-              Text(
-                'Danbooru Tag Group',
-                style: theme.textTheme.labelLarge?.copyWith(
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const Spacer(),
-              Text(
-                context.l10n.randomManager_itemCount(filtered.length),
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: colorScheme.onSurfaceVariant,
-                ),
-              ),
-            ],
+          _SourceListHeader(
+            title: 'Danbooru Tag Group',
+            count: context.l10n.randomManager_itemCount(filtered.length),
           ),
           const SizedBox(height: 8),
-          Expanded(
-            child: filtered.isEmpty
-                ? Center(
-                    child: Text(
-                      context.l10n.randomManager_noMatchingTagGroup,
-                      style: TextStyle(color: colorScheme.onSurfaceVariant),
-                    ),
-                  )
-                : ListView.builder(
-                    itemCount: filtered.length,
-                    itemBuilder: (context, index) {
-                      final (label, groupTitle) = filtered[index];
-                      final isSelected = _selectedDanbooruGroup == groupTitle;
-                      return _DanbooruListTile(
-                        label: label,
-                        subtitle: groupTitle,
-                        isSelected: isSelected,
-                        onTap: () => _selectDanbooruGroup(groupTitle, label),
-                        onOpenExternal: () => _openDanbooruUrl(
-                          'https://danbooru.donmai.us/wiki_pages/$groupTitle',
-                        ),
-                        itemType: DanbooruItemType.tagGroup,
-                        groupTitle: groupTitle,
-                      );
-                    },
-                  ),
-          ),
+          if (filtered.isEmpty)
+            _EmptySourceList(
+              message: context.l10n.randomManager_noMatchingTagGroup,
+            )
+          else
+            for (final (label, groupTitle) in filtered)
+              _DanbooruListTile(
+                label: label,
+                subtitle: groupTitle,
+                isSelected: _selectedDanbooruGroup == groupTitle,
+                onTap: () => _selectDanbooruGroup(groupTitle, label),
+                onOpenExternal: () => _openDanbooruUrl(
+                  'https://danbooru.donmai.us/wiki_pages/$groupTitle',
+                ),
+                itemType: DanbooruItemType.tagGroup,
+                groupTitle: groupTitle,
+              ),
         ],
       ),
     );
   }
 
   Widget _buildPoolTab(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
     final filtered = _filteredPools;
 
     return Padding(
       padding: const EdgeInsets.all(16),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Row(
-            children: [
-              Text(
-                'Danbooru Pool',
-                style: theme.textTheme.labelLarge?.copyWith(
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const Spacer(),
-              Text(
-                context.l10n.randomManager_itemCount(filtered.length),
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: colorScheme.onSurfaceVariant,
-                ),
-              ),
-            ],
+          _SourceListHeader(
+            title: 'Danbooru Pool',
+            count: context.l10n.randomManager_itemCount(filtered.length),
           ),
           const SizedBox(height: 8),
-          Expanded(
-            child: filtered.isEmpty
-                ? Center(
-                    child: Text(
-                      context.l10n.randomManager_noMatchingPool,
-                      style: TextStyle(color: colorScheme.onSurfaceVariant),
-                    ),
-                  )
-                : ListView.builder(
-                    itemCount: filtered.length,
-                    itemBuilder: (context, index) {
-                      final (label, poolId) = filtered[index];
-                      final isSelected = _selectedPoolId == poolId;
-                      return _DanbooruListTile(
-                        label: label,
-                        subtitle: 'Pool #$poolId',
-                        isSelected: isSelected,
-                        onTap: () => _selectPool(poolId, label),
-                        onOpenExternal: () => _openDanbooruUrl(
-                          'https://danbooru.donmai.us/pools/$poolId',
-                        ),
-                        itemType: DanbooruItemType.pool,
-                        poolId: poolId,
-                      );
-                    },
-                  ),
-          ),
+          if (filtered.isEmpty)
+            _EmptySourceList(message: context.l10n.randomManager_noMatchingPool)
+          else
+            for (final (label, poolId) in filtered)
+              _DanbooruListTile(
+                label: label,
+                subtitle: 'Pool #$poolId',
+                isSelected: _selectedPoolId == poolId,
+                onTap: () => _selectPool(poolId, label),
+                onOpenExternal: () => _openDanbooruUrl(
+                  'https://danbooru.donmai.us/pools/$poolId',
+                ),
+                itemType: DanbooruItemType.pool,
+                poolId: poolId,
+              ),
         ],
       ),
     );
   }
 
   Widget _buildFooter(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
-      child: OverflowBar(
-        alignment: MainAxisAlignment.end,
-        spacing: 8,
-        overflowSpacing: 8,
-        children: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text(context.l10n.common_cancel),
-          ),
-          FilledButton.icon(
-            onPressed: _canSubmit() ? _addGroup : null,
-            icon: const Icon(Icons.add_rounded, size: 18),
-            label: Text(context.l10n.common_add),
-          ),
-        ],
+    return AdaptiveFormFooter(
+      primary: FilledButton.icon(
+        onPressed: _canSubmit() ? _addGroup : null,
+        icon: const Icon(Icons.add_rounded, size: 18),
+        label: Text(context.l10n.common_add),
       ),
     );
   }
@@ -664,10 +569,60 @@ class _AddTagGroupDialogState extends ConsumerState<AddTagGroupDialog>
   }
 }
 
+class _SourceListHeader extends StatelessWidget {
+  const _SourceListHeader({required this.title, required this.count});
+
+  final String title;
+  final String count;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    // 标题与计数排不下同一行时计数换到下一行
+    return Wrap(
+      alignment: WrapAlignment.spaceBetween,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      spacing: 8,
+      runSpacing: 4,
+      children: [
+        Text(
+          title,
+          style: theme.textTheme.labelLarge?.copyWith(
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        Text(
+          count,
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _EmptySourceList extends StatelessWidget {
+  const _EmptySourceList({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 24),
+      child: Text(
+        message,
+        textAlign: TextAlign.center,
+        style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+      ),
+    );
+  }
+}
+
 /// Danbooru 列表项类型
 enum DanbooruItemType { tagGroup, pool }
 
-/// Danbooru 列表项
 class _DanbooruListTile extends StatefulWidget {
   const _DanbooruListTile({
     required this.label,
@@ -693,6 +648,7 @@ class _DanbooruListTile extends StatefulWidget {
 
 class _DanbooruListTileState extends State<_DanbooruListTile> {
   bool _isHovered = false;
+  bool _hasFocus = false;
 
   Widget _buildPreviewContent(BuildContext context) {
     if (widget.itemType == DanbooruItemType.tagGroup &&
@@ -711,70 +667,88 @@ class _DanbooruListTileState extends State<_DanbooruListTile> {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final theme = Theme.of(context);
+    // 触屏没有悬停，外部打开入口常驻；指针下在悬停、焦点位于本行或已选中时显示
+    final showOpenExternal =
+        context.interactionPolicy.shouldExposeTouchAlternatives ||
+        _isHovered ||
+        _hasFocus ||
+        widget.isSelected;
 
-    final tile = MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _isHovered = true),
-      onExit: (_) => setState(() => _isHovered = false),
-      child: GestureDetector(
-        onTap: widget.onTap,
-        child: AnimatedContainer(
-          duration: MediaQuery.disableAnimationsOf(context)
-              ? Duration.zero
-              : const Duration(milliseconds: 150),
-          margin: const EdgeInsets.only(bottom: 6),
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          decoration: BoxDecoration(
-            color: widget.isSelected
-                ? colorScheme.primaryContainer
-                : _isHovered
-                ? colorScheme.surfaceContainerHigh
-                : colorScheme.surfaceContainerHighest,
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Row(
-            children: [
-              Icon(
-                widget.isSelected
-                    ? Icons.check_circle
-                    : Icons.radio_button_unchecked,
-                size: 20,
-                color: widget.isSelected
-                    ? colorScheme.primary
-                    : colorScheme.onSurfaceVariant,
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+    final tile = Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Focus(
+        canRequestFocus: false,
+        skipTraversal: true,
+        includeSemantics: false,
+        onFocusChange: (hasFocus) => setState(() => _hasFocus = hasFocus),
+        child: MouseRegion(
+          onEnter: (_) => setState(() => _isHovered = true),
+          onExit: (_) => setState(() => _isHovered = false),
+          child: Semantics(
+            container: true,
+            button: true,
+            selected: widget.isSelected,
+            child: SurfaceInkWell(
+              borderRadius: BorderRadius.circular(8),
+              color: widget.isSelected
+                  ? colorScheme.primaryContainer
+                  : colorScheme.surfaceContainerHighest,
+              duration: const Duration(milliseconds: 150),
+              onTap: widget.onTap,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 10,
+                ),
+                child: Row(
                   children: [
-                    Text(
-                      widget.label,
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        fontWeight: widget.isSelected
-                            ? FontWeight.bold
-                            : FontWeight.normal,
+                    Icon(
+                      widget.isSelected
+                          ? Icons.check_circle
+                          : Icons.radio_button_unchecked,
+                      size: 20,
+                      color: widget.isSelected
+                          ? colorScheme.primary
+                          : colorScheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            widget.label,
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              fontWeight: widget.isSelected
+                                  ? FontWeight.bold
+                                  : FontWeight.normal,
+                            ),
+                          ),
+                          Text(
+                            widget.subtitle,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                    Text(
-                      widget.subtitle,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: colorScheme.onSurfaceVariant,
+                    // 隐藏时仍占位，悬停显示不会改变标题可用宽度与行高
+                    Visibility(
+                      visible: showOpenExternal,
+                      maintainSize: true,
+                      maintainAnimation: true,
+                      maintainState: true,
+                      child: IconButton(
+                        icon: const Icon(Icons.open_in_new, size: 18),
+                        onPressed: widget.onOpenExternal,
+                        tooltip: context.l10n.randomManager_openInDanbooru,
                       ),
                     ),
                   ],
                 ),
               ),
-              if (_isHovered || widget.isSelected)
-                IconButton(
-                  icon: const Icon(Icons.open_in_new, size: 18),
-                  onPressed: widget.onOpenExternal,
-                  tooltip: context.l10n.randomManager_openInDanbooru,
-                  style: IconButton.styleFrom(
-                    backgroundColor: Colors.transparent,
-                  ),
-                ),
-            ],
+            ),
           ),
         ),
       ),

@@ -2,9 +2,10 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:hive_flutter/hive_flutter.dart';
+import 'package:hive_ce_flutter/hive_ce_flutter.dart';
 import 'package:nai_launcher/core/constants/api_constants.dart' as api;
 import 'package:nai_launcher/core/constants/storage_keys.dart';
+import 'package:nai_launcher/core/enums/image_model_mode.dart';
 import 'package:nai_launcher/core/services/prompt_token_counter_service.dart';
 import 'package:nai_launcher/core/storage/local_storage_service.dart';
 import 'package:nai_launcher/data/models/character/character_prompt.dart';
@@ -447,6 +448,125 @@ void main() {
     );
 
     expect(_FakePromptTokenEncoder.callCount, greaterThan(initialCallCount));
+  });
+
+  test('连续输入期间不重复计数，停顿后只算一次', () async {
+    _FakePromptTokenEncoder.callCount = 0;
+    final service = PromptTokenCounterService(
+      encoder: _FakePromptTokenEncoder(),
+    );
+    final container = ProviderContainer(
+      overrides: [
+        localStorageServiceProvider.overrideWith((ref) {
+          return _TestLocalStorageService();
+        }),
+        promptTokenCounterServiceProvider.overrideWith((ref) async => service),
+      ],
+    );
+    addTearDown(container.dispose);
+    final usage = promptTokenUsageProvider(PromptTokenCountTarget.positive);
+    container.listen(usage, (_, _) {});
+    final params = container.read(generationParamsNotifierProvider.notifier);
+
+    // updatePrompt 经 microtask 写入状态，先让出一次再读取计数结果
+    Future<void> settle() async {
+      await Future<void>.delayed(Duration.zero);
+      await container.read(usage.future);
+    }
+
+    await settle();
+    final beforeSingle = _FakePromptTokenEncoder.callCount;
+    params.updatePrompt('1girl, solo');
+    await settle();
+    final singleComputation = _FakePromptTokenEncoder.callCount - beforeSingle;
+    expect(singleComputation, greaterThan(0));
+
+    final beforeBurst = _FakePromptTokenEncoder.callCount;
+    for (final prompt in const ['1boy', '1boy, s', '1boy, so']) {
+      params.updatePrompt(prompt);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    await settle();
+
+    expect(_FakePromptTokenEncoder.callCount - beforeBurst, singleComputation);
+  });
+
+  group('buildPromptTokenCountPayload effort and furry mode', () {
+    test('furry mode counts the dataset prefix as its own breakdown row', () {
+      final payload = buildPromptTokenCountPayload(
+        target: PromptTokenCountTarget.positive,
+        prompt: 'wolf',
+        negativePrompt: '',
+        model: api.ImageModels.animeDiffusionV5Full,
+        fixedTagsState: const FixedTagsState(),
+        qualityToggle: false,
+        ucPreset: api.UcPresets.noneApiValue,
+        modelMode: ImageModelMode.furry,
+        characters: const [],
+        resolveAliases: (text) => text,
+      );
+
+      expect(payload.mainText, 'fur dataset, wolf');
+      final row = payload.breakdown.singleWhere(
+        (item) => item.label == '数据集标签',
+      );
+      expect(row.texts, ['fur dataset']);
+    });
+
+    test('a hand-written dataset tag is not counted twice', () {
+      final payload = buildPromptTokenCountPayload(
+        target: PromptTokenCountTarget.positive,
+        prompt: 'fur dataset, wolf',
+        negativePrompt: '',
+        model: api.ImageModels.animeDiffusionV5Full,
+        fixedTagsState: const FixedTagsState(),
+        qualityToggle: false,
+        ucPreset: api.UcPresets.noneApiValue,
+        modelMode: ImageModelMode.furry,
+        characters: const [],
+        resolveAliases: (text) => text,
+      );
+
+      expect(payload.mainText, 'fur dataset, wolf');
+      expect(
+        payload.breakdown.map((item) => item.label),
+        isNot(contains('数据集标签')),
+      );
+    });
+
+    test('medium counts only the fixed UC preset as the negative prompt', () {
+      final payload = buildPromptTokenCountPayload(
+        target: PromptTokenCountTarget.negative,
+        prompt: '1girl',
+        negativePrompt: 'bad hands',
+        model: api.ImageModels.animeDiffusionV5FullMedium,
+        fixedTagsState: FixedTagsState(
+          entries: [
+            FixedTagEntry.create(
+              name: 'negative-prefix',
+              content: 'bad anatomy',
+              position: FixedTagPosition.prefix,
+              promptType: FixedTagPromptType.negative,
+              sortOrder: 0,
+            ),
+          ],
+        ),
+        qualityToggle: true,
+        ucPreset: api.UcPresets.noneApiValue,
+        characters: [
+          CharacterPrompt.create(
+            name: 'A',
+            prompt: 'girl',
+          ).copyWith(negativePrompt: 'blurry'),
+        ],
+        resolveAliases: (text) => text,
+      );
+      final heavy = api.UcPresets.v5Presets[api.UcPresetType.heavy];
+
+      expect(payload.mainText, heavy);
+      expect(payload.extraTexts, isEmpty);
+      expect(payload.breakdown.single.label, '负面预设');
+    });
   });
 }
 

@@ -2,9 +2,10 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hive/hive.dart';
+import 'package:hive_ce/hive_ce.dart';
 import 'package:image/image.dart' as image;
 import 'package:nai_launcher/core/enums/precise_ref_type.dart';
+import 'package:nai_launcher/core/storage/storage_file_system.dart';
 import 'package:nai_launcher/data/cloud_sync/cloud_sync.dart';
 import 'package:nai_launcher/data/services/precise_ref_library_storage_service.dart';
 import 'package:path/path.dart' as p;
@@ -21,7 +22,7 @@ Uint8List _bmpBytes() {
   return Uint8List.fromList(image.encodeBmp(value));
 }
 
-class _FailingPortableRenameFileSystem extends PreciseRefLibraryFileSystem {
+class _FailingPortableRenameFileSystem extends StorageFileSystem {
   @override
   Future<void> rename(String from, String to) async {
     if (from.contains('.importing-') && to.endsWith('.png')) {
@@ -33,6 +34,73 @@ class _FailingPortableRenameFileSystem extends PreciseRefLibraryFileSystem {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test(
+    'costume exports pass legacy validation and new import prefers typeV2',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'precise-outfit-sync-',
+      );
+      Hive.init(p.join(root.path, 'hive'));
+      final storage = PreciseRefLibraryStorageService(
+        overrideDirectory: p.join(root.path, 'images'),
+      );
+      addTearDown(() async {
+        await storage.close();
+        await Hive.close();
+        await root.delete(recursive: true);
+      });
+      final source = await storage.importFromBytes(
+        _pngBytes(),
+        name: 'outfit',
+        type: PreciseRefType.costume,
+        preferSameOutfit: false,
+      );
+      final adapter = PreciseRefCloudSyncAdapter(storage);
+      final record = (await adapter.exportRecords().toList()).single;
+      expect(record.data['type'], 'character');
+      expect(record.data['typeV2'], 'costume');
+      expect(record.data['preferSameOutfit'], isFalse);
+      // 60b212930 validateRecord 检查旧字段和类型名，不拒绝额外键。
+      expect([
+        'character',
+        'style',
+        'characterAndStyle',
+      ], contains(record.data['type']));
+      expect(record.data['name'], isA<String>());
+      expect(record.data['strength'], isA<num>());
+      expect(record.data['fidelity'], isA<num>());
+      expect(record.data['isFavorite'], isA<bool>());
+      expect(record.data['usedCount'], isA<int>());
+      expect(DateTime.tryParse(record.data['createdAt'] as String), isNotNull);
+      expect(record.data['lastUsedAt'], isNull);
+      expect(
+        record.resource!.relativePath,
+        startsWith('precise-ref/${record.id}/'),
+      );
+      expect(record.resource!.relativePath, isNot(contains('thumbnail')));
+      await adapter.preflight([record]);
+      await adapter.apply([record]);
+      final restored = (await storage.getAllEntries()).single;
+      expect(restored.id, source.id);
+      expect(restored.type, PreciseRefType.costume);
+      expect(restored.preferSameOutfit, isFalse);
+      final legacy = PortableSyncRecord(
+        adapterId: adapter.id,
+        id: record.id,
+        kind: record.kind,
+        resource: record.resource,
+        data: {...record.data}
+          ..remove('typeV2')
+          ..remove('preferSameOutfit'),
+      );
+      await adapter.preflight([legacy]);
+      await adapter.apply([legacy]);
+      final old = (await storage.getAllEntries()).single;
+      expect(old.type, PreciseRefType.character);
+      expect(old.preferSameOutfit, isNull);
+    },
+  );
 
   test(
     'round-trips stable id and original while excluding thumbnails',

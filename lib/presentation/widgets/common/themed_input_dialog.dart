@@ -3,26 +3,11 @@ import 'package:nai_launcher/core/utils/localization_extension.dart';
 import 'package:nai_launcher/presentation/widgets/common/themed_input.dart';
 
 import '../../adaptive/adaptive_presenter.dart';
-import 'adaptive_dialog_frame.dart';
+import '../../adaptive/adaptive_form_footer.dart';
+import '../../adaptive/content_sized_adaptive_form.dart';
 
-/// 通用输入对话框
-///
-/// 用于需要用户输入单行文本的场景，如重命名、输入名称等。
-///
-/// 使用示例:
-/// ```dart
-/// final name = await ThemedInputDialog.show(
-///   context: context,
-///   title: '输入名称',
-///   hintText: '请输入预设名称',
-///   validator: (v) => v.isEmpty ? '名称不能为空' : null,
-/// );
-/// if (name != null) { ... }
-/// ```
+/// 通用输入对话框，用于重命名、输入名称等需要用户输入一段文本的场景
 class ThemedInputDialog extends StatefulWidget {
-  /// 对话框标题
-  final String title;
-
   /// 输入框标签
   final String? labelText;
 
@@ -47,12 +32,10 @@ class ThemedInputDialog extends StatefulWidget {
   /// 多行输入时的最大行数
   final int maxLines;
 
-  final bool presentationManaged;
   final ScrollController? scrollController;
 
   const ThemedInputDialog({
     super.key,
-    required this.title,
     this.labelText,
     this.hintText,
     this.initialValue,
@@ -61,7 +44,6 @@ class ThemedInputDialog extends StatefulWidget {
     this.cancelText,
     this.multiline = false,
     this.maxLines = 5,
-    this.presentationManaged = false,
     this.scrollController,
   });
 
@@ -84,8 +66,8 @@ class ThemedInputDialog extends StatefulWidget {
       context: context,
       title: title,
       dialogWidth: multiline ? 440 : 380,
+      headerScrollsWithContent: true,
       builder: (context, scrollController) => ThemedInputDialog(
-        title: title,
         labelText: labelText,
         hintText: hintText,
         initialValue: initialValue,
@@ -94,7 +76,6 @@ class ThemedInputDialog extends StatefulWidget {
         cancelText: cancelText,
         multiline: multiline,
         maxLines: maxLines,
-        presentationManaged: true,
         scrollController: scrollController,
       ),
     );
@@ -150,87 +131,47 @@ class _ThemedInputDialogState extends State<ThemedInputDialog> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final l10n = context.l10n;
     final confirmText = widget.confirmText ?? l10n.common_confirm;
     final cancelText = widget.cancelText ?? l10n.common_cancel;
 
     final contentWidth = widget.multiline ? 400.0 : 320.0;
 
-    final content = AdaptiveDialogFrame(
-      maxWidth: contentWidth,
-      maxHeight: widget.multiline ? 280 : 120,
-      reservedVerticalSpace: widget.presentationManaged ? 80 : 120,
-      scaleReservedVerticalSpace: true,
-      horizontalMargin: widget.presentationManaged ? 0 : 24,
-      child: SingleChildScrollView(
-        controller: widget.scrollController,
-        child: ThemedInput(
-          controller: _controller,
-          autofocus: true,
-          maxLines: widget.multiline ? widget.maxLines : 1,
-          minLines: widget.multiline ? 3 : 1,
-          decoration: InputDecoration(
-            labelText: widget.labelText,
-            hintText: widget.hintText,
-            border: const OutlineInputBorder(),
-            errorText: _errorText,
-            contentPadding: const EdgeInsets.symmetric(
-              horizontal: 12,
-              vertical: 12,
-            ),
-          ),
-          onChanged: _validate,
-          onSubmitted: widget.multiline ? null : (_) => _submit(),
+    final input = ThemedInput(
+      controller: _controller,
+      autofocus: true,
+      maxLines: widget.multiline ? widget.maxLines : 1,
+      minLines: widget.multiline ? 3 : 1,
+      decoration: InputDecoration(
+        labelText: widget.labelText,
+        hintText: widget.hintText,
+        errorText: _errorText,
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 12,
+          vertical: 12,
         ),
       ),
+      onChanged: _validate,
+      onSubmitted: widget.multiline ? null : (_) => _submit(),
     );
-    final actions = <Widget>[
-      TextButton(
-        onPressed: () => Navigator.of(context).pop(),
-        child: Text(
-          cancelText,
-          style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
-        ),
-      ),
-      FilledButton(
-        onPressed: _canSubmit ? _submit : null,
-        child: Text(confirmText),
-      ),
-    ];
-
-    if (!widget.presentationManaged) {
-      return AlertDialog(
-        scrollable: true,
-        backgroundColor: theme.colorScheme.surfaceContainerHigh,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-        title: Text(
-          widget.title,
-          style: theme.textTheme.titleMedium?.copyWith(
-            fontWeight: FontWeight.w600,
-            color: theme.colorScheme.onSurface,
+    return ContentSizedAdaptiveForm(
+      scrollController: widget.scrollController,
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+      content: [
+        Align(
+          alignment: Alignment.topCenter,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: contentWidth),
+            child: input,
           ),
         ),
-        content: content,
-        actions: actions,
-      );
-    }
-
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Align(alignment: Alignment.topCenter, child: content),
-          const SizedBox(height: 8),
-          SafeArea(
-            top: false,
-            child: Align(
-              alignment: AlignmentDirectional.centerEnd,
-              child: Wrap(spacing: 8, runSpacing: 8, children: actions),
-            ),
-          ),
-        ],
+      ],
+      footer: AdaptiveFormFooter(
+        cancelLabel: cancelText,
+        primary: FilledButton(
+          onPressed: _canSubmit ? _submit : null,
+          child: Text(confirmText),
+        ),
       ),
     );
   }

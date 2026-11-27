@@ -13,12 +13,15 @@ on:
       - "analysis_options.yaml"
       - "android/**"
       - "assets/**"
+      - "bin/**"
       - "build.yaml"
       - "dart_test.yaml"
       - "fonts/**"
       - "installer/windows/**"
+      - "krita_plugin/**"
       - "l10n.yaml"
       - "lib/**"
+      - "packages/**"
       - "pubspec.lock"
       - "pubspec.yaml"
       - "scripts/**"
@@ -37,12 +40,15 @@ on:
       - "analysis_options.yaml"
       - "android/**"
       - "assets/**"
+      - "bin/**"
       - "build.yaml"
       - "dart_test.yaml"
       - "fonts/**"
       - "installer/windows/**"
+      - "krita_plugin/**"
       - "l10n.yaml"
       - "lib/**"
+      - "packages/**"
       - "pubspec.lock"
       - "pubspec.yaml"
       - "scripts/**"
@@ -60,7 +66,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  FLUTTER_VERSION: "3.44.2"
+  FLUTTER_VERSION: "3.47.5"
   PUB_HOSTED_URL: "https://pub.dev"
 
 jobs:
@@ -70,6 +76,7 @@ jobs:
     outputs:
       windows_build: ${{ steps.filter.outputs.windows_build }}
       windows_package: ${{ steps.filter.outputs.windows_package }}
+      krita_plugin: ${{ steps.filter.outputs.krita_plugin }}
 
     steps:
       - name: Classify pull request files
@@ -84,12 +91,15 @@ jobs:
               - '.github/workflows/release.yml'
               - '.github/workflows/windows-portable.yml'
               - 'assets/**'
+              - 'bin/**'
               - 'build.yaml'
               - 'fonts/**'
               - 'l10n.yaml'
               - 'lib/**'
+              - 'packages/**'
               - 'pubspec.lock'
               - 'pubspec.yaml'
+              - 'scripts/build_mcp_cli.ps1'
               - 'windows/**'
             windows_package:
               - '.github/actions/prepare-flutter-build/action.yml'
@@ -99,10 +109,14 @@ jobs:
               - 'installer/windows/**'
               - 'pubspec.lock'
               - 'pubspec.yaml'
+              - 'scripts/build_mcp_cli.ps1'
               - 'scripts/package_windows_release.ps1'
               - 'scripts/verify_windows_portable_package.ps1'
               - 'scripts/validate_windows_installer_process_handling.ps1'
               - 'windows/**'
+            krita_plugin:
+              - '.github/workflows/pull-request-validation.yml'
+              - 'krita_plugin/**'
 
   quality:
     name: Generate, validate, and analyze
@@ -159,7 +173,6 @@ jobs:
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache-namespace: nai-hosted
-          generate-code: "true"
 
       - name: Validate bundled autocomplete databases
         if: matrix.shard == 0
@@ -194,12 +207,11 @@ jobs:
       - name: Download verified bundled database
         shell: pwsh
         run: ./scripts/prepare_bundled_database.ps1
-      - name: Prepare Flutter dependencies
+      - name: Prepare incremental Flutter build
         uses: ./.github/actions/prepare-flutter-build
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache-namespace: nai-hosted
-          generate-code: "false"
       - name: Verify cloud-sync performance budgets
         shell: pwsh
         run: ./scripts/run_cloud_sync_benchmark.ps1
@@ -227,6 +239,29 @@ jobs:
           }
           Write-Host 'All test shards and cloud-sync budgets passed.'
 
+  krita-plugin:
+    name: Krita plugin tests
+    runs-on: windows-2022
+    needs: changes
+    if: >-
+      github.event_name != 'pull_request' ||
+      needs.changes.outputs.krita_plugin == 'true'
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout without LFS payloads
+        uses: actions/checkout@v6
+        with:
+          lfs: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run plugin tests
+        run: python -m unittest discover -s krita_plugin/tests
+
   windows-build:
     name: Build Windows debug
     runs-on: windows-2022
@@ -252,7 +287,6 @@ jobs:
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache-namespace: nai-hosted
-          generate-code: "true"
           cache-windows-build: "true"
 
       - name: Setup NuGet
@@ -291,7 +325,6 @@ jobs:
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache-namespace: nai-hosted
-          generate-code: "true"
           cache-windows-build: "true"
 
       - name: Setup NuGet
@@ -312,6 +345,10 @@ jobs:
 
       - name: Build Windows release
         run: flutter build windows --release --no-pub
+
+      - name: Build MCP CLI
+        shell: pwsh
+        run: ./scripts/build_mcp_cli.ps1 -OutputPath build/windows/x64/runner/Release/nai_launcher_mcp.exe
 
       - name: Validate installer process handling
         shell: pwsh
@@ -357,6 +394,7 @@ jobs:
       - changes
       - quality
       - tests
+      - krita-plugin
       - windows-build
       - windows-package
 

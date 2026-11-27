@@ -5,6 +5,7 @@ import '../../../../core/utils/localization_extension.dart';
 import '../../../../data/models/mosaic/mosaic_settings.dart';
 import '../../../../data/models/watermark/watermark_settings.dart';
 import '../../../adaptive/adaptive_presenter.dart';
+import '../../../adaptive/adaptive_form_footer.dart';
 import '../../../adaptive/content_sized_adaptive_form.dart';
 import '../../../providers/mosaic_settings_provider.dart';
 import '../../../providers/share_image_settings_provider.dart';
@@ -46,6 +47,7 @@ class _PrivacySettingsSectionState
         style: Theme.of(panelContext).textTheme.titleMedium,
       ),
       dialogWidth: 420,
+      headerScrollsWithContent: true,
       builder: (panelContext, scrollController) => _NumberEditorForm(
         initialValue: initialValue,
         label: label,
@@ -95,6 +97,8 @@ class _PrivacySettingsSectionState
     final watermarkState = ref.watch(watermarkSettingsProvider);
     final watermarkSettings = watermarkState.configuration;
     final watermarkControlsEnabled = watermarkState.loadIssue == null;
+    final localLogoMissing =
+        ref.watch(watermarkLocalLogoMissingProvider).value ?? false;
     final mosaicState = ref.watch(mosaicSettingsProvider);
     final mosaicSettings = mosaicState.configuration;
     final mosaicControlsEnabled = mosaicState.loadIssue == null;
@@ -366,7 +370,7 @@ class _PrivacySettingsSectionState
               ListTile(
                 leading: const Icon(Icons.edit_outlined),
                 title: Text(context.l10n.settings_watermarkEditDefault),
-                subtitle: watermarkState.localLogoMissing
+                subtitle: localLogoMissing
                     ? Text(
                         context.l10n.watermark_logoMissing,
                         style: TextStyle(
@@ -553,26 +557,10 @@ class _NumberEditorFormState extends State<_NumberEditorForm> {
           ),
         ),
       ],
-      footer: SafeArea(
-        top: false,
-        minimum: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-        child: Align(
-          alignment: AlignmentDirectional.centerEnd,
-          child: Wrap(
-            alignment: WrapAlignment.end,
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(),
-                child: Text(context.l10n.common_cancel),
-              ),
-              FilledButton(
-                onPressed: _save,
-                child: Text(context.l10n.common_save),
-              ),
-            ],
-          ),
+      footer: AdaptiveFormFooter(
+        primary: FilledButton(
+          onPressed: _save,
+          child: Text(context.l10n.common_save),
         ),
       ),
     );

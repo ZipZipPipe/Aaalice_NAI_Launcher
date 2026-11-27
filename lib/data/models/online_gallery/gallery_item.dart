@@ -1,4 +1,7 @@
+import 'dart:math';
+
 import '../gallery/nai_image_metadata.dart';
+import 'ai_tag_generation_info.dart';
 import 'artist_chain.dart';
 import 'gallery_media_capability.dart';
 import 'gallery_source.dart';
@@ -23,6 +26,19 @@ class GalleryMedia {
     this.metadata = const {},
   });
 
+  /// List payloads without media use this until the work detail loads.
+  factory GalleryMedia.pending(String workId) =>
+      GalleryMedia(id: pendingIdFor(workId), mediaType: 'image');
+
+  static String pendingIdFor(String workId) => '${workId}_pending';
+
+  /// Cover of entries that carry no media at all, such as text-only entries.
+  static const GalleryMedia noImage = GalleryMedia(id: noImageId);
+  static const String noImageId = 'no-image';
+
+  static bool isPlaceholderId(String? id, String workId) =>
+      id == noImageId || id == pendingIdFor(workId);
+
   final String id;
   final String previewUrl;
   final String displayUrl;
@@ -39,6 +55,34 @@ class GalleryMedia {
   final String? metadataError;
   final NaiImageMetadata? promptMetadata;
   final Map<String, dynamic> metadata;
+
+  Map<String, dynamic> generationParametersFor(GallerySourceId source) =>
+      source == GallerySourceId.aiTag
+          ? AiTagGenerationInfo.mediaGenerationParameters(metadata)
+          : const {};
+
+  List<GalleryCharacterPrompt> get characterPrompts {
+    final data = promptMetadata;
+    if (data == null) return const [];
+    final count = max(
+      data.characterInfos.length,
+      max(data.characterPrompts.length, data.characterNegativePrompts.length),
+    );
+    return List.generate(count, (index) {
+      final info = data.characterInfos.elementAtOrNull(index);
+      return GalleryCharacterPrompt(
+        label: '',
+        prompt:
+            info?.prompt ?? data.characterPrompts.elementAtOrNull(index) ?? '',
+        negativePrompt:
+            info?.negativePrompt ??
+            data.characterNegativePrompts.elementAtOrNull(index) ??
+            '',
+        positionX: info?.centerX,
+        positionY: info?.centerY,
+      );
+    }, growable: false);
+  }
 
   bool get hasKnownDimensions => width > 0 && height > 0;
   double get aspectRatio => hasKnownDimensions ? width / height : 1;
@@ -111,6 +155,7 @@ class GalleryItem {
     int? height,
     this.tagString = '',
     List<String>? tags,
+    this.positiveCharacterTags = const [],
     this.searchTerms = const [],
     this.tagsComplete = true,
     this.tagStringGeneral = '',
@@ -165,6 +210,9 @@ class GalleryItem {
   final int imageHeight;
   final String tagString;
   final List<String>? _tags;
+
+  /// Kept separately to preserve the main prompt used by copy and export.
+  final List<String> positiveCharacterTags;
 
   /// Source-defined searchable text that is not necessarily a display tag.
   final List<String> searchTerms;
@@ -248,6 +296,12 @@ class GalleryItem {
   bool get isAnimated => mediaCapability.isAnimatedImage;
 
   bool get hasValidPreview => previewUrl.isNotEmpty;
+  bool get hasPendingCover =>
+      cover.id == GalleryMedia.pendingIdFor(sourceWorkId);
+
+  /// Null while the cover is a placeholder that detail media never contains.
+  String? get coverMediaId =>
+      GalleryMedia.isPlaceholderId(cover.id, sourceWorkId) ? null : cover.id;
   bool get hasFile => downloadUrl.isNotEmpty;
   bool get hasLarge => (largeFileUrl ?? '').isNotEmpty;
   String? get mediaTypeLabel {
@@ -349,6 +403,7 @@ class GalleryItem {
     int? imageHeight,
     String? tagString,
     List<String>? tags,
+    List<String>? positiveCharacterTags,
     List<String>? searchTerms,
     bool? tagsComplete,
     String? tagStringGeneral,
@@ -395,6 +450,7 @@ class GalleryItem {
       imageHeight: imageHeight ?? this.imageHeight,
       tagString: tagString ?? this.tagString,
       tags: tags ?? _tags,
+      positiveCharacterTags: positiveCharacterTags ?? this.positiveCharacterTags,
       searchTerms: searchTerms ?? this.searchTerms,
       tagsComplete: tagsComplete ?? this.tagsComplete,
       tagStringGeneral: tagStringGeneral ?? this.tagStringGeneral,

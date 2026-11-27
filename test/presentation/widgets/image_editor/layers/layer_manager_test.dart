@@ -8,9 +8,25 @@ import 'package:nai_launcher/core/utils/inpaint_mask_utils.dart';
 import 'package:nai_launcher/presentation/widgets/image_editor/core/history_manager.dart';
 import 'package:nai_launcher/presentation/widgets/image_editor/layers/layer.dart';
 import 'package:nai_launcher/presentation/widgets/image_editor/layers/layer_manager.dart';
+import 'package:nai_launcher/presentation/widgets/image_editor/layers/layer_role.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('replaceLayerImage forwards the base replacement result', () async {
+    final manager = _BaseReplacementManager();
+    final layer = Layer(name: 'replacement');
+    addTearDown(manager.dispose);
+    addTearDown(layer.dispose);
+    final bytes = Uint8List(0);
+    manager.result = layer;
+
+    expect(await manager.replaceLayerImage(layer.id, bytes), isTrue);
+    expect(manager.request, (layer.id, bytes));
+
+    manager.result = null;
+    expect(await manager.replaceLayerImage(layer.id, bytes), isFalse);
+  });
 
   testWidgets(
       'replaceLayerImage updates base image bytes and notifies listeners', (
@@ -101,7 +117,9 @@ void main() {
         ),
       );
 
-      final merged = await layerManager.exportMergedImage(const Size(64, 64));
+      final merged = await layerManager.exportMergedImage(
+        const Rect.fromLTWH(0, 0, 64, 64),
+      );
       final bytes = await merged.toByteData(format: ui.ImageByteFormat.png);
       final decoded = img.decodePng(
         Uint8List.fromList(bytes!.buffer.asUint8List()),
@@ -311,6 +329,67 @@ void main() {
       layerManager.dispose();
     });
   });
+
+  testWidgets(
+    'initial layers start on the mask and send image tools to the drawing layer',
+    (tester) async {
+      final layerManager = LayerManager();
+      addTearDown(layerManager.dispose);
+      final drawing = layerManager.addLayer(name: 'drawing');
+      // 载入原图会把它设为活动图层
+      final source = (await tester.runAsync(
+        () => layerManager.addLayerFromImage(
+          _buildSolidPng(8, 8, const Color(0xFFAA3322)),
+          name: 'source',
+        ),
+      ))!;
+      final mask = layerManager.addLayer(
+        name: 'mask',
+        index: 0,
+        role: LayerRole.mask,
+      );
+      expect(layerManager.preferredLayerFor(LayerRole.image), same(source));
+
+      layerManager.selectInitialLayers(drawing);
+
+      expect(layerManager.activeLayer, same(mask));
+      expect(layerManager.preferredLayerFor(LayerRole.image), same(drawing));
+    },
+  );
+
+  testWidgets('initial layers stay on the drawing layer without masks', (
+    tester,
+  ) async {
+    final layerManager = LayerManager();
+    addTearDown(layerManager.dispose);
+    final drawing = layerManager.addLayer(name: 'drawing');
+    final source = (await tester.runAsync(
+      () => layerManager.addLayerFromImage(
+        _buildSolidPng(8, 8, const Color(0xFFAA3322)),
+        name: 'source',
+      ),
+    ))!;
+    expect(layerManager.activeLayer, same(source));
+
+    layerManager.selectInitialLayers(drawing);
+
+    expect(layerManager.activeLayer, same(drawing));
+  });
+}
+
+class _BaseReplacementManager extends LayerManager {
+  Layer? result;
+  (String, Uint8List)? request;
+
+  @override
+  Future<Layer?> replaceLayerBaseImage(
+    String layerId,
+    Uint8List imageBytes, {
+    Offset offset = Offset.zero,
+  }) async {
+    request = (layerId, imageBytes);
+    return result;
+  }
 }
 
 Uint8List _buildSolidPng(int width, int height, Color color) {

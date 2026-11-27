@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/misc.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../../../core/agent/agent.dart';
@@ -21,14 +22,15 @@ import '../../../core/agent/skill_catalog.dart';
 import '../../../core/storage/local_storage_service.dart';
 import '../../../core/services/android_foreground_task_service.dart';
 import '../../../core/utils/app_logger.dart';
+import '../../../core/utils/locale_provider.dart';
+import '../../../l10n/app_localizations.dart';
 import '../../../data/models/agent/agent_settings.dart';
 import '../../../data/models/interaction/user_question.dart';
 import '../../../data/models/inpaint/inpaint_draft.dart';
-import '../../../data/repositories/gallery_folder_repository.dart';
 import '../../agent_settings/providers/agent_settings_provider.dart';
 import '../models/agent_chat_compaction_outcome.dart';
 import '../models/agent_chat_slash_syntax.dart';
-import '../../prompt_assistant/models/prompt_assistant_models.dart';
+import '../../../data/models/prompt_assistant/prompt_assistant_models.dart';
 import '../../prompt_assistant/models/agent_protocol.dart';
 import '../../prompt_assistant/providers/prompt_assistant_config_provider.dart';
 import '../../prompt_assistant/providers/web_access_provider.dart';
@@ -36,20 +38,27 @@ import '../../prompt_assistant/services/prompt_assistant_service.dart';
 import '../../prompt_assistant/services/provider_adapters/assistant_prefill.dart';
 import '../../providers/fixed_tags_provider.dart';
 import '../../providers/precise_ref_library_provider.dart';
+import '../../providers/share_image_settings_provider.dart';
+import '../../providers/subscription_provider.dart';
 import '../../providers/tag_library_page_provider.dart';
 import '../../providers/vibe_library_provider.dart';
 import '../../router/app_router_config.dart';
 import '../services/agent_api_client.dart';
-import '../services/agent_prefill.dart';
+import '../services/agent_chat_auto_retry.dart';
 import '../services/agent_chat_draft_controller.dart';
 import '../services/agent_chat_event_controller.dart';
 import '../services/agent_chat_session_controller.dart';
 import '../services/agent_chat_session_recovery.dart';
+import '../services/agent_prefill.dart';
 import '../../prompt_assistant/models/assistant_model_capability.dart';
 import '../services/agent_stream_bridge.dart';
 import '../services/agent_system_prompt.dart';
+import '../services/agent_prepared_anlas_estimator.dart';
+import '../services/agent_prepared_file_targets.dart';
 import '../services/agent_resource_resolver.dart';
+import '../services/agent_workspace_directory.dart';
 import '../services/generation_preparation_runtime.dart';
+import '../services/image_upscale_toolbox.dart';
 import '../services/manual_inpaint_toolbox.dart';
 import '../services/queue_toolbox.dart';
 import '../services/agent_tool_permission_controller.dart';
@@ -64,8 +73,8 @@ typedef AgentWireCompletion =
     Stream<AgentWireEvent> Function(AgentChatRequest request);
 
 final agentChatNotifierProvider =
-    StateNotifierProvider<AgentChatNotifier, AgentChatState>((ref) {
-      return AgentChatNotifier(ref, initializeImmediately: false);
+    NotifierProvider<AgentChatNotifier, AgentChatState>(() {
+      return AgentChatNotifier(initializeImmediately: false);
     });
 
 /// 聊天 agent 编排层：
@@ -73,14 +82,14 @@ final agentChatNotifierProvider =
 /// - 会话经 [Session]/[JsonlSessionRepo] 持久化为 JSONL 树；
 /// - 上下文压缩经 [prepareCompaction]/[compact]（自动阈值 + 手动触发）；
 /// - skills 经目录发现加载，并以 XML 清单注入系统提示词。
-class AgentChatNotifier extends StateNotifier<AgentChatState> {
-  AgentChatNotifier(
-    this._ref, {
+class AgentChatNotifier extends Notifier<AgentChatState> {
+  AgentChatNotifier({
     List<HarnessSkill>? presetSkills,
     Directory? supportDir,
     Directory? workspaceDir,
     JsonlSessionRepo? sessionRepo,
     AgentWireCompletion? completeRequest,
+    RetryPolicy retryPolicy = agentChatRetryPolicy,
     Map<String, String>? skillEnvironment,
     Future<Directory?> Function()? imageProjectDirectoryResolver,
     bool initializeImmediately = true,
@@ -88,55 +97,41 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
        _providedWorkspaceDir = workspaceDir,
        _providedSessionRepo = sessionRepo,
        _completeRequest = completeRequest,
+       _retryPolicy = retryPolicy,
        _skillEnvironment = skillEnvironment,
        _imageProjectDirectoryResolver = imageProjectDirectoryResolver,
-       super(const AgentChatState()) {
-    _ref.listen<WebAccessConfigState>(webAccessConfigProvider, (_, _) {
-      unawaited(_refreshWebAccessTools());
-    });
-    _ref.listen<PromptAssistantConfigState>(promptAssistantConfigProvider, (
-      previous,
-      next,
-    ) {
-      _refreshRoute();
-    });
-    _ref.listen<AgentSettingsState>(agentSettingsProvider, (_, _) {
-      _queueSettingsRefresh();
-    });
-    for (final provider in [
-      fixedTagsNotifierProvider,
-      tagLibraryPageNotifierProvider,
-      vibeLibraryNotifierProvider,
-      preciseRefLibraryNotifierProvider,
-    ]) {
-      _ref.listen(provider, (_, _) {
-        unawaited(refreshPendingResourceAvailability());
-      });
-    }
-    _presetSkills = presetSkills;
-    if (initializeImmediately) {
-      ensureInitialized();
-    }
-  }
+       _presetSkills = presetSkills,
+       _initializeImmediately = initializeImmediately;
 
-  final Ref _ref;
   final Directory? _providedSupportDir;
   final Directory? _providedWorkspaceDir;
   final JsonlSessionRepo? _providedSessionRepo;
   final AgentWireCompletion? _completeRequest;
+  final RetryPolicy _retryPolicy;
   final Map<String, String>? _skillEnvironment;
   final Future<Directory?> Function()? _imageProjectDirectoryResolver;
-  late final List<HarnessSkill>? _presetSkills;
+  final List<HarnessSkill>? _presetSkills;
+  final bool _initializeImmediately;
   late Directory _supportDir;
   late Directory _workspaceDir;
   late AgentChatDraftController _draftController;
   bool _draftControllerInitialized = false;
   late AgentChatEventController _eventController;
+  late final AgentChatAutoRetry _autoRetry = AgentChatAutoRetry(
+    onRetryStart: _handleRetryStart,
+    onRetryEnd: _handleRetryEnd,
+    omitFailedAttempt: _omitFailedAttempt,
+    policy: _retryPolicy,
+  );
+  AbortController? _manualCompaction;
   AgentChatSessionController? _sessionControllerValue;
   AgentToolPermissionController? _permissionController;
   AgentUserQuestionController? _questionController;
   late AgentToolRegistryBuilder _toolRegistryBuilder;
   late ManualInpaintToolbox _manualInpaintToolbox;
+  late final ImageUpscaleToolbox _imageUpscaleToolbox = ImageUpscaleToolbox(
+    ref,
+  );
   late AgentApiClient _client;
   final Map<String, HarnessSkill> _skills = {};
   final List<SkillDiagnostic> _skillDiagnostics = [];
@@ -154,10 +149,50 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
   AgentSettings? _activeAgentSettings;
   (ProviderConfig, String, String?)? _routeCache;
   (ProviderConfig, String, String?)? _activeRoute;
+  ThinkingLevel? _activeThinkingLevel;
+  final _pendingThinking = <Session, Future<void>>{};
 
-  LocalStorageService get _local => _ref.read(localStorageServiceProvider);
+  LocalStorageService get _local => ref.read(localStorageServiceProvider);
   AgentChatSessionController get _sessionController => _sessionControllerValue!;
   Future<void> get whenInitialized => ensureInitialized();
+
+  @override
+  AgentChatState build() {
+    ref.listen<WebAccessConfigState>(webAccessConfigProvider, (_, _) {
+      unawaited(_refreshWebAccessTools());
+    });
+    ref.listen<PromptAssistantConfigState>(promptAssistantConfigProvider, (
+      previous,
+      next,
+    ) {
+      _refreshRoute();
+    });
+    ref.listen<AgentSettingsState>(agentSettingsProvider, (_, _) {
+      _queueSettingsRefresh();
+    });
+    for (final provider in <ProviderListenable<Object?>>[
+      fixedTagsNotifierProvider,
+      tagLibraryPageNotifierProvider,
+      vibeLibraryNotifierProvider,
+      preciseRefLibraryNotifierProvider,
+    ]) {
+      ref.listen(provider, (_, _) {
+        unawaited(refreshPendingResourceAvailability());
+      });
+    }
+    ref.onDispose(() {
+      _manualCompaction?.abort();
+      _autoRetry.requestAbort();
+      _sessionControllerValue?.agent?.abort();
+      _questionController?.cancel();
+      _permissionController?.dispose();
+      _sessionControllerValue?.agent?.clearAllQueues();
+    });
+    if (_initializeImmediately) {
+      unawaited(ensureInitialized());
+    }
+    return const AgentChatState();
+  }
 
   Future<void> ensureInitialized() =>
       _initializing ??= _init(presetSkills: _presetSkills);
@@ -173,6 +208,7 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
         AppLogger.w('agent chat init failed: $e', 'AgentChat');
         _supportDir = Directory.systemTemp;
       }
+      if (!ref.mounted) return;
     }
     final sessionRepository =
         _providedSessionRepo ?? JsonlSessionRepo(_supportDir);
@@ -188,40 +224,23 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
         '${Platform.pathSeparator}audit-v1.jsonl',
       ),
     );
-    // 文件工具工作区（read 的 cwd 与相对路径根）。
-    // 默认指向图片导出根目录（自定义保存路径或 Documents/NAI_Launcher/
-    // images），让 Agent 能直接按相对路径读取生成的图片；解析失败时
-    // 回退到应用支持目录下的 agent/workspace。
-    Directory? workspaceDir = _providedWorkspaceDir;
-    if (workspaceDir == null) {
-      try {
-        workspaceDir = await _resolveCurrentImageProjectDirectory();
-      } catch (e) {
-        AppLogger.w('resolve image export dir failed: $e', 'AgentChat');
-      }
-    }
-    _workspaceDir =
-        workspaceDir ??
-        Directory(
-          '${_supportDir.path}${Platform.pathSeparator}agent'
-          '${Platform.pathSeparator}workspace',
-        );
-    try {
-      await _workspaceDir.create(recursive: true);
-    } catch (e) {
-      AppLogger.w('agent workspace create failed: $e', 'AgentChat');
-    }
+    _workspaceDir = await resolveAgentWorkspaceDirectory(
+      _supportDir,
+      preferred: _providedWorkspaceDir,
+      imageProjectDirectory: _resolveCurrentImageProjectDirectory,
+    );
+    if (!ref.mounted) return;
     _manualInpaintToolbox = ManualInpaintToolbox(
-      _ref,
+      ref,
       supportDirectory: _supportDir,
       workspaceDir: _workspaceDir.path,
       navigator: () =>
-          _ref.read(appRouterProvider).routerDelegate.navigatorKey.currentState,
+          ref.read(appRouterProvider).routerDelegate.navigatorKey.currentState,
       activeSessionId: () => state.activeSessionId,
       onDraftChanged: _recordManualInpaintDraftUpdate,
     );
     AgentResourceResolver createResourceResolver() => AgentResourceResolver(
-      _ref,
+      ref,
       loadInpaintDraftImage: _manualInpaintToolbox.loadDraftImage,
     );
     _draftController = AgentChatDraftController(
@@ -230,13 +249,17 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
       readState: () => state,
       writeState: (next) => state = next,
       createResourceResolver: createResourceResolver,
-      isMounted: () => mounted,
+      isMounted: () => ref.mounted,
     );
     _draftControllerInitialized = true;
     _permissionController = AgentToolPermissionController(
       auditSink: auditSink,
       estimateAnlas: _estimatePreparedAnlas,
+      describeFileTargets: _describePreparedFileTargets,
+      chargeConfirmThreshold: () =>
+          ref.read(shareImageSettingsProvider).effectiveHighAnlasCostThreshold,
       onApprovalChanged: (request) {
+        if (!ref.mounted) return;
         final boundRequest = request?.bind(
           turnId: _sessionControllerValue?.activeTurnId,
           itemId: 'call:${request.toolCallId}',
@@ -251,11 +274,11 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
                 workPhase: AgentChatWorkPhase.awaitingApproval,
               );
       },
-      isMounted: () => mounted,
+      isMounted: () => ref.mounted,
     );
     _questionController = AgentUserQuestionController(
       onChanged: (request) {
-        if (!mounted) return;
+        if (!ref.mounted) return;
         state = state.copyWith(
           questionRequest: request,
           clearQuestionRequest: request == null,
@@ -264,7 +287,7 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
     );
     _toolRegistryBuilder = AgentToolRegistryBuilder(
       questionController: _questionController!,
-      ref: _ref,
+      ref: ref,
       workspaceDir: _workspaceDir.path,
       skills: _skills,
       skillDiagnostics: _skillDiagnostics,
@@ -272,10 +295,11 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
       generationRuntime: _generationPreparationRuntime,
       queueRuntime: _queueControlRuntime,
       manualInpaintToolbox: _manualInpaintToolbox,
+      imageUpscaleToolbox: _imageUpscaleToolbox,
       messages: () =>
           _sessionControllerValue?.agent?.state.messages ?? const [],
       activeSessionId: () => state.activeSessionId,
-      isMounted: () => mounted,
+      isMounted: () => ref.mounted,
     );
     _sessionControllerValue = AgentChatSessionController(
       repository: sessionRepository,
@@ -284,16 +308,25 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
       workspaceDir: _workspaceDir.path,
       buildAgent: _buildAgent,
       buildSystemPrompt: _buildSystemPrompt,
+      reasoningFormatIdFor: (model) {
+        if (!ref.mounted) return null;
+        final providers = ref.read(promptAssistantConfigProvider).providers;
+        return providers
+            .where((p) => p.id == model.provider)
+            .firstOrNull
+            ?.modelReasoningFormatIds[model.id];
+      },
       readState: () => state,
       writeState: (next) => state = next,
-      isMounted: () => mounted,
+      isMounted: () => ref.mounted,
     );
     _eventController = AgentChatEventController(
       sessionController: _sessionController,
       permissionController: _permissionController!,
+      autoRetry: _autoRetry,
       readState: () => state,
       writeState: (next) => state = next,
-      isMounted: () => mounted,
+      isMounted: () => ref.mounted,
     );
 
     _usesPresetSkills = presetSkills != null;
@@ -303,12 +336,19 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
       }
     } else {
       await _loadSkillsFromDisk();
+      if (!ref.mounted) return;
     }
 
-    _client = AgentApiClient(_ref.read(promptAssistantDioProvider));
+    _client = AgentApiClient(
+      ref.read(promptAssistantDioProvider),
+      reasoningRejectionHint: () => lookupAppLocalizations(
+        ref.read(localeNotifierProvider),
+      ).promptAssistant_reasoningRejectedHint,
+    );
     _runtimeReady = true;
     _refreshRoute();
     await _sessionController.restoreLastSession();
+    if (!ref.mounted) return;
     _refreshRoute();
     state = state.copyWith(
       initialized: true,
@@ -317,12 +357,12 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
   }
 
   Future<Agent> _buildAgent() async {
-    final permissionMode = _ref
+    final permissionMode = ref
         .read(agentSettingsProvider)
         .settings
         .chat
         .permissionMode;
-    final fullAccess = permissionMode == AgentPermissionMode.fullAccess;
+    final fullAccess = permissionMode.grantsFullAccess;
     final capability = _modelCapability(_routeCache);
     final agent = Agent(
       AgentOptions(
@@ -355,14 +395,14 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
     if (!canManageAgentChatSessions(state)) {
       return;
     }
-    await _ref.read(agentSettingsProvider.notifier).setPermissionMode(mode);
+    await ref.read(agentSettingsProvider.notifier).setPermissionMode(mode);
     await _settingsRefresh;
   }
 
   List<AgentTool> _buildTools({required bool fullAccess}) {
     final permissionMode =
         _activePermissionMode ??
-        _ref.read(agentSettingsProvider).settings.chat.permissionMode;
+        ref.read(agentSettingsProvider).settings.chat.permissionMode;
     final registry = _toolRegistryBuilder.build(
       fullAccess: fullAccess,
       permissionMode: permissionMode,
@@ -378,10 +418,8 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
     }
     final agent = _sessionControllerValue?.agent;
     if (agent == null) return;
-    final mode = _ref.read(agentSettingsProvider).settings.chat.permissionMode;
-    agent.state.tools = _buildTools(
-      fullAccess: mode == AgentPermissionMode.fullAccess,
-    );
+    final mode = ref.read(agentSettingsProvider).settings.chat.permissionMode;
+    agent.state.tools = _buildTools(fullAccess: mode.grantsFullAccess);
     agent.setSystemPrompt(await _buildSystemPrompt());
   }
 
@@ -392,7 +430,7 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
       final loaded = await _scanCurrentSkills(
         skillEnabledOverrides: skillEnabledOverrides,
       );
-      if (!mounted) return;
+      if (!ref.mounted) return;
       _skills.clear();
       _skillDiagnostics
         ..clear()
@@ -408,7 +446,7 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
   }) async {
     final resolvedOverrides =
         skillEnabledOverrides ??
-        _ref.read(agentSettingsProvider).settings.skillEnabledOverrides;
+        ref.read(agentSettingsProvider).settings.skillEnabledOverrides;
     Directory? skillWorkspace = _providedWorkspaceDir;
     if (_providedWorkspaceDir == null) {
       try {
@@ -430,12 +468,11 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
     );
   }
 
-  Future<Directory?> _resolveCurrentImageProjectDirectory() async {
+  Future<Directory?> _resolveCurrentImageProjectDirectory() {
     final resolver = _imageProjectDirectoryResolver;
-    if (resolver != null) return resolver();
-    final currentRoot = await GalleryFolderRepository.instance.getRootPath();
-    if (currentRoot == null || currentRoot.isEmpty) return null;
-    return Directory(currentRoot);
+    return resolver != null
+        ? resolver()
+        : resolveCurrentImageProjectDirectory();
   }
 
   Future<int> reloadSkills() async {
@@ -445,18 +482,12 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
         skillEnabledOverrides: _activeAgentSettings?.skillEnabledOverrides,
       );
     }
-    if (!mounted) return _skills.length;
+    if (!ref.mounted) return _skills.length;
     state = state.copyWith(skills: _skills.values.toList(growable: false));
     final agent = _sessionController.agent;
     if (agent != null) {
-      final mode = _ref
-          .read(agentSettingsProvider)
-          .settings
-          .chat
-          .permissionMode;
-      agent.state.tools = _buildTools(
-        fullAccess: mode == AgentPermissionMode.fullAccess,
-      );
+      final mode = ref.read(agentSettingsProvider).settings.chat.permissionMode;
+      agent.state.tools = _buildTools(fullAccess: mode.grantsFullAccess);
       agent.setSystemPrompt(
         await _buildSystemPrompt(settingsOverride: _activeAgentSettings),
       );
@@ -465,25 +496,19 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
   }
 
   Future<void> _applyAgentSettings() async {
-    if (!mounted) return;
+    if (!ref.mounted) return;
     _settingsApplyPending = true;
     if (!_runtimeReady || _runActive) return;
     if (!_usesPresetSkills) await _loadSkillsFromDisk();
-    if (!mounted) return;
+    if (!ref.mounted) return;
     _refreshRoute();
     final agent = _sessionControllerValue?.agent;
     if (agent != null) {
-      final mode = _ref
-          .read(agentSettingsProvider)
-          .settings
-          .chat
-          .permissionMode;
-      agent.state.tools = _buildTools(
-        fullAccess: mode == AgentPermissionMode.fullAccess,
-      );
+      final mode = ref.read(agentSettingsProvider).settings.chat.permissionMode;
+      agent.state.tools = _buildTools(fullAccess: mode.grantsFullAccess);
       agent.setSystemPrompt(await _buildSystemPrompt());
     }
-    if (mounted) {
+    if (ref.mounted) {
       state = state.copyWith(skills: _skills.values.toList(growable: false));
     }
     _settingsApplyPending = false;
@@ -493,14 +518,14 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
       _preparingRun || state.status == AgentChatRunStatus.running;
 
   void _queueSettingsRefresh() {
-    if (!mounted) return;
+    if (!ref.mounted) return;
     _settingsApplyPending = true;
     _settingsRefresh = _settingsRefresh
         .catchError((Object error) {
           AppLogger.w('agent settings refresh failed: $error', 'AgentChat');
         })
         .then((_) async {
-          if (!mounted) return;
+          if (!ref.mounted) return;
           await _applyAgentSettings();
         });
   }
@@ -552,7 +577,7 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
         state = state.copyWith(compacting: false);
         return skip(AgentChatCompactionSkipReason.nothingToCompact);
       }
-      final result = await compact(
+      final compaction = compact(
         preparation,
         _completeSimple,
         Model(
@@ -564,8 +589,18 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
         ),
         signal: signal,
       );
+      final result = await compaction.onError<CompactionError>(
+        (error, _) => err(error),
+      );
       final compactResult = result.valueOrNull;
       state = state.copyWith(compacting: false);
+      // 摘要已返回也不写入：停止后不能再改动会话。
+      if (signal?.aborted == true) {
+        return (
+          messages: messages,
+          outcome: const AgentChatCompactionCancelled(),
+        );
+      }
       if (compactResult == null) {
         final error = result.errorOrNull;
         return (
@@ -631,6 +666,27 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
     }
   }
 
+  RetryCallbacks _compactionRetryCallbacks(String Function() displayError) =>
+      RetryCallbacks(
+        onRetryScheduled: (attempt, maxAttempts, delayMs, _) {
+          if (!ref.mounted) return;
+          state = state.copyWith(
+            retryStatus: AgentChatRetryStatus(
+              attempt: attempt,
+              maxAttempts: maxAttempts,
+              errorMessage: displayError(),
+              resumesAtMs: DateTime.now().millisecondsSinceEpoch + delayMs,
+            ),
+          );
+        },
+        onRetryAttemptStart: () {
+          if (ref.mounted) state = state.copyWith(clearRetryStatus: true);
+        },
+        onRetryFinished: (success, attempt, finalError) {
+          if (ref.mounted) state = state.copyWith(clearRetryStatus: true);
+        },
+      );
+
   /// compaction 是否真有历史要折叠。
   bool _hasSummarizableHistory(CompactionPreparation preparation) =>
       preparation.messagesToSummarize.isNotEmpty ||
@@ -641,15 +697,31 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
     Model model,
     Context context, [
     SimpleStreamOptions? options,
-  ]) {
-    // Background summaries must never inherit the user's chat prefill.
-    return completeSimpleViaStreamFn(
-      (model, context, [options]) =>
-          _streamRequest(model, context, options, allowPrefill: false),
-      model,
-      context,
-      options,
+  ]) async {
+    // 摘要重试沿用 Harness 策略，退避和最终失败仍显示完整的错误提示。
+    late AssistantMessage displayMessage;
+    final message = await retryAssistantCall(
+      () async {
+        displayMessage = await completeSimpleViaStreamFn(
+          (model, context, [options]) =>
+              _streamRequest(model, context, options, allowPrefill: false),
+          model,
+          context,
+          options,
+        );
+        if (isReasoningRejection(displayMessage)) {
+          throw CompactionError(
+            CompactionErrorCode.summarizationFailed,
+            'Summarization failed: ${displayMessage.errorMessage}',
+          );
+        }
+        return agentMessageForRetry(displayMessage);
+      },
+      _autoRetry.policy,
+      options?.signal,
+      _compactionRetryCallbacks(() => displayMessage.errorMessage!),
     );
+    return message.stopReason == StopReason.error ? displayMessage : message;
   }
 
   /// StreamFn：解析路由 → 线请求 → 适配器流 → 桥接。
@@ -677,12 +749,19 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
       }
       final capability = _modelCapability(route);
       final chat =
-          (_activeAgentSettings ?? _ref.read(agentSettingsProvider).settings)
+          (_activeAgentSettings ?? ref.read(agentSettingsProvider).settings)
               .chat;
       final prefill = resolveAgentPrefill(
         chat: chat,
         messages: context.messages,
         allowPrefill: allowPrefill,
+      );
+      final selected = _activeRoute == null
+          ? state.thinkingLevel
+          : _activeThinkingLevel;
+      final reasoning = capability.resolveReasoningRequest(
+        options?.reasoning ??
+            (selected == ThinkingLevel.off ? ThinkingLevel.off.name : null),
       );
       final request = AgentChatRequest(
         sessionId: 'agent_chat',
@@ -712,10 +791,8 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
             ),
         ], options?.maxTokens),
         modelMaxOutputTokens: capability.metadata.maxOutputTokens,
-        reasoning: options?.reasoning,
-        reasoningRequest: capability.resolveReasoningRequest(
-          options?.reasoning,
-        ),
+        reasoning: reasoning?.enabled == true ? options?.reasoning : null,
+        reasoningRequest: reasoning,
       );
       final wireEvents =
           _completeRequest?.call(request) ?? _client.complete(request);
@@ -748,10 +825,23 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
 
     final contextWindow = capability.metadata.contextWindow;
     if (contextWindow > 0) {
+      // Mirrors Pi 1.6.0 simple-options.ts clampMaxTokensToContext (#10497).
       const contextSafetyTokens = 4096;
-      final used = estimateContextTokens(messages).tokens;
-      final available = contextWindow - used - contextSafetyTokens;
-      final contextMax = available < 1 ? 1 : available;
+      const contextSafetyRatio = 0.15;
+      const minOutputWithRatioMargin = 32768;
+      final input = estimateContextTokens(messages).tokens;
+      final ratioMargin = (input * contextSafetyRatio).ceil();
+      final margin = ratioMargin > contextSafetyTokens
+          ? ratioMargin
+          : contextSafetyTokens;
+      var room = contextWindow - input - margin;
+      if (room < minOutputWithRatioMargin) {
+        final fixedRoom = contextWindow - input - contextSafetyTokens;
+        room = fixedRoom < minOutputWithRatioMargin
+            ? fixedRoom
+            : minOutputWithRatioMargin;
+      }
+      final contextMax = room < 1 ? 1 : room;
       if (result > contextMax) result = contextMax;
     }
     return result < 1 ? 1 : result;
@@ -777,12 +867,12 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
   }
 
   (ProviderConfig, String, String?)? _resolveRoute() {
-    final config = _ref.read(promptAssistantConfigProvider);
+    final config = ref.read(promptAssistantConfigProvider);
     final enabled = config.providers.where((p) => p.enabled).toList();
     if (enabled.isEmpty) {
       return null;
     }
-    final modelReference = _ref
+    final modelReference = ref
         .read(agentSettingsProvider)
         .settings
         .chat
@@ -803,6 +893,17 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
     return (provider, model, null);
   }
 
+  String _routeLabel((ProviderConfig, String, String?) route) {
+    final (provider, model, _) = route;
+    final name =
+        AssistantModelCatalog.catalogDisplayName(
+          provider: provider,
+          model: model,
+        ) ??
+        model;
+    return '${provider.name} / $name';
+  }
+
   AgentChatModelCapability _modelCapability(
     (ProviderConfig, String, String?)? route,
   ) {
@@ -814,7 +915,7 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
     );
   }
 
-  int? _contextWindowOverride((ProviderConfig, String, String?) route) => _ref
+  int? _contextWindowOverride((ProviderConfig, String, String?) route) => ref
       .read(agentSettingsProvider)
       .settings
       .chat
@@ -829,17 +930,17 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
     // Provider state must be captured before the API-key await because the
     // owning container may be disposed while secure storage is responding.
     final agentSettings =
-        settingsOverride ?? _ref.read(agentSettingsProvider).settings;
+        settingsOverride ?? ref.read(agentSettingsProvider).settings;
     // 路由缓存 + API Key 解析（短期 token 每次运行刷新）。
     final route = _activeRoute ?? _routeCache ?? _resolveRoute();
     if (route != null) {
-      final apiKey = await _ref
+      final apiKey = await ref
           .read(promptAssistantConfigProvider.notifier)
           .getProviderApiKey(route.$1.id);
       final resolvedRoute = (route.$1, route.$2, apiKey);
-      if (_activeRoute != null) {
+      if (_activeRoute == route) {
         _activeRoute = resolvedRoute;
-      } else {
+      } else if (_routeCache == route) {
         _routeCache = resolvedRoute;
       }
     }
@@ -875,9 +976,10 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
   }
 
   void _refreshRoute() {
+    if (!ref.mounted) return;
     _routeCache = _resolveRoute();
     if (_routeCache == null) {
-      final hasProvider = _ref
+      final hasProvider = ref
           .read(promptAssistantConfigProvider)
           .providers
           .any((p) => p.enabled);
@@ -897,48 +999,71 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
       return;
     }
     final capability = _modelCapability(_routeCache);
-    final currentLevel = capability.levels.contains(state.thinkingLevel)
-        ? state.thinkingLevel
-        : capability.levels.firstOrNull ?? ThinkingLevel.off;
+    final metadata = capability.metadata;
+    final currentLevel = metadata.visibleChatLevel(
+      _sessionControllerValue?.thinkingLevelFor(capability.model),
+    );
     final agent = _sessionControllerValue?.agent;
-    if (agent != null) {
+    if (agent != null && _activeRoute == null) {
       agent.state.model = capability.model;
-      agent.state.thinkingLevel = currentLevel;
+      agent.state.thinkingLevel = currentLevel ?? ThinkingLevel.off;
     }
     state = state.copyWith(
       routeReady: true,
-      routeLabel: '${_routeCache!.$1.name} / ${_routeCache!.$2}',
+      routeLabel: _routeLabel(_routeCache!),
       routeError: '',
       contextUsage: resolveAgentContextUsage(
         _sessionControllerValue?.agent?.state.messages ?? state.messages,
         contextWindow: capability.model.contextWindow,
       ),
-      availableThinkingLevels: capability.levels,
+      availableThinkingLevels: metadata.chatThinkingLevels,
       thinkingLevel: currentLevel,
+      useModelDefault: currentLevel == null,
     );
   }
 
-  Future<void> setThinkingLevel(ThinkingLevel level) async {
+  Future<void> setThinkingLevel(ThinkingLevel? level) async {
     if (!canManageAgentChatSessions(state) ||
         !state.availableThinkingLevels.contains(level)) {
       return;
     }
-    final agent = _sessionControllerValue?.agent;
     final session = _sessionControllerValue?.session;
-    if (agent == null ||
-        session == null ||
-        agent.state.thinkingLevel == level) {
-      return;
+    if (session == null) return;
+    final route = _routeCache!;
+    final capability = _modelCapability(route);
+    final previous = _pendingThinking[session];
+    final write = () async {
+      await previous;
+      if (!ref.mounted || !identical(_sessionController.session, session)) {
+        return;
+      }
+      final format = capability.metadata.quickFormat;
+      if ((format == null || level == null) &&
+          _sessionController.thinkingLevelFor(capability.model) == level) {
+        return;
+      }
+      var formatId = route.$1.modelReasoningFormatIds[route.$2];
+      if (format != null && level != null) {
+        formatId = await ref
+            .read(promptAssistantConfigProvider.notifier)
+            .setModelReasoningFormat(route.$1.id, route.$2, format);
+        if (formatId == null) return;
+      }
+      await _sessionController.recordThinkingLevel(
+        session,
+        capability.model,
+        level == null ? null : (level: level, formatId: formatId),
+      );
+      if (ref.mounted) _refreshRoute();
+    }();
+    _pendingThinking[session] = write;
+    try {
+      await write;
+    } finally {
+      if (identical(_pendingThinking[session], write)) {
+        _pendingThinking.remove(session);
+      }
     }
-    agent.state.thinkingLevel = level;
-    await session.appendEntry(
-      session_types.ThinkingLevelEntry(
-        id: session.idGenerator(),
-        thinkingLevel: level.name,
-      ),
-      'main',
-    );
-    if (mounted) state = state.copyWith(thinkingLevel: level);
   }
 
   // -------------------------------------------------------------------------
@@ -948,28 +1073,25 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
   Future<int?> _estimatePreparedAnlas(
     String toolName,
     Map<String, dynamic> args,
-  ) async {
-    if (toolName == 'submit_generation' ||
-        toolName == 'generate_image' ||
-        toolName == 'queue_image_task') {
-      final id = args['preparation_id'];
-      if (id is String) {
-        return _generationPreparationRuntime.get(id)?.estimatedAnlas;
-      }
-    }
-    if (toolName == 'submit_manual_inpaint_draft') {
-      final id = args['draft_id'];
-      return id is String
-          ? await _manualInpaintToolbox.estimateAnlasForDraft(id)
-          : null;
-    }
-    if (toolName == 'start_generation_queue' ||
-        toolName == 'resume_generation_queue') {
-      final id = args['queue_preparation_id'];
-      return id is String ? _queueControlRuntime.get(id)?.estimatedAnlas : null;
-    }
-    return null;
-  }
+  ) => estimatePreparedAnlas(
+    toolName,
+    args,
+    generationRuntime: _generationPreparationRuntime,
+    queueRuntime: _queueControlRuntime,
+    manualInpaintToolbox: _manualInpaintToolbox,
+    imageUpscaleToolbox: _imageUpscaleToolbox,
+    freshBilling: () =>
+        ref.read(subscriptionNotifierProvider.notifier).freshBillingView(),
+  );
+
+  List<String> _describePreparedFileTargets(
+    String toolName,
+    Map<String, dynamic> args,
+  ) => preparedFileTargets(
+    toolName,
+    args,
+    generationRuntime: _generationPreparationRuntime,
+  );
 
   Future<void> addPendingResource(AgentChatResourceReference reference) async {
     await ensureInitialized();
@@ -1006,7 +1128,7 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
 
   Future<void> refreshPendingResourceAvailability() {
     if (!_draftControllerInitialized) {
-      if (mounted && state.unavailableResourceKeys.isNotEmpty) {
+      if (ref.mounted && state.unavailableResourceKeys.isNotEmpty) {
         state = state.copyWith(unavailableResourceKeys: const {});
       }
       return Future<void>.value();
@@ -1033,10 +1155,24 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
 
   Future<void> newSession() async {
     await ensureInitialized();
+    await _pendingThinking[_sessionController.session];
+    final route = _routeCache;
     final inheritedThinkingLevel = state.thinkingLevel;
     await _sessionController.newSession();
     _refreshRoute();
-    if (state.availableThinkingLevels.contains(inheritedThinkingLevel) &&
+    final next = _routeCache;
+    if (inheritedThinkingLevel == null ||
+        route == null ||
+        next == null ||
+        route.$1.id != next.$1.id ||
+        route.$2 != next.$2) {
+      return;
+    }
+    final model = route.$2;
+    final metadata = _modelCapability(next).metadata;
+    if (next.$1.modelReasoningFormatIds[model] ==
+            route.$1.modelReasoningFormatIds[model] &&
+        metadata.visibleChatLevel(inheritedThinkingLevel) != null &&
         state.thinkingLevel != inheritedThinkingLevel) {
       await setThinkingLevel(inheritedThinkingLevel);
     }
@@ -1044,6 +1180,7 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
 
   Future<void> switchSession(String sessionId) async {
     await ensureInitialized();
+    await _pendingThinking[_sessionController.session];
     await _sessionController.switchSession(sessionId);
     _refreshRoute();
   }
@@ -1054,7 +1191,10 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
   /// 建立新分支，与 `/rewind` 的语义一致。
   Future<UserMessage?> rewindLastUserMessage() async {
     await ensureInitialized();
-    return _sessionController.rewindLastUserMessage();
+    await _pendingThinking[_sessionController.session];
+    final message = await _sessionController.rewindLastUserMessage();
+    _refreshRoute();
+    return message;
   }
 
   Future<void> loadEarlierHistory() async {
@@ -1065,7 +1205,8 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
   /// 删除指定会话；删除当前会话时自动切到最近剩余会话（无则新建）。
   Future<void> deleteSession(String sessionId) async {
     await ensureInitialized();
-    return _sessionController.deleteSession(sessionId);
+    await _sessionController.deleteSession(sessionId);
+    _refreshRoute();
   }
 
   /// 重命名会话（持久化 name 记录，列表即时刷新）。
@@ -1081,11 +1222,11 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
         model.isEmpty) {
       return;
     }
-    final config = _ref.read(promptAssistantConfigProvider);
+    final config = ref.read(promptAssistantConfigProvider);
     if (!config.providers.any((p) => p.id == providerId && p.enabled)) {
       return;
     }
-    await _ref
+    await ref
         .read(agentSettingsProvider.notifier)
         .setModelReference(
           AgentModelReference(providerId: providerId, model: model),
@@ -1140,16 +1281,57 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
     return state.routeReady && _sessionController.agent != null;
   }
 
-  Future<AgentChatRewindCheckpoint?> beginEditedMessageRewind() async {
+  session_types.MessageEntry? get lastVisibleUserEntry =>
+      _sessionController.lastVisibleUserEntry;
+
+  Future<AgentChatRewindCheckpoint?> beginEditedMessageRewind(String entryId) =>
+      _beginLastMessageRewind(expectedEntryId: entryId);
+
+  Future<AgentChatRewindCheckpoint?> _beginLastMessageRewind({
+    String? expectedEntryId,
+  }) async {
     await ensureInitialized();
-    return _sessionController.beginRewindLastUserMessage();
+    await _pendingThinking[_sessionController.session];
+    final route = _routeCache;
+    final level = state.thinkingLevel;
+    final checkpoint = await _sessionController.beginRewindLastUserMessage(
+      expectedEntryId: expectedEntryId,
+      keepThinkingSelection: route == null
+          ? null
+          : (
+              _modelCapability(route).model,
+              level == null
+                  ? null
+                  : (
+                      level: level,
+                      formatId: route.$1.modelReasoningFormatIds[route.$2],
+                    ),
+            ),
+    );
+    _refreshRoute();
+    return checkpoint;
   }
 
   Future<void> restoreEditedMessageRewind(
     AgentChatRewindCheckpoint checkpoint,
   ) async {
     await ensureInitialized();
-    return _sessionController.restoreRewindCheckpoint(checkpoint);
+    await _sessionController.restoreRewindCheckpoint(checkpoint);
+    _refreshRoute();
+  }
+
+  Future<void> retryLastMessage() async {
+    if (!await prepareEditedSend()) return;
+    final checkpoint = await _beginLastMessageRewind();
+    if (checkpoint == null || !ref.mounted) return;
+    var accepted = false;
+    final sent = await sendContent(
+      checkpoint.message.content,
+      onAccepted: () async => accepted = true,
+    );
+    if (!accepted && !sent && ref.mounted) {
+      await restoreEditedMessageRewind(checkpoint);
+    }
   }
 
   /// 开头 `/名称` 命中的已启用技能。解析放在发送这一刻，才能保证用的是与
@@ -1187,6 +1369,7 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
       if (state.sessionTransitioning) return false;
       final dispatchSessionId = state.activeSessionId;
       if (!await validatePendingResourcesForSend()) return false;
+      await _pendingThinking[_sessionController.session];
       if (state.sessionTransitioning ||
           state.activeSessionId != dispatchSessionId) {
         return false;
@@ -1232,6 +1415,7 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
 
       ownsRun = true;
       _preparingRun = true;
+      _autoRetry.beginRun();
       state = state.copyWith(
         status: AgentChatRunStatus.running,
         error: '',
@@ -1255,22 +1439,19 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
         );
         return false;
       }
-      final agentSettings = _ref.read(agentSettingsProvider).settings;
+      final agentSettings = ref.read(agentSettingsProvider).settings;
       final permissionMode = agentSettings.chat.permissionMode;
       _activeAgentSettings = agentSettings;
       _activePermissionMode = permissionMode;
       _activeRoute = _routeCache;
-      releaseForeground = await _ref
+      _activeThinkingLevel = state.thinkingLevel;
+      agent.state.model = _modelCapability(_activeRoute).model;
+      agent.state.thinkingLevel = _activeThinkingLevel ?? ThinkingLevel.off;
+      releaseForeground = await ref
           .read(androidForegroundTaskServiceProvider)
           .acquire();
-      final capability = _modelCapability(_activeRoute);
-      agent.state.model = capability.model;
-      if (!capability.levels.contains(agent.state.thinkingLevel)) {
-        agent.state.thinkingLevel =
-            capability.levels.firstOrNull ?? ThinkingLevel.off;
-      }
       agent.state.tools = _buildTools(
-        fullAccess: permissionMode == AgentPermissionMode.fullAccess,
+        fullAccess: permissionMode.grantsFullAccess,
       );
       agent.setSystemPrompt(
         await _buildSystemPrompt(settingsOverride: agentSettings),
@@ -1338,21 +1519,29 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
 
     if (run == null || runAgent == null) return false;
     var succeeded = true;
+    Object? runError;
     try {
       await run;
+      while (await _autoRetry.takeRetry()) {
+        await runAgent.continueRun();
+      }
     } catch (e, stackTrace) {
       succeeded = false;
+      runError = e;
       AppLogger.e('Agent run failed', e, stackTrace, 'AgentChat');
       state = state.copyWith(error: e.toString());
     } finally {
+      _autoRetry.endRun();
+      if (!await _settleDeferredRun(runError)) succeeded = false;
       if (!await _releaseForegroundTask(releaseForeground)) succeeded = false;
       _activePermissionMode = null;
       _activeAgentSettings = null;
       _activeRoute = null;
-      if (mounted) {
+      if (ref.mounted) {
         state = state.copyWith(
           status: AgentChatRunStatus.idle,
           clearStreamingMessage: true,
+          clearRetryStatus: true,
           queuedMessages: _queuedMessages(runAgent),
           workPhase: AgentChatWorkPhase.idle,
         );
@@ -1360,6 +1549,53 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
       if (_settingsApplyPending) _queueSettingsRefresh();
     }
     return succeeded;
+  }
+
+  /// 失败后已推迟结算、却没有续跑成功的 operation：没有异常即是重试被取消。
+  Future<bool> _settleDeferredRun(Object? runError) async {
+    try {
+      await _eventController.settleDeferredRun(
+        outcome: runError == null
+            ? session_types.OperationOutcomeKind.aborted
+            : session_types.OperationOutcomeKind.failed,
+        error: runError?.toString(),
+      );
+      return true;
+    } catch (error, stackTrace) {
+      AppLogger.e(
+        'Agent deferred run settlement failed',
+        error,
+        stackTrace,
+        'AgentChat',
+      );
+      if (ref.mounted) state = state.copyWith(error: error.toString());
+      return false;
+    }
+  }
+
+  void _handleRetryStart(AgentChatRetryStatus status) {
+    if (!ref.mounted) return;
+    state = state.copyWith(
+      workPhase: AgentChatWorkPhase.retrying,
+      retryStatus: status,
+      clearStreamingMessage: true,
+    );
+  }
+
+  void _handleRetryEnd() {
+    if (!ref.mounted) return;
+    state = state.copyWith(clearRetryStatus: true);
+  }
+
+  /// 失败回合留在会话历史里，但不能留在续跑的上下文中：continueRun 不能从
+  /// 末尾的助手消息续跑。
+  void _omitFailedAttempt(AssistantMessage failed) {
+    final agent = _sessionControllerValue?.agent;
+    if (agent == null) return;
+    agent.state.messages = [
+      for (final message in agent.state.messages)
+        if (!identical(message, failed)) message,
+    ];
   }
 
   Future<bool> _releaseForegroundTask(Future<void> Function()? release) async {
@@ -1373,7 +1609,7 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
         stackTrace,
         'AgentChat',
       );
-      if (mounted) state = state.copyWith(error: error.toString());
+      if (ref.mounted) state = state.copyWith(error: error.toString());
       return false;
     }
   }
@@ -1432,11 +1668,16 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
   }
 
   Future<void> abort() async {
+    _manualCompaction?.abort();
     final agent = _sessionController.agent;
     if (agent == null) {
       return;
     }
-    state = state.copyWith(workPhase: AgentChatWorkPhase.stopping);
+    // 手动压缩不改运行状态，停止它时没有运行收尾来把阶段复位。
+    if (state.status == AgentChatRunStatus.running) {
+      state = state.copyWith(workPhase: AgentChatWorkPhase.stopping);
+    }
+    _autoRetry.requestAbort();
     agent.abort();
     _permissionController?.cancelApproval();
     _questionController?.cancel();
@@ -1452,44 +1693,42 @@ class AgentChatNotifier extends StateNotifier<AgentChatState> {
         AgentChatCompactionSkipReason.busy,
       );
     }
-    // _resolveRoute() 不读安全存储，缓存路由的 key 可能为 null；手动压缩
-    // 不经过 _buildSystemPrompt() 的 key 刷新，因此先在此解析一次，
-    // 避免发出无 Authorization 头的摘要请求（DeepSeek 网关 401 governor）。
-    final route = _activeRoute ?? _routeCache;
-    if (route != null && route.$3 == null) {
-      final apiKey = await _ref
-          .read(promptAssistantConfigProvider.notifier)
-          .getProviderApiKey(route.$1.id);
-      final resolvedRoute = (route.$1, route.$2, apiKey);
-      if (_activeRoute != null) {
-        _activeRoute = resolvedRoute;
-      } else {
-        _routeCache = resolvedRoute;
+    final controller = AbortController();
+    _manualCompaction = controller;
+    try {
+      final route = _activeRoute ?? _routeCache;
+      if (route != null && route.$3 == null) {
+        final apiKey = await ref
+            .read(promptAssistantConfigProvider.notifier)
+            .getProviderApiKey(route.$1.id);
+        if (!ref.mounted || controller.signal.aborted) {
+          return const AgentChatCompactionCancelled();
+        }
+        final resolvedRoute = (route.$1, route.$2, apiKey);
+        if (_activeRoute == route) {
+          _activeRoute = resolvedRoute;
+        } else if (_routeCache == route) {
+          _routeCache = resolvedRoute;
+        }
       }
+
+      final result = await _compactContext(
+        List.of(agent.state.messages),
+        controller.signal,
+        force: true,
+      );
+      if (result.outcome is AgentChatCompactionDone) {
+        agent.state.messages = List.of(result.messages);
+        state = state.copyWith(messages: List.of(result.messages));
+      }
+      return result.outcome;
+    } finally {
+      _manualCompaction = null;
     }
-    final result = await _compactContext(
-      List.of(agent.state.messages),
-      null,
-      force: true,
-    );
-    if (result.outcome is AgentChatCompactionDone) {
-      agent.state.messages = List.of(result.messages);
-      state = state.copyWith(messages: List.of(result.messages));
-    }
-    return result.outcome;
   }
 
   Future<void> _handleEvent(AgentEvent event, AbortSignal signal) =>
       _eventController.handle(event, signal);
-
-  @override
-  void dispose() {
-    _sessionControllerValue?.agent?.abort();
-    _questionController?.cancel();
-    _permissionController?.dispose();
-    _sessionControllerValue?.agent?.clearAllQueues();
-    super.dispose();
-  }
 
   bool resolveUserQuestions(
     String toolCallId,

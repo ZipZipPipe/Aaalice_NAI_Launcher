@@ -1,3 +1,4 @@
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:ui';
@@ -8,6 +9,7 @@ import 'package:msgpack_dart/msgpack_dart.dart' as msgpack;
 import '../../../core/models/image_generation_artifact.dart';
 import '../../../core/network/request_builders/nai_image_request_builder.dart';
 import '../../../core/utils/app_logger.dart';
+import '../../../core/utils/focused_inpaint_input_exception.dart';
 import '../../../core/utils/focused_inpaint_utils.dart';
 import '../../../core/utils/inpaint_mask_utils.dart';
 import '../../../core/utils/isolate_pool.dart';
@@ -29,16 +31,16 @@ class NaiGenerationResponseContext {
 }
 
 class NaiGenerationResponseProcessor {
+  /// [focusedContextCrop] 为聚焦外扩的固定裁切区；重绘请求准备失败时直接报错，
+  /// 退回普通重绘会把整张拼接画布原样发出去
   Future<FocusedInpaintRequest?> prepareFocusedInpaint(
     ImageParams params, {
     required bool enabled,
     required double minimumContextMegaPixels,
     Rect? focusedSelectionRect,
+    Rect? focusedContextCrop,
   }) async {
-    if (!enabled ||
-        params.action != ImageGenerationAction.infill ||
-        params.sourceImage == null ||
-        params.maskImage == null) {
+    if (!enabled || !params.isInpainting) {
       return null;
     }
 
@@ -46,11 +48,15 @@ class NaiGenerationResponseProcessor {
       sourceImage: params.sourceImage!,
       maskImage: params.maskImage!,
       focusedSelectionRect: focusedSelectionRect,
+      contextCrop: focusedContextCrop,
       minContextMegaPixels: minimumContextMegaPixels,
     );
+    if (request == null && focusedContextCrop != null) {
+      throw const FocusedInpaintInputException.invalidCrop();
+    }
     if (request != null) {
       AppLogger.d(
-        'Focused inpaint prepared: crop=${request.crop.x},${request.crop.y},${request.crop.width}x${request.crop.height}, target=${request.targetWidth}x${request.targetHeight}, minContextArea=${minimumContextMegaPixels.round()}, focusRect=$focusedSelectionRect',
+        'Focused inpaint prepared: crop=${request.crop.x},${request.crop.y},${request.crop.width}x${request.crop.height}, target=${request.targetWidth}x${request.targetHeight}, minContextArea=${minimumContextMegaPixels.round()}, focusRect=$focusedSelectionRect, contextCrop=$focusedContextCrop',
         'ImgGen',
       );
     }
@@ -74,7 +80,7 @@ class NaiGenerationResponseProcessor {
     Uint8List zipBytes,
     NaiGenerationResponseContext context,
   ) async {
-    final images = ZipUtils.extractAllImages(zipBytes);
+    final images = await ZipUtils.extractAllImagesAsync(zipBytes);
     final artifacts = await Future.wait(
       images.map((image) => composeImage(image, context)),
     );
@@ -89,7 +95,7 @@ class NaiGenerationResponseProcessor {
     NaiGenerationResponseContext context, {
     required CancelToken cancelToken,
   }) async* {
-    final buffer = <int>[];
+    final frames = _LengthPrefixedFrameBuffer();
     final completedSamples = <int>{};
     final expectedSamples = context.originalParams.nSamples <= 0
         ? 1
@@ -101,15 +107,13 @@ class NaiGenerationResponseProcessor {
         yield ImageStreamChunk.error('Cancelled');
         return;
       }
-      buffer.addAll(chunk);
+      frames.add(chunk);
 
-      while (buffer.length >= 4) {
-        final messageLength = _readLength(buffer);
-        if (buffer.length < 4 + messageLength) break;
-        final messageBytes = Uint8List.fromList(
-          buffer.sublist(4, 4 + messageLength),
-        );
-        buffer.removeRange(0, 4 + messageLength);
+      for (
+        var messageBytes = frames.takeFrame();
+        messageBytes != null;
+        messageBytes = frames.takeFrame()
+      ) {
         messageCount += 1;
 
         try {
@@ -141,7 +145,7 @@ class NaiGenerationResponseProcessor {
               eventType == 'intermediate') {
             final currentStep =
                 (_optionalInt(message['step_ix']) ?? messageCount) + 1;
-            final totalSteps = context.originalParams.steps;
+            final totalSteps = context.originalParams.effectiveSteps;
             yield ImageStreamChunk.progress(
               progress: (currentStep / totalSteps).clamp(0.0, 0.99),
               sampleIndex: sampleIndex,
@@ -157,11 +161,16 @@ class NaiGenerationResponseProcessor {
       }
     }
 
-    if (buffer.isNotEmpty) {
+    if (frames.isNotEmpty) {
       try {
-        final bytes = Uint8List.fromList(buffer);
+        final bytes = frames.takeRemaining();
         if (_isZip(bytes)) {
-          final images = ZipUtils.extractAllImages(bytes);
+          final images = await ZipUtils.extractAllImagesAsync(bytes);
+          // 解压在后台进行，期间取消的请求与流式阶段一样以取消收尾
+          if (cancelToken.isCancelled) {
+            yield ImageStreamChunk.error('Cancelled');
+            return;
+          }
           for (var index = 0; index < images.length; index += 1) {
             final artifact = await composeImage(images[index], context);
             yield ImageStreamChunk.complete(
@@ -170,13 +179,6 @@ class NaiGenerationResponseProcessor {
             );
           }
           if (images.isNotEmpty) return;
-        }
-
-        final fallbackImage = _decodeFallbackMessage(bytes);
-        if (fallbackImage != null && fallbackImage.isNotEmpty) {
-          final artifact = await composeImage(fallbackImage, context);
-          yield ImageStreamChunk.complete(artifact.displayImageBytes);
-          return;
         }
         yield ImageStreamChunk.error('No final image received from stream');
       } catch (error) {
@@ -304,16 +306,6 @@ class NaiGenerationResponseProcessor {
     return decoded.map((key, value) => MapEntry(key.toString(), value));
   }
 
-  Uint8List? _decodeFallbackMessage(Uint8List bytes) {
-    if (bytes.length < 4) return null;
-    final messageLength = _readLength(bytes);
-    if (bytes.length < 4 + messageLength) return null;
-    final message = _decodeMessage(
-      Uint8List.fromList(bytes.sublist(4, 4 + messageLength)),
-    );
-    return _decodeImage(message?['data']);
-  }
-
   Uint8List? _decodeImage(Object? value) {
     if (value is Uint8List) return value;
     if (value is List<int>) return Uint8List.fromList(value);
@@ -327,10 +319,6 @@ class NaiGenerationResponseProcessor {
     return null;
   }
 
-  int _readLength(List<int> bytes) {
-    return (bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3];
-  }
-
   bool _isZip(Uint8List bytes) {
     return bytes.length > 4 && bytes[0] == 0x50 && bytes[1] == 0x4b;
   }
@@ -339,5 +327,67 @@ class NaiGenerationResponseProcessor {
     if (value is int) return value;
     if (value is num) return value.toInt();
     return null;
+  }
+}
+
+/// 按块累积流式响应，按 4 字节大端长度前缀切出完整帧；帧内容按块整段复制。
+class _LengthPrefixedFrameBuffer {
+  final _chunks = ListQueue<Uint8List>();
+  int _headOffset = 0;
+  int _length = 0;
+
+  bool get isNotEmpty => _length > 0;
+
+  void add(Uint8List chunk) {
+    if (chunk.isEmpty) return;
+    _chunks.add(chunk);
+    _length += chunk.length;
+  }
+
+  /// 下一帧已完整到达时取出帧内容（不含长度前缀），否则返回 null。
+  Uint8List? takeFrame() {
+    if (_length < 4) return null;
+    final messageLength =
+        (_byteAt(0) << 24) |
+        (_byteAt(1) << 16) |
+        (_byteAt(2) << 8) |
+        _byteAt(3);
+    if (_length < 4 + messageLength) return null;
+    _advance(4);
+    return _take(messageLength);
+  }
+
+  Uint8List takeRemaining() => _take(_length);
+
+  int _byteAt(int index) {
+    var remaining = _headOffset + index;
+    for (final chunk in _chunks) {
+      if (remaining < chunk.length) return chunk[remaining];
+      remaining -= chunk.length;
+    }
+    throw RangeError.index(index, this, 'index', null, _length);
+  }
+
+  Uint8List _take(int count) {
+    final bytes = Uint8List(count);
+    _advance(count, into: bytes);
+    return bytes;
+  }
+
+  void _advance(int count, {Uint8List? into}) {
+    var consumed = 0;
+    while (consumed < count) {
+      final chunk = _chunks.first;
+      final available = chunk.length - _headOffset;
+      final step = available < count - consumed ? available : count - consumed;
+      into?.setRange(consumed, consumed + step, chunk, _headOffset);
+      consumed += step;
+      _headOffset += step;
+      if (_headOffset == chunk.length) {
+        _chunks.removeFirst();
+        _headOffset = 0;
+      }
+    }
+    _length -= count;
   }
 }

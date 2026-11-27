@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nai_launcher/core/constants/api_constants.dart';
 import 'package:nai_launcher/core/enums/precise_ref_type.dart';
+import 'package:nai_launcher/core/services/anlas_calculator.dart';
 import 'package:nai_launcher/data/models/image/image_params.dart';
 
 void main() {
@@ -13,6 +14,40 @@ void main() {
     expect(params.steps, 28);
     expect(params.scale, 4.0);
     expect(params.sampler, Samplers.kEulerAncestral);
+  });
+
+  test('effectiveSampler reports the sampler the request sends', () {
+    const cases = {
+      'V4.5 drops DDIM': (
+        ImageParams(
+          model: ImageModels.animeDiffusionV45Full,
+          sampler: Samplers.ddim,
+        ),
+        Samplers.kEulerAncestral,
+      ),
+      'V3 sends ddim_v3': (
+        ImageParams(
+          model: ImageModels.animeDiffusionV3,
+          sampler: Samplers.ddim,
+        ),
+        Samplers.ddimV3,
+      ),
+      'fixed sampler wins': (
+        ImageParams(
+          model: ImageModels.animeDiffusionV5FullMedium,
+          sampler: Samplers.kDpmpp2m,
+        ),
+        Samplers.kEulerAncestral,
+      ),
+      'other samplers pass through': (
+        ImageParams(sampler: Samplers.kDpmpp2m),
+        Samplers.kDpmpp2m,
+      ),
+    };
+
+    for (final MapEntry(key: name, value: (params, sampler)) in cases.entries) {
+      expect(params.effectiveSampler, sampler, reason: name);
+    }
   });
 
   group('ImageParams preciseReference getters', () {
@@ -62,13 +97,16 @@ void main() {
       expect(params.preciseReferenceCount, equals(3));
     });
 
-    test('preciseReferenceCost should return 0 when no references', () {
+    test('the surcharge is zero with no references', () {
       const params = ImageParams();
 
-      expect(params.preciseReferenceCost, equals(0));
+      expect(
+        AnlasCalculator.resolvePreciseReferenceExtraCost(params),
+        equals(0),
+      );
     });
 
-    test('preciseReferenceCost should return 5 with single reference', () {
+    test('one reference adds 5 Anlas', () {
       final imageData = Uint8List.fromList([1, 2, 3]);
       final params = ImageParams(
         preciseReferences: [
@@ -79,11 +117,14 @@ void main() {
         ],
       );
 
-      expect(params.preciseReferenceCost, equals(5));
+      expect(
+        AnlasCalculator.resolvePreciseReferenceExtraCost(params),
+        equals(5),
+      );
     });
 
     test(
-        'preciseReferenceCost should return correct cost with multiple references',
+        'two references add 10 Anlas',
         () {
       final imageData = Uint8List.fromList([1, 2, 3]);
       final params = ImageParams(
@@ -99,10 +140,13 @@ void main() {
         ],
       );
 
-      expect(params.preciseReferenceCost, equals(10));
+      expect(
+        AnlasCalculator.resolvePreciseReferenceExtraCost(params),
+        equals(10),
+      );
     });
 
-    test('preciseReferenceCost should be proportional to count', () {
+    test('the surcharge scales with the reference count', () {
       final imageData = Uint8List.fromList([1, 2, 3]);
 
       for (var count = 0; count <= 5; count++) {
@@ -116,7 +160,10 @@ void main() {
         final params = ImageParams(preciseReferences: references);
 
         expect(params.preciseReferenceCount, equals(count));
-        expect(params.preciseReferenceCost, equals(count * 5));
+        expect(
+          AnlasCalculator.resolvePreciseReferenceExtraCost(params),
+          equals(count * 5),
+        );
       }
     });
 
@@ -156,7 +203,10 @@ void main() {
         );
 
         expect(params.preciseReferenceCount, equals(1));
-        expect(params.preciseReferenceCost, equals(5));
+        expect(
+          AnlasCalculator.resolvePreciseReferenceExtraCost(params),
+          equals(5),
+        );
       }
     });
 
@@ -176,7 +226,10 @@ void main() {
       );
 
       expect(params2.preciseReferenceCount, equals(1));
-      expect(params2.preciseReferenceCost, equals(5));
+      expect(
+        AnlasCalculator.resolvePreciseReferenceExtraCost(params2),
+        equals(5),
+      );
     });
 
     test('should handle clearing references', () {
@@ -195,7 +248,10 @@ void main() {
       final params2 = params1.copyWith(preciseReferences: []);
 
       expect(params2.preciseReferenceCount, equals(0));
-      expect(params2.preciseReferenceCost, equals(0));
+      expect(
+        AnlasCalculator.resolvePreciseReferenceExtraCost(params2),
+        equals(0),
+      );
       expect(params2.hasPreciseReferences, isFalse);
     });
   });
@@ -214,6 +270,44 @@ void main() {
       final updated = params.copyWith(inpaintStrength: 0.35);
 
       expect(updated.inpaintStrength, equals(0.35));
+    });
+  });
+
+  group('ImageParams advanced sampling options', () {
+    test('V3 shows SMEA except under DDIM', () {
+      const params = ImageParams(model: ImageModels.animeDiffusionV3);
+
+      expect(params.showsSmeaOptions, isTrue);
+      expect(params.hasAdvancedSamplingOptions, isTrue);
+      for (final sampler in const [Samplers.ddim, Samplers.ddimV3]) {
+        final ddim = params.copyWith(sampler: sampler);
+        expect(ddim.showsSmeaOptions, isFalse, reason: sampler);
+        expect(ddim.hasAdvancedSamplingOptions, isFalse, reason: sampler);
+      }
+    });
+
+    test('V4 and later always show the CFG Rescale row', () {
+      for (final model in const [
+        ImageModels.animeDiffusionV4Full,
+        ImageModels.animeDiffusionV45Full,
+        ImageModels.animeDiffusionV5Curated,
+        ImageModels.animeDiffusionV5FullMedium,
+      ]) {
+        final params = ImageParams(model: model);
+        expect(params.showsCfgRescaleOption, isTrue, reason: model);
+        expect(params.hasAdvancedSamplingOptions, isTrue, reason: model);
+      }
+    });
+
+    test('pre-V3 models have nothing to show', () {
+      for (final model in const [
+        ImageModels.furryDiffusion,
+        ImageModels.animeV2,
+        ImageModels.animeFull,
+      ]) {
+        final params = ImageParams(model: model);
+        expect(params.hasAdvancedSamplingOptions, isFalse, reason: model);
+      }
     });
   });
 }

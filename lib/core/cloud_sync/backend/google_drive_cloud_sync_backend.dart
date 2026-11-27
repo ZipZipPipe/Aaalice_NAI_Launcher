@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 
+import '../../utils/byte_content.dart';
 import '../operation.dart';
 import 'cloud_object_inventory_verifier.dart';
 import '../telemetry.dart';
@@ -58,7 +59,7 @@ class GoogleDriveCloudSyncBackend
   final Expando<_DriveInventoryScope> _operationInventories =
       Expando<_DriveInventoryScope>('google-drive-inventory');
   final _unscopedInventory = _DriveInventoryScope();
-  final Map<String, String> _verifiedObjectRevisions = {};
+  final Map<String, String> _verifiedObjectProofs = {};
 
   _DriveInventoryScope get _inventoryScope {
     final operation = OperationToken.current;
@@ -93,26 +94,38 @@ class GoogleDriveCloudSyncBackend
   @override
   Future<CloudObjectRead?> readObject(String objectId) async {
     CloudObjectNaming.validateId(objectId);
-    final read = await _readImmutable('object', _fileName('object', objectId));
-    if (read != null &&
-        CloudObjectNaming.isContentAddressedId(objectId) &&
-        _hashBytes(read.bytes) != objectId) {
-      throw const CloudBackendException(
-        CloudBackendErrorKind.conflict,
-        'Google Drive 不可变对象内容与对象标识不一致。',
-      );
+    final name = _fileName('object', objectId);
+    final found = await _readImmutable('object', name);
+    if (found == null) return null;
+    if (CloudObjectNaming.isContentAddressedId(objectId)) {
+      if (_hashBytes(found.read.bytes) != objectId) {
+        throw const CloudBackendException(
+          CloudBackendErrorKind.conflict,
+          'Google Drive 不可变对象内容与对象标识不一致。',
+        );
+      }
+      _verifiedObjectProofs[name] = _proof(found.file.id, found.file.revision);
     }
-    if (read != null && CloudObjectNaming.isContentAddressedId(objectId)) {
-      _verifiedObjectRevisions[_fileName('object', objectId)] = read.revision;
-    }
-    return read;
+    return found.read;
   }
 
   @override
-  Future<CloudObjectRead?> readSnapshotManifest(String snapshotId) {
+  Future<CloudObjectRead?> readSnapshotManifest(String snapshotId) async {
     CloudObjectNaming.validateId(snapshotId);
-    return _readImmutable('manifest', _fileName('manifest', snapshotId));
+    final found = await _readImmutable(
+      'manifest',
+      _fileName('manifest', snapshotId),
+    );
+    return found?.read;
   }
+
+  @override
+  Map<String, String> verifiedObjectProofs(Iterable<String> objectIds) => {
+    for (final objectId in objectIds)
+      if (_verifiedObjectProofs[_fileName('object', objectId)]
+          case final proof?)
+        objectId: proof,
+  };
 
   @override
   Future<CloudCommitResult> putObject(
@@ -201,22 +214,17 @@ class GoogleDriveCloudSyncBackend
           objectId: entry.key,
           size: entry.value,
           revision: file.revision,
-          verificationRevision: 'google-drive:${file.id}:${file.revision}',
+          verificationRevision: _proof(file.id, file.revision),
         ),
       );
     }
-    final inMemoryRevisions = <String, String>{};
-    for (final candidate in inventoryCandidates) {
-      final inMemory =
-          _verifiedObjectRevisions[_fileName('object', candidate.objectId)];
-      if (inMemory == candidate.revision ||
-          inMemory == candidate.verificationRevision) {
-        inMemoryRevisions[candidate.objectId] = candidate.verificationRevision;
-      }
-    }
     final result = await verifyCloudObjectInventory(
       candidates: inventoryCandidates,
-      trustedRevisions: {...trustedRevisions, ...inMemoryRevisions},
+      trustedRevisions: _effectiveTrustedRevisions(
+        inventoryCandidates,
+        filesByObjectId,
+        trustedRevisions,
+      ),
       maxConcurrentItems: maxConcurrentObjectUploads,
       token: token,
       onProgress: onProgress,
@@ -234,10 +242,33 @@ class GoogleDriveCloudSyncBackend
       },
     );
     for (final entry in result.verifiedRevisions.entries) {
-      _verifiedObjectRevisions[_fileName('object', entry.key)] = entry.value;
+      _verifiedObjectProofs[_fileName('object', entry.key)] = entry.value;
     }
     return result;
   }
+
+  Map<String, String> _effectiveTrustedRevisions(
+    List<CloudObjectInventoryCandidate> candidates,
+    Map<String, _DriveFile> filesByObjectId,
+    Map<String, String> trustedRevisions,
+  ) {
+    final effective = {...trustedRevisions};
+    for (final candidate in candidates) {
+      final file = filesByObjectId[candidate.objectId]!;
+      // Stored proofs may embed version; they stay valid only while that
+      // version is unchanged, since it pins the exact bytes that were verified.
+      final legacyProof = _proof(file.id, file.legacyRevision);
+      if (_verifiedObjectProofs[_fileName('object', candidate.objectId)] ==
+              candidate.verificationRevision ||
+          trustedRevisions[candidate.objectId] == legacyProof) {
+        effective[candidate.objectId] = candidate.verificationRevision;
+      }
+    }
+    return effective;
+  }
+
+  static String _proof(String fileId, String revision) =>
+      'google-drive:$fileId:$revision';
 
   @override
   Future<List<String>> listSnapshotIds({int limit = 20}) async {
@@ -280,7 +311,7 @@ class GoogleDriveCloudSyncBackend
       }
       inventory[file.name]?.removeWhere((candidate) => candidate.id == file.id);
     }
-    _verifiedObjectRevisions.clear();
+    _verifiedObjectProofs.clear();
   }
 
   Future<CloudObjectRead?> _readMutable(String type, String name) async {
@@ -295,17 +326,17 @@ class GoogleDriveCloudSyncBackend
     return _download(files.single, _limitFor(type));
   }
 
-  Future<CloudObjectRead?> _readImmutable(String type, String name) async {
+  Future<_FileRead?> _readImmutable(String type, String name) async {
     final files = await _candidates(type, name);
     if (files.isEmpty) return null;
     return _readImmutableCandidates(files, _limitFor(type));
   }
 
-  Future<CloudObjectRead> _readImmutableCandidates(
+  Future<_FileRead> _readImmutableCandidates(
     List<_DriveFile> files,
     int maxBytes,
   ) async {
-    final reads = <CloudObjectRead>[];
+    _FileRead? first;
     String? contentHash;
     for (final file in files) {
       final read = await _download(file, maxBytes);
@@ -317,9 +348,9 @@ class GoogleDriveCloudSyncBackend
         );
       }
       contentHash = hash;
-      reads.add(read);
+      first ??= (file: file, read: read);
     }
-    return reads.first;
+    return first!;
   }
 
   Future<CloudCommitResult> _putImmutable(
@@ -339,15 +370,20 @@ class GoogleDriveCloudSyncBackend
     }
     final existing = await _candidates(type, name);
     if (existing.isNotEmpty) {
-      final read = await _readImmutableCandidates(existing, maxBytes);
-      if (_hashBytes(read.bytes) != expectedHash) {
+      final found = await _readImmutableCandidates(existing, maxBytes);
+      if (_hashBytes(found.read.bytes) != expectedHash) {
         throw const CloudBackendException(
           CloudBackendErrorKind.conflict,
           'Google Drive 中已存在同名但内容不同的不可变数据。',
         );
       }
-      if (type == 'object') _verifiedObjectRevisions[name] = read.revision;
-      return CloudCommitResult(revision: read.revision);
+      if (type == 'object') {
+        _verifiedObjectProofs[name] = _proof(
+          found.file.id,
+          found.file.revision,
+        );
+      }
+      return CloudCommitResult(revision: found.read.revision);
     }
     final created = await _create(type, name, bytes);
     final expectedMd5 = md5.convert(bytes).toString();
@@ -360,9 +396,10 @@ class GoogleDriveCloudSyncBackend
         'Google Drive 上传后的不可变数据校验失败。',
       );
     }
-    final revision = verified?.revision ?? created.revision;
-    if (type == 'object') _verifiedObjectRevisions[name] = revision;
-    return CloudCommitResult(revision: revision);
+    if (type == 'object') {
+      _verifiedObjectProofs[name] = _proof(created.id, created.revision);
+    }
+    return CloudCommitResult(revision: created.revision);
   }
 
   Future<CloudCommitResult> _commitMutable(
@@ -395,7 +432,7 @@ class GoogleDriveCloudSyncBackend
     final expectedMd5 = md5.convert(bytes).toString();
     if (written.md5Checksum != expectedMd5) {
       final read = await _download(written, maxBytes);
-      if (!_bytesEqual(read.bytes, bytes)) {
+      if (!ByteContent.equals(read.bytes, bytes)) {
         throw const CloudBackendException(
           CloudBackendErrorKind.conflict,
           'Google Drive 写入后内容已被其他客户端改变。',
@@ -791,14 +828,6 @@ class GoogleDriveCloudSyncBackend
     return sha256.convert(bytes).toString();
   }
 
-  static bool _bytesEqual(Uint8List left, Uint8List right) {
-    if (left.length != right.length) return false;
-    for (var index = 0; index < left.length; index++) {
-      if (left[index] != right[index]) return false;
-    }
-    return true;
-  }
-
   static void _checkUpload(Uint8List bytes, int maxBytes) {
     if (bytes.length > maxBytes) {
       throw const CloudBackendException(
@@ -848,6 +877,7 @@ class _DriveFile {
     required this.namespace,
     required this.recordType,
     required this.revision,
+    required this.legacyRevision,
     required this.md5Checksum,
   });
 
@@ -858,6 +888,7 @@ class _DriveFile {
   final String namespace;
   final String recordType;
   final String revision;
+  final String legacyRevision;
   final String? md5Checksum;
 
   factory _DriveFile.fromJson(Map<dynamic, dynamic> json) {
@@ -890,18 +921,22 @@ class _DriveFile {
         'Google Drive 文件元数据缺少 id、name、size 或 appProperties。',
       );
     }
-    final revisionParts = [
+    final legacyParts = [
       id,
       if (version != null) '$version',
       if (modifiedTime != null) '$modifiedTime',
       if (checksum != null) '$checksum',
     ];
-    if (revisionParts.length == 1) {
+    if (legacyParts.length == 1) {
       throw const CloudBackendException(
         CloudBackendErrorKind.invalidResponse,
         'Google Drive 文件元数据缺少 revision 信息。',
       );
     }
+    final md5Checksum = checksum is String && checksum.isNotEmpty
+        ? checksum
+        : null;
+    final legacyRevision = legacyParts.join(':');
     return _DriveFile(
       id: id,
       name: name,
@@ -909,8 +944,13 @@ class _DriveFile {
       protocol: protocol,
       namespace: namespace,
       recordType: recordType,
-      revision: revisionParts.join(':'),
-      md5Checksum: checksum is String && checksum.isNotEmpty ? checksum : null,
+      // Drive bumps version for server-side metadata changes too; only the
+      // checksum tracks bytes. Without one, keep the stricter composite.
+      revision: md5Checksum == null ? legacyRevision : '$id:$md5Checksum',
+      legacyRevision: legacyRevision,
+      md5Checksum: md5Checksum,
     );
   }
 }
+
+typedef _FileRead = ({_DriveFile file, CloudObjectRead read});

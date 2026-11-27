@@ -7,6 +7,8 @@ import 'package:freezed_annotation/freezed_annotation.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../core/utils/app_logger.dart';
+import '../../core/utils/file_system_error_summary.dart';
+import '../../core/utils/last_result_memo.dart';
 import '../../data/models/vibe/vibe_library_category.dart';
 import '../../data/models/vibe/vibe_library_entry.dart';
 import '../../data/models/vibe/vibe_reference.dart';
@@ -18,8 +20,23 @@ import '../../data/services/vibe_library_storage_service.dart';
 part 'vibe_library_provider.freezed.dart';
 part 'vibe_library_provider.g.dart';
 
+typedef _VibeLibraryCriteria = ({
+  List<VibeLibraryEntry> entries,
+  String searchQuery,
+  String? categoryId,
+  bool favoritesOnly,
+  VibeLibrarySortOrder sortOrder,
+  bool sortDescending,
+});
+
+typedef _VibeLibraryPage = ({
+  List<VibeLibraryEntry> filtered,
+  int currentPage,
+  int pageSize,
+});
+
 @freezed
-class VibeLibraryState with _$VibeLibraryState {
+abstract class VibeLibraryState with _$VibeLibraryState {
   const factory VibeLibraryState({
     @Default([]) List<VibeLibraryEntry> entries,
     @Default([]) List<VibeLibraryCategory> categories,
@@ -41,33 +58,32 @@ class VibeLibraryState with _$VibeLibraryState {
 
   const VibeLibraryState._();
 
-  List<VibeLibraryEntry> get filteredEntries {
-    var result = List<VibeLibraryEntry>.of(entries);
-    if (searchQuery.isNotEmpty) result = result.search(searchQuery);
-    if (selectedCategoryId != null) {
-      result = result.getByCategory(selectedCategoryId!);
-    }
-    if (favoritesOnly) result = result.favorites;
-    final sorted = switch (sortOrder) {
-      VibeLibrarySortOrder.createdAt => result.sortedByCreatedAt(),
-      VibeLibrarySortOrder.lastUsed => result.sortedByLastUsed(),
-      VibeLibrarySortOrder.usedCount => result.sortedByUsedCount(),
-      VibeLibrarySortOrder.name => result.sortedByName(),
-    };
-    return List.unmodifiable(sortDescending ? sorted : sorted.reversed);
+  // 按输入而非实例记忆，进度/加载等无关字段变化不重排；entries 按底层列表身份判等
+  static final _filteredMemo =
+      LastResultMemo<_VibeLibraryCriteria, List<VibeLibraryEntry>>();
+  static final _pageMemo =
+      LastResultMemo<_VibeLibraryPage, List<VibeLibraryEntry>>();
+
+  List<VibeLibraryEntry> get filteredEntries => _filteredMemo.resolve((
+    entries: entries,
+    searchQuery: searchQuery,
+    categoryId: selectedCategoryId,
+    favoritesOnly: favoritesOnly,
+    sortOrder: sortOrder,
+    sortDescending: sortDescending,
+  ), _filterAndSort);
+
+  List<VibeLibraryEntry> get currentEntries => _pageMemo.resolve((
+    filtered: filteredEntries,
+    currentPage: currentPage,
+    pageSize: pageSize,
+  ), _slicePage);
+
+  int get totalPages {
+    final count = filteredCount;
+    return count == 0 ? 0 : (count / pageSize).ceil();
   }
 
-  List<VibeLibraryEntry> get currentEntries {
-    final filtered = filteredEntries;
-    final start = currentPage * pageSize;
-    if (start < 0 || start >= filtered.length) return const [];
-    return List.unmodifiable(
-      filtered.sublist(start, min(start + pageSize, filtered.length)),
-    );
-  }
-
-  int get totalPages =>
-      filteredCount == 0 ? 0 : (filteredCount / pageSize).ceil();
   int get totalCount => entries.length;
   int get filteredCount => filteredEntries.length;
   bool get hasFilters =>
@@ -91,19 +107,39 @@ class VibeLibraryState with _$VibeLibraryState {
   }
 
   Set<String> get allTags => {for (final entry in entries) ...entry.tags};
+
+  static List<VibeLibraryEntry> _filterAndSort(_VibeLibraryCriteria criteria) {
+    var result = criteria.entries;
+    if (criteria.searchQuery.isNotEmpty) {
+      result = result.search(criteria.searchQuery);
+    }
+    final categoryId = criteria.categoryId;
+    if (categoryId != null) result = result.getByCategory(categoryId);
+    if (criteria.favoritesOnly) result = result.favorites;
+    final sorted = switch (criteria.sortOrder) {
+      VibeLibrarySortOrder.createdAt => result.sortedByCreatedAt(),
+      VibeLibrarySortOrder.lastUsed => result.sortedByLastUsed(),
+      VibeLibrarySortOrder.usedCount => result.sortedByUsedCount(),
+      VibeLibrarySortOrder.name => result.sortedByName(),
+    };
+    return List.unmodifiable(
+      criteria.sortDescending ? sorted : sorted.reversed,
+    );
+  }
+
+  static List<VibeLibraryEntry> _slicePage(_VibeLibraryPage page) {
+    final filtered = page.filtered;
+    final start = page.currentPage * page.pageSize;
+    if (start < 0 || start >= filtered.length) return const [];
+    return List.unmodifiable(
+      filtered.sublist(start, min(start + page.pageSize, filtered.length)),
+    );
+  }
 }
 
 enum VibeLibrarySortOrder { createdAt, lastUsed, usedCount, name }
 
-enum VibeLibraryBulkOperationType {
-  none,
-  import,
-  export,
-  delete,
-  favorite,
-  moveCategory,
-  updateTags,
-}
+enum VibeLibraryBulkOperationType { none, delete, moveCategory }
 
 @Riverpod(keepAlive: true)
 class VibeLibraryNotifier extends _$VibeLibraryNotifier {
@@ -156,7 +192,6 @@ class VibeLibraryNotifier extends _$VibeLibraryNotifier {
         scannedCount: 0,
         upsertedCount: 0,
         deletedCount: 0,
-        failedCount: 1,
         errors: [error.toString()],
       );
     }
@@ -393,8 +428,11 @@ class VibeLibraryNotifier extends _$VibeLibraryNotifier {
       }
       return deleted;
     } catch (error, stackTrace) {
-      AppLogger.e('Failed to delete entry', error, stackTrace, 'VibeLibrary');
-      state = state.copyWith(error: error.toString());
+      final failure = error is FileSystemException
+          ? fileSystemErrorSummary(error)
+          : error;
+      AppLogger.e('Failed to delete entry', failure, stackTrace, 'VibeLibrary');
+      state = state.copyWith(error: failure.toString());
       return false;
     }
   }
@@ -412,8 +450,16 @@ class VibeLibraryNotifier extends _$VibeLibraryNotifier {
       );
       return count;
     } catch (error, stackTrace) {
-      AppLogger.e('Failed to delete entries', error, stackTrace, 'VibeLibrary');
-      state = state.copyWith(error: error.toString());
+      final failure = error is FileSystemException
+          ? fileSystemErrorSummary(error)
+          : error;
+      AppLogger.e(
+        'Failed to delete entries',
+        failure,
+        stackTrace,
+        'VibeLibrary',
+      );
+      state = state.copyWith(error: failure.toString());
       return 0;
     }
   }
@@ -543,49 +589,9 @@ class VibeLibraryNotifier extends _$VibeLibraryNotifier {
     return result;
   }
 
-  Future<List<VibeLibraryEntry>> getAllFullEntries() =>
-      _storage.getAllEntries();
-  Future<VibeLibraryEntry?> findFullEntryByName(String name) =>
-      _storage.findEntryByName(name);
   VibeLibraryEntry? getEntryById(String id) => state.entries
       .cast<VibeLibraryEntry?>()
       .firstWhere((entry) => entry?.id == id, orElse: () => null);
-  VibeLibraryCategory? getCategoryById(String id) => state.categories
-      .cast<VibeLibraryCategory?>()
-      .firstWhere((category) => category?.id == id, orElse: () => null);
-  int getEntryCountByCategory(String? id) =>
-      state.entries.where((entry) => entry.categoryId == id).length;
-  List<VibeLibraryEntry> getRecentEntries({int limit = 10}) =>
-      state.entries.sortedByLastUsed().take(limit).toList();
-  List<VibeLibraryEntry> getMostUsedEntries({int limit = 10}) =>
-      state.entries.sortedByUsedCount().take(limit).toList();
-  Map<String?, List<VibeLibraryCategory>> get categoryTree =>
-      state.categories.buildTree();
-
-  Future<int> bulkToggleFavorite(Iterable<String> ids) async {
-    final entryIds = ids.toList(growable: false);
-    if (entryIds.isEmpty) return 0;
-    _startBulkOperation(VibeLibraryBulkOperationType.favorite);
-    try {
-      var updated = 0;
-      for (var index = 0; index < entryIds.length; index++) {
-        if (await toggleFavorite(entryIds[index]) != null) updated++;
-        _updateBulkProgress(index + 1, entryIds.length);
-      }
-      return updated;
-    } catch (error, stackTrace) {
-      AppLogger.e(
-        'Failed to toggle favorites',
-        error,
-        stackTrace,
-        'VibeLibrary',
-      );
-      state = state.copyWith(error: error.toString());
-      return 0;
-    } finally {
-      _endBulkOperation();
-    }
-  }
 
   Future<VibeBulkOperationResult> bulkUpdateEncodingModel(
     Iterable<String> ids,
@@ -643,90 +649,6 @@ class VibeLibraryNotifier extends _$VibeLibraryNotifier {
       return successCount;
     } catch (error, stackTrace) {
       AppLogger.e('Failed to bulk move', error, stackTrace, 'VibeLibrary');
-      state = state.copyWith(error: error.toString());
-      return 0;
-    } finally {
-      _endBulkOperation();
-    }
-  }
-
-  Future<List<String>> bulkExportEntries(
-    List<String> ids, {
-    String? exportDirectory,
-    void Function(int completed, int total)? onProgress,
-  }) async {
-    if (ids.isEmpty) return const [];
-    _startBulkOperation(VibeLibraryBulkOperationType.export);
-    final exportedPaths = <String>[];
-    try {
-      for (var index = 0; index < ids.length; index++) {
-        final entry = getEntryById(ids[index]);
-        final filePath = entry?.filePath;
-        if (filePath != null && filePath.isNotEmpty) {
-          if (exportDirectory == null || exportDirectory.isEmpty) {
-            exportedPaths.add(filePath);
-          } else {
-            try {
-              final source = File(filePath);
-              if (await source.exists()) {
-                final fileName = filePath.split(RegExp(r'[/\\]')).last;
-                final target =
-                    '$exportDirectory${Platform.pathSeparator}$fileName';
-                await source.copy(target);
-                exportedPaths.add(target);
-              }
-            } catch (error) {
-              AppLogger.w('Failed to export entry: $filePath', 'VibeLibrary');
-            }
-          }
-        }
-        final completed = index + 1;
-        _updateBulkProgress(completed, ids.length);
-        onProgress?.call(completed, ids.length);
-        if (completed % 5 == 0) await Future<void>.delayed(Duration.zero);
-      }
-      return exportedPaths;
-    } catch (error, stackTrace) {
-      AppLogger.e('Failed to bulk export', error, stackTrace, 'VibeLibrary');
-      state = state.copyWith(error: error.toString());
-      return exportedPaths;
-    } finally {
-      _endBulkOperation();
-    }
-  }
-
-  Future<int> bulkEditTags(
-    List<String> ids, {
-    List<String> tagsToAdd = const [],
-    List<String> tagsToRemove = const [],
-    bool replaceAll = false,
-    void Function(int completed, int total)? onProgress,
-  }) async {
-    if (ids.isEmpty) return 0;
-    _startBulkOperation(VibeLibraryBulkOperationType.updateTags);
-    try {
-      var successCount = 0;
-      for (var index = 0; index < ids.length; index++) {
-        final id = ids[index];
-        final entry = getEntryById(id);
-        if (entry != null) {
-          final tags = replaceAll
-              ? List<String>.of(tagsToAdd)
-              : (Set<String>.of(entry.tags)
-                      ..addAll(tagsToAdd)
-                      ..removeAll(tagsToRemove))
-                    .toList();
-          if (await updateEntryTags(id, tags) != null) successCount++;
-        }
-        final processed = index + 1;
-        _updateBulkProgress(processed, ids.length);
-        onProgress?.call(processed, ids.length);
-        if (processed % 10 == 0) await Future<void>.delayed(Duration.zero);
-      }
-      await loadFromCache();
-      return successCount;
-    } catch (error, stackTrace) {
-      AppLogger.e('Failed to bulk edit tags', error, stackTrace, 'VibeLibrary');
       state = state.copyWith(error: error.toString());
       return 0;
     } finally {

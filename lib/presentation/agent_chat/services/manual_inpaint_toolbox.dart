@@ -11,9 +11,10 @@ import '../../../core/agent/harness/harness_result.dart';
 import '../../../core/agent/resources/agent_chat_resource_reference_codec.dart';
 import '../../../core/agent/resources/agent_chat_resource_reference.dart';
 import '../../../core/utils/app_logger.dart';
-import '../../../core/utils/nai_resolution_adapter.dart';
+import '../../../core/utils/decoded_image_size.dart';
 import '../../../core/utils/focused_inpaint_utils.dart';
 import '../../../core/utils/localization_extension.dart';
+import '../../../core/utils/nai_resolution_adapter.dart';
 import '../../../data/models/image/image_params.dart';
 import '../../../data/models/inpaint/inpaint_draft.dart';
 import '../../../data/models/inpaint/inpaint_draft_status.dart';
@@ -46,7 +47,7 @@ typedef ManualInpaintResourceLoader =
       AgentChatResourceReference reference,
     );
 typedef ManualInpaintAnlasEstimator =
-    int Function(ImageParams params, int batchSize);
+    FutureOr<int> Function(ImageParams params, int batchSize);
 
 /// 把 ready 草稿装载进生成页重绘面板，并把用户带到那一页。
 typedef ManualInpaintPanelHandoff =
@@ -54,6 +55,7 @@ typedef ManualInpaintPanelHandoff =
       required Uint8List source,
       required int sourceWidth,
       required int sourceHeight,
+      required ({int width, int height})? requestSize,
       required Uint8List mask,
       required bool focusedInpaintEnabled,
       required Rect? focusedSelectionRect,
@@ -116,7 +118,7 @@ class ManualInpaintToolbox implements InpaintDraftAuthoringHost {
            anlasEstimator ??
            ((params, batchSize) => GenerationAnlasEstimator(
              _ref,
-           ).estimate(params, requestCount: 1, batchSize: batchSize));
+           ).estimateFresh(params, requestCount: 1, batchSize: batchSize));
 
   /// 与 ImageWorkflowState.minimumContextMegaPixels 的默认值一致。
   static const double _defaultContextPadding =
@@ -172,7 +174,11 @@ class ManualInpaintToolbox implements InpaintDraftAuthoringHost {
       final bytes = resolved?.bytes;
       return bytes == null
           ? null
-          : (bytes: bytes, filePath: resolved!.filePath);
+          : (
+              bytes: bytes,
+              filePath: resolved!.filePath,
+              reference: resolved.reference,
+            );
     };
   }
 
@@ -182,15 +188,27 @@ class ManualInpaintToolbox implements InpaintDraftAuthoringHost {
   void configureObservationLedger(
     AgentImageObservationLedger ledger, {
     required String Function() activeSessionId,
+    required String observationGuidance,
   }) => _authoring.configureObservationLedger(
     ledger,
     activeSessionId: activeSessionId,
+    observationGuidance: observationGuidance,
   );
 
   Future<int?> estimateAnlasForDraft(String draftId) async {
     final draft = await _repository.get(draftId);
     if (draft == null) return null;
-    final snapshot = draft.parameterSnapshot;
+    return _estimateDraftAnlas(
+      draft.parameterSnapshot,
+      await _repository.readMask(draftId),
+    );
+  }
+
+  /// 权限层与提交时都按此实时估价，草稿里存的估价也必须走同一条路径，两道门禁才不会分歧。
+  Future<int> _estimateDraftAnlas(
+    Map<String, dynamic> snapshot,
+    Uint8List? mask,
+  ) {
     final storedBatchSize = snapshot['_agentBatchSize'];
     final batchSize = storedBatchSize is int && storedBatchSize > 0
         ? storedBatchSize
@@ -198,7 +216,7 @@ class ManualInpaintToolbox implements InpaintDraftAuthoringHost {
     return estimateInfillAnlas(
       ImageParams.fromJson(snapshot),
       batchSize: batchSize,
-      maskImage: await _repository.readMask(draftId),
+      maskImage: mask,
       focused: readFocusedSnapshot(snapshot),
     );
   }
@@ -206,15 +224,15 @@ class ManualInpaintToolbox implements InpaintDraftAuthoringHost {
   /// 聚焦重绘实际请求的是放大后的裁剪区，而不是原图尺寸；按原图估价在小底图上
   /// 会低估，用户确认到的数字就会比真实扣费少。
   @override
-  int estimateInfillAnlas(
+  Future<int> estimateInfillAnlas(
     ImageParams params, {
     required int batchSize,
     required Uint8List? maskImage,
     required GenerationFocusedSnapshot focused,
-  }) {
+  }) async {
     var effective = params.copyWith(action: ImageGenerationAction.infill);
     if (focused.enabled && maskImage != null) {
-      final geometry = FocusedInpaintUtils.resolveGeometryForMask(
+      final geometry = await FocusedInpaintUtils.resolveGeometryForMaskAsync(
         maskImage: maskImage,
         minContextMegaPixels: focused.minimumContextMegaPixels,
       );
@@ -382,6 +400,7 @@ class ManualInpaintToolbox implements InpaintDraftAuthoringHost {
     return InpaintSourceResolution.ok((
       bytes: await sourceFile.readAsBytes(),
       filePath: sourcePath,
+      reference: null,
     ));
   }
 
@@ -423,16 +442,11 @@ class ManualInpaintToolbox implements InpaintDraftAuthoringHost {
               ),
             );
       }
-      final params = ImageParams.fromJson(snapshot);
-      final batchSize = _ref.read(imagesPerRequestProvider);
-      snapshot['_agentBatchSize'] = batchSize;
+      snapshot['_agentBatchSize'] = _ref.read(imagesPerRequestProvider);
       final prepared = await _repository.prepare(
         sourceBytes: source,
         parameterSnapshot: snapshot,
-        estimatedAnlas: _estimateAnlas(
-          params.copyWith(action: ImageGenerationAction.infill),
-          batchSize,
-        ),
+        estimatedAnlas: await _estimateDraftAnlas(snapshot, null),
       );
       createdDraftId = prepared.id;
       if (!isCurrentSession()) {
@@ -503,21 +517,41 @@ class ManualInpaintToolbox implements InpaintDraftAuthoringHost {
       if (current == null || current.status != InpaintDraftStatus.editing) {
         return;
       }
-      final mask = result?.maskImage;
-      if (result == null || mask == null) {
+      if (result == null) {
         await notifyDraftChanged(await _repository.cancel(id));
         return;
       }
-      final source =
-          result.outpaintSourceImage ??
-          result.inpaintSourceImage ??
-          originalSource;
+      final replacement = result.hasOutpaintChanges
+          ? result.outpaintSourceImage
+          : result.inpaintSourceImage;
+      final snapshot = replacement == null
+          ? current.parameterSnapshot
+          : applyManualInpaintEditorSource(
+              current.parameterSnapshot,
+              replacement,
+              isOutpaint: result.hasOutpaintChanges,
+              compressionApplied: result.compressionApplied,
+            );
+      final mask = result.maskImage;
+      if (mask == null) {
+        // 没有蒙版就无法提交；底图改过时先把改动存进草稿，不随取消丢掉
+        final cancelled = result.hasSourceImageChanges && replacement != null
+            ? await _repository.cancelWithEditedSource(
+                id,
+                sourceBytes: replacement,
+                parameterSnapshot: snapshot,
+                estimatedAnlas: await _estimateDraftAnlas(snapshot, null),
+              )
+            : await _repository.cancel(id);
+        await notifyDraftChanged(cancelled);
+        return;
+      }
       final ready = await _repository.complete(
         id,
-        sourceBytes: source,
+        sourceBytes: replacement ?? originalSource,
         maskBytes: mask,
-        parameterSnapshot: current.parameterSnapshot,
-        estimatedAnlas: current.estimatedAnlas,
+        parameterSnapshot: snapshot,
+        estimatedAnlas: await _estimateDraftAnlas(snapshot, mask),
       );
       await notifyDraftChanged(ready);
     } on Object catch (error, stackTrace) {
@@ -575,7 +609,8 @@ class ManualInpaintToolbox implements InpaintDraftAuthoringHost {
       return agentToolError('invalid_draft', 'Ready draft has no mask.');
     }
     final source = await _repository.readSource(id);
-    final size = NaiResolutionAdapter.readImageSize(source);
+    // 蒙版按解码后的源图像素生成，面板尺寸必须与之一致
+    final size = await DecodedImageSize.tryRead(source);
     if (size == null) {
       return agentToolError(
         'invalid_draft',
@@ -589,21 +624,31 @@ class ManualInpaintToolbox implements InpaintDraftAuthoringHost {
     // 隐式使用的那个矩形——蒙版外接框——两条路径才会得到同一个结果。
     Rect? selectionRect;
     if (focused.enabled) {
-      selectionRect = FocusedInpaintUtils.resolveGeometryForMask(
+      final geometry = await FocusedInpaintUtils.resolveGeometryForMaskAsync(
         maskImage: mask,
         minContextMegaPixels: focused.minimumContextMegaPixels,
-      )?.focusBounds.rect;
+      );
+      selectionRect = geometry?.focusBounds.rect;
     }
-    final storedOutpaint = draft.parameterSnapshot['_agentSourceIsOutpaint'];
-    final sourceIsOutpaint =
-        storedOutpaint == true &&
-        NaiResolutionAdapter.isCompatible(width, height);
+    final sourceIsOutpaint = manualInpaintSourceIsOutpaint(
+      draft.parameterSnapshot,
+      width: width,
+      height: height,
+    );
 
     try {
+      final params = ImageParams.fromJson(draft.parameterSnapshot);
       await handoff(
         source: source,
         sourceWidth: width,
         sourceHeight: height,
+        requestSize:
+            NaiResolutionAdapter.isGenerationCompatible(
+              params.width,
+              params.height,
+            )
+            ? (width: params.width, height: params.height)
+            : null,
         mask: mask,
         focusedInpaintEnabled: focused.enabled && selectionRect != null,
         focusedSelectionRect: selectionRect,
@@ -638,28 +683,39 @@ class ManualInpaintToolbox implements InpaintDraftAuthoringHost {
           'Draft status is ${draft.status.name}; ready is required.',
         );
       }
-      if (draft.estimatedAnlas < 0) {
+      final mask = await _repository.readMask(id);
+      if (mask == null) {
+        return agentToolError('invalid_draft', 'Ready draft has no mask.');
+      }
+      // 草稿存下的估价可能出自已经过期的订阅数据
+      final estimatedAnlas = await _estimateDraftAnlas(
+        draft.parameterSnapshot,
+        mask,
+      );
+      if (estimatedAnlas < 0) {
         return agentToolError(
           'invalid_cost_estimate',
           'The inpaint draft does not have a valid Anlas estimate and cannot '
               'be submitted.',
         );
       }
-      if (draft.estimatedAnlas > 0 && args['confirm'] != true) {
+      if (estimatedAnlas > 0 && args['confirm'] != true) {
         return agentToolError(
           'confirmation_required',
           'Paid inpainting requires confirm=true and tool permission approval.',
         );
       }
       final source = await _repository.readSource(id);
-      final mask = await _repository.readMask(id);
-      if (mask == null) {
-        return agentToolError('invalid_draft', 'Ready draft has no mask.');
-      }
+      // isOutpaint 不进 JSON 快照，必须在这里从私有键还原。
       final params = ImageParams.fromJson(draft.parameterSnapshot).copyWith(
         action: ImageGenerationAction.infill,
         sourceImage: source,
         maskImage: mask,
+        isOutpaint: manualInpaintSourceIsOutpaint(
+          draft.parameterSnapshot,
+          width: draft.source.width,
+          height: draft.source.height,
+        ),
       );
       final batchSize = draft.parameterSnapshot['_agentBatchSize'] as int?;
       final submitting = await _repository.beginSubmission(id);
@@ -803,29 +859,50 @@ class ManualInpaintToolbox implements InpaintDraftAuthoringHost {
         error: 'Another generation is already running.',
       );
     }
-    await _ref
+    final outcome = await _ref
         .read(imageGenerationNotifierProvider.notifier)
         .generate(
           params,
           batchSizeOverride: batchSize,
           focusedOverride: focused,
+          bypassRandomPrompt: true,
         );
-    final after = _ref.read(imageGenerationNotifierProvider);
-    return switch (after.status) {
-      GenerationStatus.completed => const ManualInpaintSubmissionResult(
+    // 只按这次调用的结局判断，状态里可能还留着上一次生成的终态
+    return switch (outcome) {
+      GenerationRunCompleted() => const ManualInpaintSubmissionResult(
         accepted: true,
       ),
-      GenerationStatus.error => ManualInpaintSubmissionResult(
+      GenerationRunFailed(:final errorMessage) => ManualInpaintSubmissionResult(
         accepted: false,
-        error: after.errorMessage ?? 'Generation failed.',
+        error: errorMessage,
       ),
-      GenerationStatus.cancelled => const ManualInpaintSubmissionResult(
+      GenerationRejected(:final errorCode) => ManualInpaintSubmissionResult(
+        accepted: false,
+        error: errorCode,
+      ),
+      GenerationCancelledBeforeStart() ||
+      GenerationSuperseded() ||
+      GenerationRunCancelled() => const ManualInpaintSubmissionResult(
         accepted: false,
         error: 'Generation was cancelled.',
       ),
-      _ => const ManualInpaintSubmissionResult(
+      GenerationBusy() => const ManualInpaintSubmissionResult(
         accepted: false,
-        error: 'Generation was not started (authentication may be required).',
+        error: 'Another generation is already running.',
+      ),
+      GenerationAuthRequired() => const ManualInpaintSubmissionResult(
+        accepted: false,
+        error: 'Generation was not started: authentication is required.',
+      ),
+      GenerationCooldownActive() => const ManualInpaintSubmissionResult(
+        accepted: false,
+        error:
+            'Generation was not started: the generation interval has not '
+            'elapsed.',
+      ),
+      GenerationDisposed() => const ManualInpaintSubmissionResult(
+        accepted: false,
+        error: 'Generation was interrupted.',
       ),
     };
   }

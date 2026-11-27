@@ -1,12 +1,29 @@
-import 'dart:typed_data';
-
 import 'package:uuid/uuid.dart';
 
 import '../../../data/models/image/image_params.dart';
+import '../../providers/generation/image_workflow_controller.dart';
+import '../../providers/subscription_billing.dart';
+import 'generation_enhance_resolver.dart';
 
-enum GenerationPreparationKind { generate, queue }
+enum GenerationPreparationKind {
+  generate,
+  queue;
+
+  /// 队列按条数逐次请求；单次生成的多张图在同一请求里走 nSamples。
+  int requestCount(int count) => this == queue ? count : 1;
+}
 
 enum GenerationPreparationStatus { prepared, submitted, cancelled }
+
+enum GenerationSavePathSource { caller, galleryOriginal }
+
+extension GenerationSavePathSourceWire on GenerationSavePathSource {
+  /// 模型侧键值统一 snake_case，不跟随 Dart 枚举名。
+  String get wireName => switch (this) {
+    GenerationSavePathSource.caller => 'caller',
+    GenerationSavePathSource.galleryOriginal => 'gallery_original',
+  };
+}
 
 class GenerationPreparation {
   GenerationPreparation({
@@ -17,9 +34,12 @@ class GenerationPreparation {
     required this.count,
     required this.autoStart,
     required this.estimatedAnlas,
+    required this.billing,
     required this.arguments,
-    this.sourceImage,
-    this.maskImage,
+    this.savePath,
+    this.savePathSource,
+    this.enhance,
+    this.enhanceDefaults,
   }) : id = const Uuid().v4(),
        createdAt = DateTime.now();
 
@@ -32,52 +52,71 @@ class GenerationPreparation {
   final int count;
   final bool autoStart;
   final int estimatedAnlas;
+
+  int get requestCount => kind.requestCount(count);
+
+  /// 估出 [estimatedAnlas] 时依据的订阅视图；审批时与当前视图不同就要重估。
+  final SubscriptionBillingView billing;
   final Map<String, dynamic> arguments;
-  final Uint8List? sourceImage;
-  final Uint8List? maskImage;
+  final String? savePath;
+
+  /// null 表示这次既不落盘也不引用原图。
+  final GenerationSavePathSource? savePathSource;
+
+  final GenerationEnhanceSelection? enhance;
+
+  /// 首次准备时的生成页增强偏好，更新时沿用，与 [baseParams] 同理。
+  final EnhanceWorkflowSettings? enhanceDefaults;
   GenerationPreparationStatus status = GenerationPreparationStatus.prepared;
 
-  Map<String, dynamic> toJson() => {
-    'ok': true,
-    'preparation_id': id,
-    'status': status.name,
-    'operation': kind.name,
-    'estimated_anlas': estimatedAnlas,
-    'count': count,
-    'batch_size': batchSize,
-    'auto_start': autoStart,
-    'parameters': {
-      'prompt': params.prompt,
-      'negative_prompt': params.negativePrompt,
-      'model': params.model,
-      'width': params.width,
-      'height': params.height,
-      'steps': params.steps,
-      'sampler': params.sampler,
-      'scale': params.scale,
-      'seed': params.seed,
-      'action': params.action.value,
-      'character_layout_mode': params.useCoords ? 'custom' : 'ai_choice',
-      'character_count': params.characters.length,
-      'characters': [
-        for (var index = 0; index < params.characters.length; index++)
-          {
-            'order': index,
-            'prompt': params.characters[index].prompt,
-            'negative_prompt': params.characters[index].negativePrompt,
-            if (params.useCoords)
-              'center': {
-                'x': params.characters[index].positionX,
-                'y': params.characters[index].positionY,
-              },
-          },
-      ],
-      if (sourceImage != null) 'has_source_image': true,
-      if (maskImage != null) 'has_mask_image': true,
-    },
-    'confirmation_required':
-        status == GenerationPreparationStatus.prepared && estimatedAnlas != 0,
-  };
+  Map<String, dynamic> toJson() {
+    // 回显实际会发送的参数：模型固定的步数、采样器与负面词以覆盖后为准。
+    final request = params.resolveFixedSettings();
+    return {
+      'ok': true,
+      'preparation_id': id,
+      'status': status.name,
+      'operation': kind.name,
+      'estimated_anlas': estimatedAnlas,
+      'count': count,
+      'batch_size': batchSize,
+      'auto_start': autoStart,
+      if (savePath != null) 'save_path': savePath,
+      if (savePathSource != null) 'save_path_source': savePathSource!.wireName,
+      'parameters': {
+        'prompt': request.prompt,
+        'negative_prompt': request.negativePrompt,
+        'model': request.model,
+        'width': request.width,
+        'height': request.height,
+        'steps': request.steps,
+        'sampler': request.sampler,
+        'scale': request.scale,
+        'seed': request.seed,
+        'action': request.action.value,
+        'character_layout_mode': request.useCoords ? 'custom' : 'ai_choice',
+        'character_count': request.characters.length,
+        'characters': [
+          for (var index = 0; index < request.characters.length; index++)
+            {
+              'order': index,
+              'prompt': request.characters[index].prompt,
+              'negative_prompt': request.characters[index].negativePrompt,
+              if (request.useCoords)
+                'center': {
+                  'x': request.characters[index].positionX,
+                  'y': request.characters[index].positionY,
+                },
+            },
+        ],
+        if (request.sourceImage != null) 'has_source_image': true,
+        if (request.maskImage != null) 'has_mask_image': true,
+        if (enhance case final enhance?) 'enhance': enhance.toJson(),
+      },
+      'confirmation_required':
+          status == GenerationPreparationStatus.prepared && estimatedAnlas != 0,
+    };
+  }
 }
 
 /// In-memory transaction store owned by the Agent runtime, not by a tool list.

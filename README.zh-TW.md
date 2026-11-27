@@ -1,15 +1,11 @@
-# NAI Launcher
+# NAI Launcher (ZipZipPipe fork)
 
 <p align="center">
   <a href="README.md">简体中文</a> · 繁體中文 · <a href="README.en-US.md">English</a>
 </p>
 
-> [!WARNING]
-> **專案暫停更新（2026-09-08）**
->
-> 我的 NovelAI 帳號遭到官方限制：訂閱被取消，且無法再購買或訂閱。對於這次處理，我至今不明白具體原因，因此決定暫停本專案的更新。
-
-![NovelAI 官方取消訂閱及限制購買的通知截圖](docs/screenshots/novelai-subscription-canceled-2026-09-08.png)
+> [!NOTE]
+> 這是 [Aaalice233/Aaalice_NAI_Launcher](https://github.com/Aaalice233/Aaalice_NAI_Launcher) 的 ZipZipPipe fork。應用程式內更新與下方安裝套件皆來自本儲存庫。
 
 <p align="center">
   <img src="assets/icons/Icon.png" alt="NAI Launcher 圖示" width="112">
@@ -20,14 +16,14 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Aaalice233/Aaalice_NAI_Launcher/releases/latest"><img src="https://img.shields.io/github/v/release/Aaalice233/Aaalice_NAI_Launcher?display_name=tag&sort=semver" alt="最新版本"></a>
+  <a href="https://github.com/ZipZipPipe/Aaalice_NAI_Launcher/releases/latest"><img src="https://img.shields.io/github/v/release/ZipZipPipe/Aaalice_NAI_Launcher?display_name=tag&sort=semver" alt="最新版本"></a>
   <img src="https://img.shields.io/badge/Windows%20%7C%20macOS%20%7C%20Android-available-6f7785" alt="支援平台">
   <img src="https://img.shields.io/badge/license-MIT-5b8c5a" alt="MIT License">
   <a href="https://discord.gg/R48n6GwXzD"><img src="https://img.shields.io/badge/Discord-加入社群-5865F2?logo=discord&logoColor=white" alt="Discord 社群"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/Aaalice233/Aaalice_NAI_Launcher/releases/latest">下載最新版本</a> ·
+  <a href="https://github.com/ZipZipPipe/Aaalice_NAI_Launcher/releases/latest">下載最新版本</a> ·
   <a href="CHANGELOG.md">查看更新記錄</a> ·
   <a href="https://github.com/Aaalice233/Aaalice_NAI_Launcher/issues">回報問題</a> ·
   <a href="https://discord.gg/R48n6GwXzD">加入 Discord</a>
@@ -53,10 +49,12 @@ NAI Launcher 面向經常使用 NovelAI 的圖像創作者。生成、改圖、P
 ### 🎨 NovelAI 生成與編輯
 
 - 支援文字生成圖片、圖片生成圖片、一般 Inpaint、Focused Inpaint、Outpaint、變體和增強。
-- 支援 NovelAI V5 Curated / Full、V4.5、V4 與 V3 系列常用工作流程；切換模型時，可用參數、預設值、Token 上限與參考功能會跟隨模型能力變化。
+- 支援 NovelAI V5 Curated / Full、V4.5、V4 與 V3 系列常用工作流程；切換模型時，可用參數、預設值、Token 上限與參考功能會跟隨模型能力變化。切回用過的模型時，會還原儲存在本機的採樣參數。
+- V5 Full 可切換「節約 / 標準」生成檔位：節約檔消耗較少 Anlas 與 Opus 免費額度，並與官網一樣固定步數、取樣器和負面預設；V4 及之後的模型可切換動漫 / 獸人模式，獸人模式會在提示詞開頭加入 fur dataset 資料集標籤，匯入圖片時自動辨識。
 - 可設定尺寸、採樣器、Steps、CFG、Seed、噪聲排程等參數；尺寸不符合 NovelAI 限制時，會先提供可用建議。
 - 生成前顯示預估 Anlas 消耗；可能產生費用的重要操作會另外確認，完成後自動更新餘額與統計。
 - 內建生成歷史與預覽，可重用 Prompt、Seed、模型和部分參數，不會覆蓋仍在編輯的內容。
+- 預覽圖和歷史記錄支援「另存為」：單張可從右鍵、更多選單或全螢幕詳情頁頂欄自選位置和檔名，多選後可一次存入同一資料夾。另存為只匯出保留完整生成參數的副本，不寫入應用程式圖庫；開啟保護模式及「匯出時避免覆蓋已有檔案」後，重名檔案自動編號。
 
 ### ✍️ Prompt、固定詞與角色
 
@@ -70,15 +68,17 @@ NAI Launcher 面向經常使用 NovelAI 的圖像創作者。生成、改圖、P
 - 標籤可停用後恢復，原文中的 `/*disabled:原片段*/` 會隨提示詞儲存和雲端同步，但停用內容不參與生成、有效預覽和 Token 計數。這是 Launcher 編輯語法，舊版用戶端及外部工具不保證識別；外部使用請在選單選擇「複製有效提示詞」。
 - 本機譯文未命中的內容可交給你設定的 AI 翻譯服務。
 - 提示詞助手的反推、最佳化、翻譯等任務支援統一設定回應等待逾時，可選 1、2、5、10、15 或 30 分鐘，預設 5 分鐘。
-- 提示詞助手的提供商可獨立儲存自動或手動並行模式，預設自動從 5 個請求開始調整；獨立標籤批次並行翻譯。各任務可選擇模型支援的思考等級，設定統一位於「設定 → 整合 → 提示詞助手」，儲存在本機。
+- 提示詞助手的提供商可獨立儲存自動或手動並行模式，預設自動從 5 個請求開始調整；獨立標籤批次並行翻譯。各任務可選擇模型支援的思考等級。服務商、API Key 與模型在「設定 → 整合 → 模型服務」管理，任務路由與思考等級位於「設定 → 整合 → 提示詞助手」，均儲存在本機。
+- 對於目錄外的模型，智慧體聊天與提示詞助手均從「模型預設」開始。OpenAI 相容管道可直接選擇低、中、高。原生 Gemini 與 Anthropic 管道需先在「設定推理」中選擇模型接受的格式。
+- 如果管道拒絕推理等級，在聊天選單選擇「模型預設」再點錯誤卡上的「重試」，請求會省略推理參數。支援明確關閉推理的模型另有「關閉」選項。
 
 ### 🧬 Vibe、精準參考與圖片編輯
 
 - Vibe Transfer 支援圖片、預編碼 Vibe 與 Bundle，可調整資訊提取和參考強度，並依模型重用已有編碼。
-- Precise Reference 可用於角色或風格參考，支援多選、批次修改類型，以及包含圖片的設定包匯入匯出。
+- V4.5 與 V5 支援精準參考。V5 新增服裝參考和同款服裝偏好，參考庫支援多選、批次修改類型和包含圖片的設定包匯入匯出。
 - Vibe 與 Precise Reference 都有獨立資源庫，可分類、搜尋、預覽、批次管理，並直接送到目前生成任務。
 - 重繪編輯器提供畫筆、遮罩、Focused Inpaint 區域和畫布擴展；也可先讓智慧代理準備遮罩或擴圖草稿，再由你檢查後送出。
-- 可從 NovelAI 圖片中讀取模型、尺寸、採樣器、Steps、CFG、Seed、固定詞和角色內容，並選擇性還原。
+- 可從 NovelAI 圖片中讀取模型、尺寸、採樣器、Steps、CFG、Seed、固定詞和角色內容，並選擇性還原；下次匯入會沿用上次勾選的項目。匯入角色時可以覆蓋現有角色，也可以依原圖順序新增至末尾。
 - Android 可從 Discord 等應用程式將單張圖片或圖片直連連結分享到 NAI Launcher，讀取圖片後選擇擷取中繼資料、圖生圖或參考圖等用途；圖片連結須可存取，還原參數須原圖保留中繼資料。
 
 ### 🗂️ 本機圖庫與作品整理
@@ -86,13 +86,18 @@ NAI Launcher 面向經常使用 NovelAI 的圖像創作者。生成、改圖、P
 - 只掃描你指定的目錄，再依資料夾、相簿、收藏、Prompt 和生成資訊尋找作品。
 - 圖片詳情會拆分正負面 Prompt、固定詞、角色內容與完整參數，可整組複製，也可只取需要的部分。
 - 支援批次分類、收藏、移動與刪除，並提供圖片比較、幻燈片、浮水印、遮蔽副本和多種檢視方式。
+- 在本機圖庫檢視大圖時，可從頂端工具列或窄螢幕的「⋮」選單刪除目前的圖片，也可按預設快速鍵 Delete。確認後會永久刪除檔案。
 - 在「設定 → 安全與分享」中可獨立開啟「複製/拖拽時添加浮水印」，使用已儲存的預設浮水印方案產生輸出副本，不修改原圖。添加浮水印不會清除後設資料；如需清除，請同時開啟保護模式及「複製/拖拽時移除全部後設資料」，處理順序為先清除、再加浮水印。
+- 浮水印編輯器支援「自動選位」：以設定的錨點為首選位置，其他角落明顯更乾淨時，整套浮水印會鏡像過去；文字與 Logo 可分別開啟「自動灰階」，依浮水印下方的背景亮度取灰，並以「明暗差」控制與背景的反差。
 - 桌面版提供右鍵、懸停預覽和拖放，觸控端提供對應選單；核心操作不會因換到手機而消失。
 - 本機圖庫、Vibe 庫、精準參考庫與詞庫的常駐側欄支援拖曳調整寬度，各頁面寬度僅儲存在本機，不參與雲端同步。
 - 本機圖庫資料夾、相簿、Vibe 與詞庫類別支援原有順序、名稱及數量升降冪，各群組僅在本機記憶排序。資料夾預設按名稱降冪，讓統一格式的日期資料夾最新在前；拖曳調序以目前顯示順序為基礎，並自動切換為原有順序。桌面直接拖曳，觸控長按拖曳；資料夾、相簿和詞庫類別還支援拖入子層級，Vibe 保持平面類別。
+- 詞庫條目在「自定義排序」下可拖曳調序：桌面直接拖曳卡片，觸控長按拖曳，此時多選改從卡片的「更多」選單進入。拖曳選取項目時整組移動，收藏條目始終在前；分組檢視中拖到其他類別會移入該類別並放在落點處。
 - 圖片和資源卡片的右鍵、更多選單與批次工具列使用一致的操作；已選取項目開啟批次選單，未選取項目仍只操作自身。桌面支援 Ctrl/Cmd 多選、Shift 範圍選取及目前頁面全選，翻頁保留選取狀態。
 - 從已選取卡片拖出時會攜帶整組資源：圖片使用實際圖像，Vibe/Bundle 與精準參考使用各自的資源檔案。應用程式內可拖到支援的生成參考、Agent、分類或相簿入口；單項入口會拒絕多項拖入。
 - 本機圖片可直接傳送到生成頁面、智慧代理或 Krita，省去重複匯出和選擇檔案。
+- 在「設定 → 資料與儲存 → 資料夾與檔案名稱」中決定圖庫怎麼存：子資料夾可按日期、按月份、按年／月兩層或不建立子資料夾，檔案名稱可用「時間 + 種子」「日期時間 + 種子」或「提示詞 + 種子」，也可以用與 NovelAI 官網相同的範本語法自訂（如 `{prompt} s-{seed}`、`{model}/{date}`），編輯時即時預覽完整路徑。預設仍按日期分資料夾、以時間和種子命名；修改只影響之後儲存的圖片，既有檔案不會被重新命名或移動。
+- Android 儲存圖片時預設同步一份到系統相簿；在「設定 → 資料與儲存」關閉「同步到系統相簿」後，生成和儲存的圖片只留在應用程式圖庫，需要時仍可單張「儲存到系統相簿」。
 
 ### 🔎 線上圖庫與靈感收集
 
@@ -105,13 +110,15 @@ NAI Launcher 面向經常使用 NovelAI 的圖像創作者。生成、改圖、P
 ### 🤖 智慧代理
 
 - 在桌面側欄或行動版抽屜中對話，讓代理查詢標籤、整理 Prompt、查看生成歷史、操作資源庫並準備生成任務。
-- 圖片、Vibe 和 Precise Reference 可直接加入會話；代理也能準備重繪遮罩、擴展畫布與重繪草稿。
-- 「準備任務」和「真正生成」嚴格分開：準備階段核實費用；完全存取模式下，已核實為零 Anlas 的生成直接執行，刪除與付費操作仍需確認。
+- 圖片、Vibe 和 Precise Reference 可直接加入會話；圖片也能在輸入框按 Ctrl/Cmd+V 貼上，或從檔案管理員、瀏覽器拖到面板，Android 可從輸入法插入。代理也能準備重繪遮罩、擴展畫布與重繪草稿，或直接放大、增強圖片。
+- 「準備任務」和「真正生成」嚴格分開：準備階段核實費用；完全存取模式下，已核實為零 Anlas 的生成直接執行，刪除已儲存的資料與付費操作仍需確認。需要無人值守批次出圖時可切換到「全自動」：付費操作直接執行，只有單次消耗達到保護模式的高消耗閾值時才確認，刪除已儲存的資料仍需確認。
 - 預設角色調查流程會結合連網身分核實、標準標籤檢索和畫廊特徵；連網關閉或證據不足時會說明限制。
 - 系統提示詞可直接以自然語言補充要求或替換內建正文，無需佔位符。工作目錄、連網狀態、Skills 與應用程式執行規則會自動補充，並可預覽最終內容；自訂不會繞過應用程式的權限確認。
-- 支援助手預填：DeepSeek 在每次模型請求（含工具續跑）中從指定的思考開頭繼續，需要開啟思考模式；工具呼叫透過文字協定適配，繼續使用原有的參數驗證與權限確認。其他支援預填的 OpenAI 相容服務仍使用回覆正文開頭，支援情況依供應商而定。空格與換行原樣保留，背景摘要不注入。預設關閉、內容留空，設定儲存在本機並隨智慧體設定匯入／匯出；現有系統提示詞雲端同步不包含預填內容。
+- 智慧體支援助手預填，可選擇僅首輪或每輪注入。DeepSeek 會從指定的思考開頭繼續，需要開啟思考模式。攜帶預填的請求透過文字協定呼叫工具，並沿用參數驗證及權限確認。其他支援預填的 OpenAI 相容服務可使用指定的回覆正文開頭，實際支援情況依供應商而定。空格與換行原樣保留，背景摘要不注入。預填預設關閉、內容留空，設定儲存在本機並隨智慧體設定匯入及匯出，不參與系統提示詞雲端同步。
 - 支援逐題回答的結構化提問：每題三個可行方向、一個「推薦」標記和一個自訂入口，最後統一檢查並提交。預設兩分鐘未提交會自動採用全部推薦選項；提問時顯示 Toast、入口問號和 Android 系統通知。
-- 支援 OpenAI 相容介面、Google Gemini 原生介面、第三方 Gemini 相容中轉與 OpenRouter；可取得模型清單，並依模型能力啟用思考等級和工具呼叫。
+- Windows 與 macOS 可在「設定 → 整合 → MCP」開啟本機 MCP 服務，讓 Claude Code、Codex CLI、Cursor、Cherry Studio、Pi、Antigravity、Claude Desktop 等外部智慧代理透過同一套工具操作 Launcher；服務預設關閉，授權確認與 Anlas 消耗確認仍在 Launcher 內完成。詳見 [MCP 服務說明](docs/mcp_server.md)。
+- MCP 生成與取圖預設回傳原解析度圖片；用戶端可能在摺疊的工具詳情中顯示。正文顯示支援供 Cherry Studio 等同機用戶端使用的短期本機 HTTP 圖片位址，以及供 Codex 使用的可選顯示快取，無需另存圖庫副本。HTTP 位址最長有效 1 小時，服務關閉或快取淘汰後失效。開啟保護模式及「複製/拖拽時移除全部後設資料」後，MCP 圖片、HTTP 顯示、顯示快取、另存匯出與剪貼簿輸出同樣清除後設資料與 NAI 隱寫水印，且不回傳原圖路徑；本機原圖不受影響。淨化另存使用 PNG，仍保留目標路徑權限與禁止覆寫檢查。
+- 支援 OpenAI 相容介面、Google Gemini 原生介面、Google Vertex AI（服務帳戶 JSON、gcloud ADC 憑據或 API Key）、第三方 Gemini 相容中轉與 OpenRouter；每個服務商可從介面清單挑選模型或手動新增模型 ID，並依模型能力啟用思考等級和工具呼叫。
 - 模型服務、API Key、可用地區和費用由你選擇的供應商負責；網路搜尋等額外工具預設關閉。
 
 ### 📋 佇列、歷史與統計
@@ -131,7 +138,7 @@ NAI Launcher 面向經常使用 NovelAI 的圖像創作者。生成、改圖、P
 
 - 支援 OneDrive、GitHub 與 WebDAV；Google Drive 因授權審核尚未通過，暫時停用新增連線入口。連接帳號不會自動上傳、下載或覆蓋內容。
 - 推送、拉取和還原都由你主動開始，並可預覽差異與處理衝突。
-- 可分別選擇設定、Prompt 與詞庫、詞庫預覽圖、線上圖庫設定與收藏、本機相簿、智慧代理 Prompt 與 Skill，以及可選的 Vibe、Precise Reference。
+- 可分別選擇設定、Prompt 與詞庫、詞庫預覽圖、線上圖庫設定與收藏、本機相簿、固定詞使用記錄、智慧代理 Prompt 與 Skill，以及可選的 Vibe、Precise Reference。
 - 本機圖庫原圖、遠端圖庫原圖、帳號憑證、快取和日誌不會進入備份。
 - 備份使用方便查看與移轉的明文資料，不需要額外復原金鑰；請自行確認目標空間的存取權限。
 
@@ -166,8 +173,8 @@ NAI Launcher 面向經常使用 NovelAI 的圖像創作者。生成、改圖、P
 
 | 平台 | 目前狀態 | 說明 |
 | --- | --- | --- |
-| **Windows** | 主要開發與發佈平台 | 提供安裝版和可攜版，適合長時間創作、批次任務以及 Krita / ComfyUI 串接。 |
-| **macOS** | 可用，持續改善中 | 提供可攜版；若系統阻止開啟未公證應用程式，請依 macOS 安全提示手動允許。 |
+| **Windows** | 主要開發與發佈平台 | 提供安裝版和可攜版，適合長時間創作、批次任務、Krita / ComfyUI 串接以及 MCP 外部接入。 |
+| **macOS** | 可用，持續改善中 | 需要 macOS 12 或更新版本。提供可攜版；若系統阻止開啟未公證應用程式，請依 macOS 安全提示手動允許。 |
 | **Android** | Beta | 支援手機、橫向畫面、平板和大螢幕；生成、圖庫、詞庫、佇列、代理與設定都有觸控入口。 |
 | **Linux** | 暫無正式發行包 | 目前不提供正式下載包。 |
 
@@ -175,14 +182,14 @@ NAI Launcher 面向經常使用 NovelAI 的圖像創作者。生成、改圖、P
 
 ### 1. 下載對應平台的安裝包
 
-前往 [GitHub Releases](https://github.com/Aaalice233/Aaalice_NAI_Launcher/releases/latest)：
+前往 [GitHub Releases](https://github.com/ZipZipPipe/Aaalice_NAI_Launcher/releases/latest)：
 
 | 平台 | 檔案 | 用法 |
 | --- | --- | --- |
 | Windows | `NAI_Launcher_Windows_<version>_Setup.exe` | 推薦給大多數使用者的安裝版。 |
 | Windows | `NAI_Launcher_Windows_<version>_Portable.zip` | 解壓縮後直接執行的可攜版。 |
 | macOS | `NAI_Launcher_macOS_<version>_Portable.zip` | 解壓縮後開啟 `Aaalice NAI Launcher.app`。 |
-| Android | `NAI_Launcher_Android_<version>.apk` | 側載 APK；首次安裝可能需要允許目前的應用程式安裝未知來源軟體。 |
+| Android | `NAI_Launcher_Android_<version>_arm64-v8a.apk`<br>`NAI_Launcher_Android_<version>_armeabi-v7a.apk`<br>`NAI_Launcher_Android_<version>_x86_64.apk` | 依裝置架構側載 APK（大多數手機與平板選 `arm64-v8a`，32 位元舊裝置選 `armeabi-v7a`，桌面模擬器選 `x86_64`）；首次安裝可能需要允許目前的應用程式安裝未知來源軟體。 |
 
 每個 Release 都會提供 `checksums.txt`。如果下載後無法解壓縮或安裝，可以先核對檔案校驗值。
 
@@ -209,9 +216,9 @@ NAI Launcher 不會在專案自有伺服器上託管你的帳號或作品。只�
 | AI 翻譯或智慧代理 | 你設定的模型服務；對話、附加圖片和完成任務所需的工具結果可能產生服務費用。 |
 | 同步與備份 | 你選擇的 Google Drive、OneDrive、GitHub 或 WebDAV；只上傳明確勾選的內容。 |
 
-- NovelAI Token、OAuth access/refresh token、WebDAV 密碼和 GitHub Token 使用裝置安全儲存，不會寫入備份。
+- NovelAI Token、OAuth access/refresh token、WebDAV 密碼、GitHub Token 以及模型服務的 API Key 與 Vertex AI 憑據使用裝置安全儲存，不會寫入備份。
 - 本機 Prompt、圖庫索引、標籤、資源庫和代理工作階段預設儲存在本機。
-- 雲端備份以明文儲存所選資料；本機圖庫的圖像本體不上傳，相簿、分類和成員引用可作為輕量資料同步。
+- 雲端備份以明文儲存所選資料；本機圖庫的圖像本體不上傳，相簿、分類、成員引用和固定詞使用記錄可作為輕量資料同步。
 - 線上圖庫可能包含第三方內容；分級篩選不能取代使用者判斷。
 - WebDAV 的安全性取決於你設定的伺服器與傳輸方式，請保留重要資料的本機副本。
 

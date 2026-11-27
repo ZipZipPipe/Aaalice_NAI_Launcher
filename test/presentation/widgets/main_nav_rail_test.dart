@@ -7,12 +7,16 @@ import 'package:nai_launcher/core/constants/app_version.dart';
 import 'package:nai_launcher/core/storage/local_storage_service.dart';
 import 'package:nai_launcher/data/models/auth/saved_account.dart';
 import 'package:nai_launcher/l10n/app_localizations.dart';
-import 'package:nai_launcher/presentation/providers/account_manager_provider.dart';
-import 'package:nai_launcher/presentation/providers/auth_provider.dart';
+import 'package:nai_launcher/data/services/account_manager_provider.dart';
+import 'package:nai_launcher/data/services/auth_provider.dart';
 import 'package:nai_launcher/presentation/providers/queue_execution_provider.dart';
 import 'package:nai_launcher/presentation/providers/replication_queue_provider.dart';
+import 'package:nai_launcher/presentation/providers/theme_provider.dart';
 import 'package:nai_launcher/presentation/widgets/navigation/main_nav_rail.dart';
+import 'package:nai_launcher/presentation/widgets/settings/account_profile_sheet.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+
+import '../../helpers/adaptive_panel_expectations.dart';
 
 class _MockNavigationShell extends Mock implements StatefulNavigationShell {
   @override
@@ -44,6 +48,27 @@ class _SavedAccountManagerNotifier extends AccountManagerNotifier {
   );
 }
 
+final _signedInAccount = SavedAccount(
+  id: 'signed-in',
+  email: 'alice@example.com',
+  nickname: 'Signed Alice',
+  createdAt: DateTime(2026),
+);
+
+class _SignedInAuthNotifier extends AuthNotifier {
+  @override
+  AuthState build() => AuthState(
+    status: AuthStatus.authenticated,
+    accountId: _signedInAccount.id,
+  );
+}
+
+class _SignedInAccountManagerNotifier extends AccountManagerNotifier {
+  @override
+  AccountManagerState build() =>
+      AccountManagerState(accounts: [_signedInAccount]);
+}
+
 class _FakeQueueExecutionNotifier extends QueueExecutionNotifier {
   @override
   QueueExecutionState build() => const QueueExecutionState();
@@ -56,6 +81,10 @@ class _FakeReplicationQueueNotifier extends ReplicationQueueNotifier {
 
 class _FakeMainNavStorage extends LocalStorageService {
   bool isExpanded = false;
+  int themeIndex = 0;
+  String? themeMode;
+  int? lightThemeIndex;
+  int? darkThemeIndex;
 
   @override
   bool getMainNavRailExpanded() => isExpanded;
@@ -63,6 +92,38 @@ class _FakeMainNavStorage extends LocalStorageService {
   @override
   Future<void> setMainNavRailExpanded(bool expanded) async {
     isExpanded = expanded;
+  }
+
+  @override
+  int getThemeIndex() => themeIndex;
+
+  @override
+  Future<void> setThemeIndex(int index) async {
+    themeIndex = index;
+  }
+
+  @override
+  String? getThemeMode() => themeMode;
+
+  @override
+  Future<void> setThemeMode(String mode) async {
+    themeMode = mode;
+  }
+
+  @override
+  int? getLightThemeIndex() => lightThemeIndex;
+
+  @override
+  Future<void> setLightThemeIndex(int index) async {
+    lightThemeIndex = index;
+  }
+
+  @override
+  int? getDarkThemeIndex() => darkThemeIndex;
+
+  @override
+  Future<void> setDarkThemeIndex(int index) async {
+    darkThemeIndex = index;
   }
 }
 
@@ -203,7 +264,7 @@ void main() {
   });
 
   testWidgets('展开动画保持内容布局稳定且快速反向切换连续', (tester) async {
-    await tester.binding.setSurfaceSize(const Size(1000, 760));
+    await tester.binding.setSurfaceSize(const Size(1000, 860));
     addTearDown(() => tester.binding.setSurfaceSize(null));
 
     final navigationShell = _MockNavigationShell();
@@ -375,13 +436,18 @@ void main() {
     final surface = find.byKey(const ValueKey('adaptive-bottom-sheet'));
     expect(surface, findsOneWidget);
     expect(find.byKey(const Key('main-nav-add-account-form')), findsOneWidget);
+    expectPanelHeaderScrollsWithContent(tester);
     var rect = tester.getRect(surface);
     expect(rect.left, greaterThanOrEqualTo(12));
     expect(rect.top, greaterThanOrEqualTo(24));
     expect(rect.right, lessThanOrEqualTo(308));
     expect(rect.bottom, lessThanOrEqualTo(900));
     expect(
-      tester.widget<ListView>(find.byType(ListView).last).controller,
+      tester
+          .widget<ScrollView>(
+            find.byKey(const Key('main-nav-add-account-form')),
+          )
+          .controller,
       isNotNull,
     );
     expect(tester.takeException(), isNull);
@@ -473,6 +539,236 @@ void main() {
     expect(find.text('Saved Alice'), findsNothing);
     expect(find.text('登录'), findsNWidgets(2));
     expect(find.text('添加账号'), findsNothing);
+    expect(find.text('管理账号'), findsNothing);
+  });
+
+  testWidgets('已登录时账号菜单在添加与退出之间提供管理账号，并打开账号资料面板', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 760));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final navigationShell = _MockNavigationShell();
+    final storage = _FakeMainNavStorage()..isExpanded = true;
+    when(() => navigationShell.currentIndex).thenReturn(0);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          localStorageServiceProvider.overrideWith((ref) => storage),
+          authNotifierProvider.overrideWith(_SignedInAuthNotifier.new),
+          accountManagerNotifierProvider.overrideWith(
+            _SignedInAccountManagerNotifier.new,
+          ),
+          queueExecutionNotifierProvider.overrideWith(
+            _FakeQueueExecutionNotifier.new,
+          ),
+          replicationQueueNotifierProvider.overrideWith(
+            _FakeReplicationQueueNotifier.new,
+          ),
+        ],
+        child: MaterialApp(
+          locale: const Locale('zh'),
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          home: Scaffold(body: MainNavRail(navigationShell: navigationShell)),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('main-nav-account-menu-button')));
+    await tester.pumpAndSettle();
+
+    final manage = find.byKey(const Key('main-nav-manage-accounts'));
+    expect(manage, findsOneWidget);
+    expect(
+      tester.getCenter(manage).dy,
+      greaterThan(tester.getCenter(find.text('添加账号')).dy),
+    );
+    expect(
+      tester.getCenter(manage).dy,
+      lessThan(tester.getCenter(find.text('退出登录')).dy),
+    );
+
+    await tester.tap(manage);
+    await tester.pumpAndSettle();
+
+    final sheet = tester.widget<AccountProfileBottomSheet>(
+      find.byType(AccountProfileBottomSheet),
+    );
+    expect(sheet.account.id, _signedInAccount.id);
+    expect(
+      find.byKey(const Key('account-profile-remove-button')),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  const menuCases = [
+    (width: 360.0, locale: 'en', scale: 3.0, signedIn: true),
+    (width: 360.0, locale: 'ja', scale: 3.0, signedIn: true),
+    (width: 360.0, locale: 'en', scale: 3.0, signedIn: false),
+    (width: 1000.0, locale: 'en', scale: 1.0, signedIn: true),
+    (width: 1000.0, locale: 'ja', scale: 3.0, signedIn: false),
+  ];
+  for (final c in menuCases) {
+    final state = c.signedIn ? '已登录' : '未登录';
+    testWidgets(
+      '${c.width.toInt()} ${c.locale} ${c.scale}x $state账号菜单不溢出且每项可点',
+      (tester) async {
+        await tester.binding.setSurfaceSize(Size(c.width, 760));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+
+        final navigationShell = _MockNavigationShell();
+        when(() => navigationShell.currentIndex).thenReturn(0);
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              localStorageServiceProvider.overrideWith(
+                (ref) => _FakeMainNavStorage()..isExpanded = true,
+              ),
+              authNotifierProvider.overrideWith(
+                c.signedIn ? _SignedInAuthNotifier.new : _FakeAuthNotifier.new,
+              ),
+              accountManagerNotifierProvider.overrideWith(
+                c.signedIn
+                    ? _SignedInAccountManagerNotifier.new
+                    : _FakeAccountManagerNotifier.new,
+              ),
+              queueExecutionNotifierProvider.overrideWith(
+                _FakeQueueExecutionNotifier.new,
+              ),
+              replicationQueueNotifierProvider.overrideWith(
+                _FakeReplicationQueueNotifier.new,
+              ),
+            ],
+            child: MaterialApp(
+              locale: Locale(c.locale),
+              localizationsDelegates: AppLocalizations.localizationsDelegates,
+              supportedLocales: AppLocalizations.supportedLocales,
+              builder: (context, child) => MediaQuery(
+                data: MediaQuery.of(
+                  context,
+                ).copyWith(textScaler: TextScaler.linear(c.scale)),
+                child: child!,
+              ),
+              home: Scaffold(
+                body: MainNavRail(navigationShell: navigationShell),
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+
+        await tester.tap(find.byKey(const Key('main-nav-account-menu-button')));
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+
+        final l10n = lookupAppLocalizations(Locale(c.locale));
+        final labels = c.signedIn
+            ? [l10n.auth_addAccount, l10n.auth_manageAccounts, l10n.auth_logout]
+            : [l10n.auth_login];
+        for (final label in labels) {
+          final item = find.descendant(
+            of: find.byWidgetPredicate((widget) => widget is PopupMenuItem),
+            matching: find.text(label),
+          );
+          expect(item, findsOneWidget, reason: label);
+          await tester.ensureVisible(item);
+          await tester.pumpAndSettle();
+          expect(item.hitTestable(), findsOneWidget, reason: label);
+        }
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  testWidgets('左下角一键切换深浅模式并随系统亮度反向切换', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final navigationShell = _MockNavigationShell();
+    final storage = _FakeMainNavStorage()..isExpanded = true;
+    when(() => navigationShell.currentIndex).thenReturn(0);
+
+    final platformBrightness = ValueNotifier<Brightness>(Brightness.light);
+    addTearDown(platformBrightness.dispose);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          localStorageServiceProvider.overrideWith((ref) => storage),
+          authNotifierProvider.overrideWith(_FakeAuthNotifier.new),
+          accountManagerNotifierProvider.overrideWith(
+            _FakeAccountManagerNotifier.new,
+          ),
+          queueExecutionNotifierProvider.overrideWith(
+            _FakeQueueExecutionNotifier.new,
+          ),
+          replicationQueueNotifierProvider.overrideWith(
+            _FakeReplicationQueueNotifier.new,
+          ),
+        ],
+        child: MaterialApp(
+          locale: const Locale('zh'),
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          builder: (context, child) => ValueListenableBuilder<Brightness>(
+            valueListenable: platformBrightness,
+            builder: (context, brightness, _) => MediaQuery(
+              data: MediaQuery.of(context).copyWith(platformBrightness: brightness),
+              child: child!,
+            ),
+          ),
+          home: Scaffold(body: MainNavRail(navigationShell: navigationShell)),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final toggle = find.byKey(const Key('theme-mode-toggle-nav-item'));
+    expect(toggle, findsOneWidget);
+    expect(
+      tester.getCenter(toggle).dy,
+      greaterThan(tester.getCenter(find.byKey(const Key('queue-nav-item'))).dy),
+    );
+    expect(
+      tester.getCenter(toggle).dy,
+      lessThan(tester.getCenter(find.byKey(const Key('nav-branch-8'))).dy),
+    );
+    expect(find.byIcon(Icons.light_mode_outlined), findsOneWidget);
+    expect(find.text('切换浅色模式'), findsOneWidget);
+
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+
+    final container = ProviderScope.containerOf(tester.element(toggle));
+    expect(container.read(themeNotifierProvider).themeMode, ThemeMode.light);
+    expect(storage.themeMode, 'light');
+    expect(find.byIcon(Icons.dark_mode_outlined), findsOneWidget);
+    expect(find.text('切换深色模式'), findsOneWidget);
+
+    await container.read(themeNotifierProvider.notifier).setThemeMode(ThemeMode.system);
+    await tester.pumpAndSettle();
+    expect(find.byIcon(Icons.dark_mode_outlined), findsOneWidget);
+    expect(find.text('切换深色模式'), findsOneWidget);
+
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+    expect(container.read(themeNotifierProvider).themeMode, ThemeMode.dark);
+    expect(storage.themeMode, 'dark');
+
+    await container.read(themeNotifierProvider.notifier).setThemeMode(ThemeMode.system);
+    platformBrightness.value = Brightness.dark;
+    await tester.pumpAndSettle();
+    expect(find.byIcon(Icons.light_mode_outlined), findsOneWidget);
+    expect(find.text('切换浅色模式'), findsOneWidget);
+
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+    expect(container.read(themeNotifierProvider).themeMode, ThemeMode.light);
+    expect(storage.themeMode, 'light');
+    expect(tester.takeException(), isNull);
   });
 }
 

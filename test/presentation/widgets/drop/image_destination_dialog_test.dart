@@ -4,6 +4,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:nai_launcher/core/cache/box_fit_resize_image.dart';
 import 'package:nai_launcher/data/models/gallery/nai_image_metadata.dart';
 import 'package:nai_launcher/data/models/tag_library/tag_library_entry.dart';
 import 'package:nai_launcher/l10n/app_localizations.dart';
@@ -11,6 +12,8 @@ import 'package:nai_launcher/presentation/providers/queue_execution_provider.dar
 import 'package:nai_launcher/presentation/providers/replication_queue_provider.dart';
 import 'package:nai_launcher/presentation/providers/tag_library_page_provider.dart';
 import 'package:nai_launcher/presentation/widgets/drop/image_destination_dialog.dart';
+
+import '../../../helpers/adaptive_panel_expectations.dart';
 
 void main() {
   testWidgets('prompt surfaces do not inherit a second theme fill', (
@@ -60,6 +63,30 @@ void main() {
     }
     expect(tester.takeException(), isNull);
   });
+
+  for (final metadata in const [null, NaiImageMetadata(prompt: 'positive')]) {
+    testWidgets(
+      'preview decodes at display size (metadata: ${metadata != null})',
+      (tester) async {
+        await _openMetadataDialog(tester, metadata: metadata);
+
+        final previews = tester.widgetList<Image>(
+          find.descendant(
+            of: find.byType(ImageDestinationDialog),
+            matching: find.byType(Image),
+          ),
+        );
+        expect(previews, isNotEmpty);
+        for (final preview in previews) {
+          final provider = preview.image;
+          expect(provider, isA<BoxFitResizeImage>());
+          provider as BoxFitResizeImage;
+          expect(provider.width, allOf(isNotNull, lessThanOrEqualTo(4096)));
+          expect(provider.height, allOf(isNotNull, lessThanOrEqualTo(4096)));
+        }
+      },
+    );
+  }
 
   testWidgets('shows reverse prompt before image-to-image destination', (
     tester,
@@ -331,6 +358,7 @@ void main() {
           find.byKey(const ValueKey('metadata-error-details-text')),
           findsOneWidget,
         );
+        expectPanelHeaderScrollsWithContent(tester);
         final detailsScrollable = find
             .descendant(
               of: find.byKey(const ValueKey('metadata-error-details-scroll')),

@@ -1,12 +1,12 @@
 import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../constants/storage_keys.dart';
 import '../utils/app_logger.dart';
+import 'secure_storage_unavailable_exception.dart';
 
 part 'secure_storage_service.g.dart';
 
@@ -133,6 +133,22 @@ class SecureStorageService {
       saveTokenExpiry(expiry),
       saveUserEmail(email),
     ]);
+  }
+
+  /// 仅当会话仍停在 [expectedToken] 时写入新的认证信息，返回是否已写入
+  Future<bool> replaceAuthIfCurrent({
+    required String expectedToken,
+    required String accessToken,
+    required DateTime expiry,
+    required String email,
+  }) async {
+    // 比对与写入内存缓存之间不能有 await，否则退出登录或切换账号会插进来
+    final current = _memoryCache[StorageKeys.accessToken];
+    if (current == null || current != _normalizeToken(expectedToken)) {
+      return false;
+    }
+    await saveAuth(accessToken: accessToken, expiry: expiry, email: email);
+    return true;
   }
 
   /// 清除所有认证信息
@@ -448,6 +464,51 @@ class SecureStorageService {
       _memoryCache.remove(StorageKeys.agentWebAccessExaApiKey);
     } catch (e) {
       AppLogger.w('Failed to delete Exa API key: $e', 'SecureStorage');
+      rethrow;
+    }
+  }
+
+  // ==================== MCP 服务器令牌 ====================
+
+  Future<void> saveMcpServerToken(String token) async {
+    final value = token.trim();
+    if (value.isEmpty) {
+      await deleteMcpServerToken();
+      return;
+    }
+    try {
+      await _storage.write(key: StorageKeys.mcpServerToken, value: value);
+      _memoryCache[StorageKeys.mcpServerToken] = value;
+    } catch (e) {
+      AppLogger.w('Failed to save MCP server token: $e', 'SecureStorage');
+      rethrow;
+    }
+  }
+
+  Future<String?> getMcpServerToken() async {
+    final cached = _memoryCache[StorageKeys.mcpServerToken];
+    if (cached != null) return cached;
+    try {
+      final value = await _storage.read(key: StorageKeys.mcpServerToken);
+      if (value != null) {
+        _memoryCache[StorageKeys.mcpServerToken] = value;
+      }
+      return value;
+    } on SecureStorageUnavailableException {
+      // 读不到不等于没有：调用方拿到 null 会补发新令牌并作废已配置的客户端
+      rethrow;
+    } catch (e) {
+      AppLogger.w('Failed to read MCP server token: $e', 'SecureStorage');
+      return null;
+    }
+  }
+
+  Future<void> deleteMcpServerToken() async {
+    try {
+      await _storage.delete(key: StorageKeys.mcpServerToken);
+      _memoryCache.remove(StorageKeys.mcpServerToken);
+    } catch (e) {
+      AppLogger.w('Failed to delete MCP server token: $e', 'SecureStorage');
       rethrow;
     }
   }

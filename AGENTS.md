@@ -20,6 +20,7 @@ Aaalice_NAI_Launcher/
 │   ├── data/               # API 数据源、业务模型、仓库与领域服务
 │   ├── presentation/       # 页面、组件、Riverpod providers、主题与路由
 │   └── l10n/               # ARB 源文案及 Flutter 生成的本地化代码
+├── bin/                    # 随包发布的纯 Dart CLI（MCP stdio 代理）
 ├── assets/                 # 图片、翻译、数据文件与随包 SQLite 数据库
 ├── fonts/                  # 应用字体
 ├── test/                   # 与 lib 分层对应的单元测试和 widget tests
@@ -39,7 +40,7 @@ Aaalice_NAI_Launcher/
 
 ## 构建、测试与开发命令
 
-项目使用 Flutter `>=3.35.0`、Dart `>=3.10.7`，当前 CI 固定 Flutter `3.44.2`。拉取仓库后必须安装 Git LFS，并获取唯一内置数据库 `assets/databases/tag_catalog.db`。Windows 构建还需要 Visual Studio 2022 的 Desktop development with C++、已加入 `PATH` 的 NuGet CLI；macOS 构建需要完整 Xcode 与 CocoaPods；Android 构建需要 JDK 17 和 Android SDK，最低运行版本为 Android 7.0（API 24）。
+项目使用 Flutter `>=3.47.0`、Dart `>=3.10.7`，当前 CI 固定 Flutter `3.47.5`。拉取仓库后必须安装 Git LFS，并获取唯一内置数据库 `assets/databases/tag_catalog.db`。Windows 构建还需要 Visual Studio 2022 的 Desktop development with C++、已加入 `PATH` 的 NuGet CLI；macOS 构建需要完整 Xcode 与 CocoaPods，最低运行版本为 macOS 12；Android 构建需要 JDK 17 和 Android SDK，最低运行版本为 Android 7.0（API 24）。Windows、macOS 与 Android（API 29+ 且支持 Vulkan）使用 Impeller 渲染，排查渲染差异时用 `flutter run --no-enable-impeller` 对照 Skia。
 
 `pubspec.lock` 中的 hosted package URL 必须保持为 `https://pub.dev`。禁止在用户级或系统级设置 `PUB_HOSTED_URL` 或 `FLUTTER_STORAGE_BASE_URL` 镜像，因为 `flutter pub get` 会据此重写 lockfile 或从非官方地址下载 SDK 资源。项目开发脚本与 GitHub Actions 固定使用官方源，提交、构建和发布前运行 `scripts/verify_flutter_sources.ps1`；发现镜像环境变量或非官方 lockfile URL 时必须失败，不得提交或发布。
 
@@ -68,7 +69,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .agents/skills/aaalice-runtime-ver
 
 Windows release 产物位于 `build/windows/x64/runner/Release/`。macOS 使用 `flutter build macos --release`，产物位于 `build/macos/Build/Products/Release/Aaalice NAI Launcher.app`；本地 Keychain 反复授权时使用 `scripts/create_macos_dev_cert.sh` 与 `scripts/dev_run_macos_signed.sh debug`。Android 通用 APK 位于 `build/app/outputs/flutter-apk/app-release.apk`；推送 `v*` Tag 时由 `.github/workflows/release.yml` 构建并发布正式签名 APK，`.github/workflows/android-build.yml` 仅用于按需手动构建可安装 APK 与 SHA-256 Actions artifact。
 
-项目热重载与按需运行验收由 `.agents/skills/` 中的三个项目 skill 管理：`aaalice-dev-sessions` 负责让 Codex 创建、复用和关闭唯一的 `PC热重载` / `安卓热重载` 独立 PowerShell 窗口；`aaalice-hot-reload` 负责判定并触发 `r`、`R` 或完整重建，并读取两端控制台验证结果；`aaalice-runtime-verify` 在用户要求自动化验收时自动启动或复用所需会话，完成真实 UI 操作、逐张截图检查与增量日志验证。不得依赖外部终端编排器，不得另开第二个 `flutter run`、`flutter attach` 或新的 Codex task。
+项目热重载与按需运行验收由 `.agents/skills/` 中的三个项目 skill 管理：`aaalice-dev-sessions` 负责让 Agent 创建、复用和关闭唯一的 `PC热重载` / `安卓热重载` 独立 PowerShell 窗口；`aaalice-hot-reload` 负责判定并触发 `r`、`R` 或完整重建，并读取两端控制台验证结果；`aaalice-runtime-verify` 在用户要求自动化验收时自动启动或复用所需会话，完成真实 UI 操作、逐张截图检查与增量日志验证。不得依赖外部终端编排器，不得另开第二个 `flutter run`、`flutter attach` 或额外的子代理重复启动应用。
 
 `build_runner` 不是常规测试或纯 Dart/UI 改动的默认验证步骤。只有改动了 Riverpod/Freezed/JSON/Drift 等生成输入，或开发 Runner 预检明确报告生成文件缺失/过期时才运行；针对性测试直接运行相关测试文件，不得为此先扫描全仓库生成代码。用户要求立即启动热重载时先执行会话状态检查和 Runner 预检，不得先跑测试或生成器；若预检阻塞且必须全量生成，应明确说明这是一次性环境准备及预计耗时，让命令完整结束后立即继续启动，不得称其为“最小验证”或反复中断重跑。生成命令中断后必须检查并恢复被删除但未重新生成的已有输出。
 

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import '../../widgets/common/image_card_batch_scope.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -8,6 +10,8 @@ import '../../../core/cache/cancellable_gallery_image_loader.dart';
 import '../../../core/cache/gallery_image_request.dart';
 import '../../../core/cache/online_gallery_prefetch_coordinator.dart';
 import '../../../core/network/critical_network_activity.dart';
+import '../../../core/shortcuts/default_shortcuts.dart';
+import '../../../core/utils/app_lifecycle_visibility.dart';
 import '../../../core/utils/app_logger.dart';
 import '../../../core/utils/localization_extension.dart';
 import '../../../data/services/danbooru_auth_service.dart';
@@ -20,9 +24,11 @@ import 'online_gallery_screen_commands.dart';
 import 'online_gallery_content.dart';
 import 'online_gallery_detail_launcher.dart';
 import 'online_gallery_pagination.dart';
+import 'online_gallery_refresh_action.dart';
 import 'online_gallery_screen_controller.dart';
 import 'online_gallery_scroll_prefetch_coordinator.dart';
 import 'online_gallery_selection_actions.dart';
+import 'online_gallery_shortcuts.dart';
 import 'online_gallery_view_model.dart';
 import 'widgets/online_gallery_toolbar/online_gallery_toolbar_bindings.dart';
 import 'widgets/online_gallery_toolbar/online_gallery_toolbar_feature.dart';
@@ -46,7 +52,7 @@ class _OnlineGalleryScreenState extends ConsumerState<OnlineGalleryScreen>
   late final OnlineGalleryScreenCommands _commands;
   late final ProviderSubscription<OnlineGalleryState> _gallerySubscription;
   late final OnlineGalleryNotifier _galleryNotifier;
-  bool _appForeground = true;
+  bool _appVisible = true;
   bool _backgroundNetworkSyncScheduled = false;
   bool _disposed = false;
   int _pageJumpRevision = 0;
@@ -63,7 +69,7 @@ class _OnlineGalleryScreenState extends ConsumerState<OnlineGalleryScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     final lifecycleState = WidgetsBinding.instance.lifecycleState;
-    _appForeground = _isForegroundLifecycleState(lifecycleState);
+    _appVisible = AppLifecycleVisibility.isVisible(lifecycleState);
     _galleryNotifier = ref.read(onlineGalleryNotifierProvider.notifier);
     _imageLoader = CancellableGalleryImageLoader();
     _controller = OnlineGalleryScreenController(
@@ -74,7 +80,7 @@ class _OnlineGalleryScreenState extends ConsumerState<OnlineGalleryScreen>
     CriticalNetworkActivityCoordinator.instance.addListener(
       _handleCriticalNetworkActivity,
     );
-    _controller.prefetchCoordinator.setAppForeground(_appForeground);
+    _controller.prefetchCoordinator.setAppVisible(_appVisible);
     _handleCriticalNetworkActivity();
     _detailLauncher = OnlineGalleryDetailLauncher(
       context: context,
@@ -94,6 +100,10 @@ class _OnlineGalleryScreenState extends ConsumerState<OnlineGalleryScreen>
     _commands = OnlineGalleryScreenCommands(
       detailLauncher: _detailLauncher,
       selectionActions: _selectionActions,
+      refreshAction: OnlineGalleryRefreshAction(
+        ref: ref,
+        controller: _controller,
+      ),
     );
     _gallerySubscription = ref.listenManual<OnlineGalleryState>(
       onlineGalleryNotifierProvider,
@@ -193,17 +203,17 @@ class _OnlineGalleryScreenState extends ConsumerState<OnlineGalleryScreen>
     if (_disposed) return;
     _galleryNotifier.setBackgroundNetworkPaused(
       !_controller.branchVisible ||
-          !_appForeground ||
+          !_appVisible ||
           CriticalNetworkActivityCoordinator.instance.isActive,
     );
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    _appForeground = _isForegroundLifecycleState(state);
-    _controller.prefetchCoordinator.setAppForeground(_appForeground);
+    _appVisible = AppLifecycleVisibility.isVisible(state);
+    _controller.prefetchCoordinator.setAppVisible(_appVisible);
     _syncBackgroundNetworkActivity();
-    if (_appForeground && _controller.branchVisible) {
+    if (_appVisible && _controller.branchVisible) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted || !_controller.branchVisible) return;
         _scrollCoordinator.scheduleVisiblePrefetch();
@@ -213,11 +223,6 @@ class _OnlineGalleryScreenState extends ConsumerState<OnlineGalleryScreen>
       });
     }
   }
-
-  bool _isForegroundLifecycleState(AppLifecycleState? state) =>
-      state == null ||
-      state == AppLifecycleState.resumed ||
-      state == AppLifecycleState.inactive;
 
   Future<void> _goToPage(int page) async {
     final revision = ++_pageJumpRevision;
@@ -270,6 +275,25 @@ class _OnlineGalleryScreenState extends ConsumerState<OnlineGalleryScreen>
         );
       }
     }
+  }
+
+  late final Map<String, VoidCallback> _shortcuts = {
+    ShortcutIds.previousPage: _goToPreviousPage,
+    ShortcutIds.nextPage: _goToNextPage,
+    ShortcutIds.refreshGallery: _commands.refresh,
+    ShortcutIds.focusSearch: () =>
+        _controller.focusSearch(ref.read(onlineGalleryNotifierProvider)),
+    ShortcutIds.enterSelectionMode: () => _selectionNotifier.enter(),
+  };
+
+  void _goToPreviousPage() {
+    final state = ref.read(onlineGalleryNotifierProvider);
+    if (state.canGoToPreviousPage) unawaited(_goToPage(state.page - 1));
+  }
+
+  void _goToNextPage() {
+    final state = ref.read(onlineGalleryNotifierProvider);
+    if (state.canGoToNextPage) unawaited(_goToPage(state.page + 1));
   }
 
   void _handleGalleryStateChanged(OnlineGalleryState state) {
@@ -425,42 +449,46 @@ class _OnlineGalleryScreenState extends ConsumerState<OnlineGalleryScreen>
             _selectionNotifier.exit();
           }
         },
-        child: Scaffold(
-          backgroundColor: theme.scaffoldBackgroundColor,
-          body: Column(
-            children: [
-              OnlineGalleryToolbarFeature(
-                controller: _controller,
-                data: OnlineGalleryToolbarViewData(
-                  gallery: state,
-                  danbooruAuth: authState,
-                  gelbooruAuth: gelbooruAuthState,
-                  selection: selectionState,
+        child: OnlineGalleryShortcuts(
+          posts: state.posts,
+          shortcuts: _shortcuts,
+          child: Scaffold(
+            backgroundColor: theme.scaffoldBackgroundColor,
+            body: Column(
+              children: [
+                OnlineGalleryToolbarFeature(
+                  controller: _controller,
+                  data: OnlineGalleryToolbarViewData(
+                    gallery: state,
+                    danbooruAuth: authState,
+                    gelbooruAuth: gelbooruAuthState,
+                    selection: selectionState,
+                  ),
+                  commands: OnlineGalleryToolbarCommands(
+                    gallery: _galleryNotifier,
+                    selection: _selectionNotifier,
+                    actions: _commands,
+                    saveScrollOffset: _scrollCoordinator.saveScrollOffset,
+                  ),
                 ),
-                commands: OnlineGalleryToolbarCommands(
-                  gallery: _galleryNotifier,
-                  selection: _selectionNotifier,
-                  actions: _commands,
-                  saveScrollOffset: _scrollCoordinator.saveScrollOffset,
+                // 图片网格
+                Expanded(
+                  child: OnlineGalleryContent(
+                    state: state,
+                    controller: _controller,
+                    scrollCoordinator: _scrollCoordinator,
+                    commands: _commands,
+                  ),
                 ),
-              ),
-              // 图片网格
-              Expanded(
-                child: OnlineGalleryContent(
+                // 底部分页条
+                OnlineGalleryPagination(
                   state: state,
                   controller: _controller,
-                  scrollCoordinator: _scrollCoordinator,
-                  commands: _commands,
+                  notifier: _galleryNotifier,
+                  onGoToPage: _goToPage,
                 ),
-              ),
-              // 底部分页条
-              OnlineGalleryPagination(
-                state: state,
-                controller: _controller,
-                notifier: _galleryNotifier,
-                onGoToPage: _goToPage,
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

@@ -1,124 +1,41 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
-import 'dart:typed_data';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/agent/agent_types.dart';
-import '../../../core/agent/harness/tools/image.dart';
 import '../../../core/utils/app_logger.dart';
-import '../../../core/utils/display_thumbnail_utils.dart';
-import '../../../core/utils/nai_resolution_adapter.dart';
-import '../../../data/models/image/image_params.dart';
+import '../../../core/utils/focused_inpaint_utils.dart';
 import '../../providers/image_generation_provider.dart';
+import 'defined_agent_tool.dart';
 import 'generation_image_read_contract.dart';
 import 'generation_preparation_runtime.dart';
-import 'generation_tool_results.dart';
-import 'generation_workspace_path_resolver.dart';
+import 'generation_save_path_exporter.dart';
 
 class GenerationExecutionService {
   GenerationExecutionService(
     this._ref, {
-    required GenerationWorkspacePathResolver pathResolver,
     required GenerationImageReadContract imageReadContract,
-    required int maxGenerateCount,
-  }) : _pathResolver = pathResolver,
-       _imageReadContract = imageReadContract,
-       _maxGenerateCount = maxGenerateCount;
+    required GenerationSavePathExporter exporter,
+  }) : _imageReadContract = imageReadContract,
+       _exporter = exporter;
   final Ref _ref;
-  final GenerationWorkspacePathResolver _pathResolver;
   final GenerationImageReadContract _imageReadContract;
-  final int _maxGenerateCount;
+  final GenerationSavePathExporter _exporter;
+
+  // preparation 不含聚焦参数，沿用生成页状态会套上另一张图残留的选区。
+  static const _unfocused = GenerationFocusedSnapshot(
+    enabled: false,
+    minimumContextMegaPixels: FocusedInpaintUtils.defaultContextPadding,
+  );
+
   Future<AgentToolResult> generate(
     String toolCallId,
     Map<String, dynamic> args, [
     AbortSignal? signal,
     AgentToolUpdateCallback? onUpdate,
   ]) async {
+    // 确认时报给调用方的请求就是要发出的请求，原始参数里没有 prompt_refs 等解析结果。
     final prepared = args['_prepared_generation'] as GenerationPreparation;
-    final prompt = (args['prompt'] as String?)?.trim() ?? '';
-    if (prompt.isEmpty) {
-      return generationErrorResult('Parameter "prompt" is required.');
-    }
-
-    final requestedCount = (args['count'] as num?)?.toInt() ?? 1;
-    if (requestedCount < 1 || requestedCount > _maxGenerateCount) {
-      return generationErrorResult(
-        'Parameter "count" must be between 1 and $_maxGenerateCount.',
-      );
-    }
-    final count = requestedCount;
-    final base = prepared.params;
-    final requestedSeed = (args['seed'] as num?)?.toInt() ?? -1;
-    final width = (args['width'] as num?)?.toInt() ?? base.width;
-    final height = (args['height'] as num?)?.toInt() ?? base.height;
-    final resolutionIssue = NaiResolutionAdapter.validateGenerationResolution(
-      width,
-      height,
-    );
-    if (resolutionIssue != null) {
-      return generationErrorResult(
-        'Invalid generation resolution ${width}x$height. Width and height '
-        'must be multiples of 64, each side must be between 64 and '
-        '${NaiResolutionAdapter.generationMaxSide}, and total pixels must '
-        'not exceed ${NaiResolutionAdapter.officialMaxPixels}. Nearest valid '
-        'size: ${resolutionIssue.suggestedWidth}x'
-        '${resolutionIssue.suggestedHeight}.',
-      );
-    }
-    final negativePrompt =
-        (args['negative_prompt'] as String?)?.trim() ?? base.negativePrompt;
-
-    // img2img / inpaint：提供 source_image 才启用；未提供时强制纯文生图，
-    // 不受生成页当前 img2img 状态影响（请求构建器按 action 门控源图）。
-    Uint8List? sourceBytes = prepared.sourceImage;
-    Uint8List? maskBytes = prepared.maskImage;
-    var action = prepared.params.action;
-    final sourceImagePath = (args['source_image'] as String?)?.trim() ?? '';
-    if (sourceImagePath.isNotEmpty) {
-      String resolvedSourcePath;
-      try {
-        resolvedSourcePath = await _pathResolver.resolveLocalImagePath(
-          sourceImagePath,
-        );
-      } on Object {
-        return generationErrorResult('Source image path is not permitted.');
-      }
-      final sourceFile = File(resolvedSourcePath);
-      if (!sourceFile.existsSync()) {
-        return generationErrorResult('Source image not found.');
-      }
-      sourceBytes = await sourceFile.readAsBytes();
-      final maskImagePath = (args['mask_image'] as String?)?.trim() ?? '';
-      if (maskImagePath.isNotEmpty) {
-        String resolvedMaskPath;
-        try {
-          resolvedMaskPath = await _pathResolver.resolveLocalImagePath(
-            maskImagePath,
-          );
-        } on Object {
-          return generationErrorResult('Mask image path is not permitted.');
-        }
-        final maskFile = File(resolvedMaskPath);
-        if (!maskFile.existsSync()) {
-          return generationErrorResult('Mask image not found.');
-        }
-        maskBytes = await maskFile.readAsBytes();
-        action = ImageGenerationAction.infill;
-      } else {
-        action = ImageGenerationAction.img2img;
-      }
-    }
-    double? clamp01Ratio(String key) {
-      final raw = (args[key] as num?)?.toDouble();
-      if (raw == null) {
-        return null;
-      }
-      return raw.clamp(0.0, 0.99);
-    }
-
-    final strength = clamp01Ratio('strength');
-    final noise = clamp01Ratio('noise');
-    final inpaintStrength = clamp01Ratio('inpaint_strength');
+    final params = prepared.params;
+    final count = prepared.count;
 
     // 用户停止时应连正在进行的 NAI 生成一起取消。
     void cancelRunningGeneration() {
@@ -130,16 +47,17 @@ class GenerationExecutionService {
     }
 
     // 生成页忙时按顺序排队等待（默认行为）；空闲则立即通过。
-    onUpdate?.call(generationProgressResult('Checking generation page...'));
+    onUpdate?.call(agentToolTextResult('Checking generation page...'));
     final pageReady = await _waitIfBusy(
       timeout: const Duration(seconds: 300),
       signal: signal,
       onAborted: cancelRunningGeneration,
     );
     if (!pageReady) {
-      return generationErrorResult(
+      return agentToolError(
+        'generation_page_busy',
         'Another generation is still running after 300s. Check '
-        'get_generation_status.',
+            'get_generation_status.',
       );
     }
 
@@ -147,7 +65,7 @@ class GenerationExecutionService {
     final cooldown = _ref.read(generationCooldownProvider);
     if (cooldown.isActive) {
       onUpdate?.call(
-        generationProgressResult(
+        agentToolTextResult(
           'Waiting for generation cooldown (${cooldown.remainingSeconds}s)...',
         ),
       );
@@ -156,27 +74,7 @@ class GenerationExecutionService {
     }
 
     try {
-      onUpdate?.call(generationProgressResult('Generating $count image(s)...'));
-      final params = base.copyWith(
-        prompt: prompt,
-        negativePrompt: negativePrompt,
-        width: width,
-        height: height,
-        // count > 1 时应用原生管线会给每批随机种子（与生成页一致）。
-        seed: requestedSeed,
-        nSamples: count,
-        action: action,
-        sourceImage: sourceBytes,
-        maskImage: maskBytes,
-        strength: strength ?? base.strength,
-        noise: noise ?? base.noise,
-        inpaintStrength: inpaintStrength ?? base.inpaintStrength,
-      );
-      final previousImageIds = _ref
-          .read(imageGenerationNotifierProvider)
-          .currentImages
-          .map((image) => image.id)
-          .toList(growable: false);
+      onUpdate?.call(agentToolTextResult('Generating $count image(s)...'));
       var lastProgress = -1;
       final invocation = _ref
           .read(imageGenerationNotifierProvider.notifier)
@@ -184,8 +82,10 @@ class GenerationExecutionService {
             params,
             batchSizeOverride: prepared.batchSize,
             preserveCharacterSnapshot: true,
+            focusedOverride: _unfocused,
+            bypassRandomPrompt: true,
           );
-      final finished = await _waitForCompletion(
+      final outcome = await _waitForCompletion(
         invocation: invocation,
         expectedImages: count,
         signal: signal,
@@ -200,7 +100,7 @@ class GenerationExecutionService {
           if (percent != lastProgress) {
             lastProgress = percent;
             onUpdate?.call(
-              generationProgressResult(
+              agentToolTextResult(
                 'Generating image '
                 '${state.currentImage}/${state.totalImages}... $percent%',
               ),
@@ -208,32 +108,22 @@ class GenerationExecutionService {
           }
         },
       );
-      if (!finished) {
-        return generationErrorResult(
+      if (outcome == null) {
+        return agentToolError(
+          'generation_interrupted',
           'Generation timed out or was interrupted. Check '
-          'get_generation_status for the latest state.',
+              'get_generation_status for the latest state.',
         );
       }
-      final state = _ref.read(imageGenerationNotifierProvider);
-      if (state.status == GenerationStatus.error) {
-        return generationErrorResult(
-          'Generation failed: ${state.errorMessage ?? 'unknown error'}.',
+      if (_unsuccessfulResult(outcome) case final error?) return error;
+      if (_ref.read(imageGenerationNotifierProvider).currentImages.isEmpty) {
+        return agentToolError(
+          'generation_interrupted',
+          'Another generation replaced the results before they were read. '
+              'Check get_recent_images.',
         );
       }
-      if (state.status == GenerationStatus.cancelled) {
-        return generationErrorResult('Generation was cancelled.');
-      }
-      final currentImageIds = state.currentImages
-          .map((image) => image.id)
-          .toList(growable: false);
-      if (state.status != GenerationStatus.completed ||
-          currentImageIds.isEmpty ||
-          _sameIds(currentImageIds, previousImageIds)) {
-        return generationErrorResult(
-          'Generation was not started (authentication may be required).',
-        );
-      }
-      onUpdate?.call(generationProgressResult('Saving images...'));
+      onUpdate?.call(agentToolTextResult('Saving images...'));
       // 等待自动保存回填 filePath（保存是异步的，随张数放宽时限）。
       final saveDeadline = DateTime.now().add(
         Duration(seconds: 30 + 10 * count),
@@ -248,52 +138,88 @@ class GenerationExecutionService {
         }
         await Future<void>.delayed(const Duration(milliseconds: 250));
       }
-      final report = <Map<String, dynamic>>[];
-      final savedFiles = <String>[];
-      for (final image
-          in _ref.read(imageGenerationNotifierProvider).currentImages) {
-        final descriptor = await _imageReadContract.describe(image);
-        if (descriptor.saved) {
-          if (image.filePath case final path?) savedFiles.add(path);
-        }
-        report.add(descriptor.toModelJson());
-      }
-      final content = <ToolResultContent>[
-        ToolResultTextContent(jsonEncode({'ok': true, 'images': report})),
-      ];
-      for (final image
-          in _ref.read(imageGenerationNotifierProvider).currentImages) {
-        final thumbnail = await DisplayThumbnailUtils.normalize(image.bytes);
-        final mime = thumbnail == null
-            ? null
-            : detectSupportedImageMimeType(thumbnail);
-        if (thumbnail != null && mime != null) {
-          content.add(
-            ToolResultImageContent(
-              ImageContent(
-                source: ImageSource.base64(
-                  mimeType: mime,
-                  base64Data: base64Encode(thumbnail),
-                ),
-              ),
-            ),
-          );
-        }
-      }
-      return AgentToolResult(
-        content: content,
-        details: <String, dynamic>{
-          'images': report,
-          if (savedFiles.isNotEmpty) ...{
-            'files': savedFiles,
-            'preferFileImages': true,
-          },
-        },
+      final exports = await _exportToSavePath(prepared, signal, onUpdate);
+      return await _imageReadContract.buildResult(
+        _ref.read(imageGenerationNotifierProvider).currentImages,
+        exports: exports,
       );
     } on Object catch (error) {
       AppLogger.w('Agent generation failed: $error', 'AgentChat');
-      return generationErrorResult('Generation failed to start.');
+      return agentToolError('generation_failed', 'Generation failed to start.');
     }
+  }
+
+  /// 只按这次调用的结局判断，状态里可能还留着上一次生成的终态与结果。
+  AgentToolResult? _unsuccessfulResult(GenerationOutcome outcome) {
+    return switch (outcome) {
+      GenerationRunCompleted() => null,
+      GenerationBusy() => agentToolError(
+        'generation_page_busy',
+        'Another generation started first. Check get_generation_status.',
+      ),
+      GenerationAuthRequired() => agentToolError(
+        'generation_not_started',
+        'Generation was not started: authentication is required.',
+      ),
+      GenerationCooldownActive() => agentToolError(
+        'generation_not_started',
+        'Generation was not started: the generation interval has not '
+            'elapsed.',
+      ),
+      GenerationRejected(:final errorCode) => agentToolError(
+        'generation_failed',
+        'Generation failed: $errorCode.',
+      ),
+      GenerationRunFailed(:final errorMessage) => agentToolError(
+        'generation_failed',
+        'Generation failed: $errorMessage.',
+      ),
+      GenerationCancelledBeforeStart() ||
+      GenerationSuperseded() ||
+      GenerationRunCancelled() => agentToolError(
+        'generation_cancelled',
+        'Generation was cancelled.',
+      ),
+      GenerationDisposed() => agentToolError(
+        'generation_interrupted',
+        'Generation was interrupted. Check get_generation_status.',
+      ),
+    };
+  }
+
+  /// 按 preparation 选定的落盘来源逐张处理；失败只记在该图的结果里。
+  Future<Map<String, GeneratedImageExportOutcome>> _exportToSavePath(
+    GenerationPreparation prepared,
+    AbortSignal? signal,
+    AgentToolUpdateCallback? onUpdate,
+  ) async {
+    final source = prepared.savePathSource;
+    if (source == null) return const <String, GeneratedImageExportOutcome>{};
+    throwIfAborted(signal);
+    onUpdate?.call(
+      agentToolTextResult(
+        source == GenerationSavePathSource.galleryOriginal
+            ? 'Resolving saved images...'
+            : 'Exporting images...',
+      ),
+    );
+    final images = _ref.read(imageGenerationNotifierProvider).currentImages;
+    final outcomes = <String, GeneratedImageExportOutcome>{};
+    for (var index = 0; index < images.length; index++) {
+      final image = images[index];
+      outcomes[image.id] = await _exporter.export(
+        source: source,
+        id: image.id,
+        template: prepared.savePath,
+        originalPath: image.filePath,
+        index: index + 1,
+        total: images.length,
+        seed: image.metadata?.seed,
+        bytes: image.bytes,
+        label: '${image.id}.png',
+      );
+    }
+    return outcomes;
   }
 
   /// 排队等待：生成页忙时等其结束；空闲立即通过（不空转）。
@@ -321,19 +247,23 @@ class GenerationExecutionService {
   ///
   /// 基础超时随 [expectedImages] 放宽；生成推进中（进度签名变化）自动
   /// 续期，因此大批量不会因固定时限被误判超时。
-  Future<bool> _waitForCompletion({
-    required Future<void> invocation,
+  Future<GenerationOutcome?> _waitForCompletion({
+    required Future<GenerationOutcome> invocation,
     required int expectedImages,
     required AbortSignal? signal,
     required void Function()? onAborted,
     required void Function()? onTick,
   }) async {
+    GenerationOutcome? outcome;
     var invocationCompleted = false;
     Object? invocationError;
     StackTrace? invocationStackTrace;
     unawaited(
       invocation.then<void>(
-        (_) => invocationCompleted = true,
+        (value) {
+          outcome = value;
+          invocationCompleted = true;
+        },
         onError: (Object error, StackTrace stackTrace) {
           invocationError = error;
           invocationStackTrace = stackTrace;
@@ -360,7 +290,7 @@ class GenerationExecutionService {
         if (invocationError != null) {
           Error.throwWithStackTrace(invocationError!, invocationStackTrace!);
         }
-        return true;
+        return outcome;
       }
       final state = _ref.read(imageGenerationNotifierProvider);
       final status = state.status;
@@ -376,15 +306,7 @@ class GenerationExecutionService {
         continue;
       }
     }
-    return false;
-  }
-
-  bool _sameIds(List<String> left, List<String> right) {
-    if (left.length != right.length) return false;
-    for (var index = 0; index < left.length; index++) {
-      if (left[index] != right[index]) return false;
-    }
-    return true;
+    return null;
   }
 
   // -------------------------------------------------------------------------

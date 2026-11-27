@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/misc.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nai_launcher/core/agent/harness/session/session_jsonl.dart';
 import 'package:nai_launcher/core/agent/llm_types.dart';
@@ -11,21 +12,18 @@ import 'package:nai_launcher/data/models/agent/agent_settings.dart';
 import 'package:nai_launcher/presentation/agent_chat/providers/agent_chat_notifier.dart';
 import 'package:nai_launcher/presentation/agent_settings/providers/agent_settings_provider.dart';
 import 'package:nai_launcher/presentation/prompt_assistant/models/agent_protocol.dart';
-import 'package:nai_launcher/presentation/prompt_assistant/models/prompt_assistant_models.dart';
+import 'package:nai_launcher/data/models/prompt_assistant/prompt_assistant_models.dart';
 import 'package:nai_launcher/presentation/prompt_assistant/providers/prompt_assistant_config_provider.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('edited message checkpoint restores the persisted main lane', () async {
+  test('edited rewind guards and restores the main lane', () async {
     final directory = await Directory.systemTemp.createTemp(
       'agent_chat_notifier_edit_',
     );
-    final provider = StateNotifierProvider<AgentChatNotifier, AgentChatState>((
-      ref,
-    ) {
+    final provider = NotifierProvider<AgentChatNotifier, AgentChatState>(() {
       return AgentChatNotifier(
-        ref,
         supportDir: directory,
         workspaceDir: directory,
         presetSkills: const [],
@@ -39,8 +37,7 @@ void main() {
         localStorageServiceProvider.overrideWithValue(_MemoryStorage()),
         secureStorageServiceProvider.overrideWithValue(_SecureStorage()),
         agentSettingsProvider.overrideWith(
-          (ref) => AgentSettingsNotifier(
-            ref,
+          () => AgentSettingsNotifier(
             supportDirectory: directory,
             workspaceDirectory: directory,
             environment: const {},
@@ -74,7 +71,8 @@ void main() {
     await notifier.switchSession(sessionId);
     expect(await notifier.prepareEditedSend(), isTrue);
 
-    final checkpoint = await notifier.beginEditedMessageRewind();
+    final originalEntryId = notifier.lastVisibleUserEntry!.id;
+    final checkpoint = await notifier.beginEditedMessageRewind(originalEntryId);
     expect(checkpoint, isNotNull);
     expect(checkpoint!.message.text, 'original request');
     expect(container.read(provider).messages, isEmpty);
@@ -87,6 +85,20 @@ void main() {
     ]);
     final reopened = await JsonlSessionRepo(directory).open(metadata);
     expect(await reopened.findEntriesOnBranch(), hasLength(2));
+
+    await reopened.appendMessage(UserMessage.text('newer request'));
+    await reopened.appendMessage(
+      AssistantMessage(
+        content: const [AssistantTextContent('newer response')],
+        stopReason: StopReason.stop,
+      ),
+    );
+    await notifier.newSession();
+    await notifier.switchSession(sessionId);
+
+    expect(await notifier.beginEditedMessageRewind(originalEntryId), isNull);
+    expect(await reopened.findEntriesOnBranch(), hasLength(4));
+    expect(container.read(provider).messages, hasLength(4));
   });
 }
 
@@ -116,7 +128,7 @@ Future<void> _configureRoute(ProviderContainer container) async {
 // settings reject every write until their own load finishes.
 Future<void> _waitForInitialized(
   ProviderContainer container,
-  StateNotifierProvider<AgentChatNotifier, AgentChatState> provider,
+  NotifierProvider<AgentChatNotifier, AgentChatState> provider,
 ) async {
   await _waitForProviderState<AgentChatState>(
     container,

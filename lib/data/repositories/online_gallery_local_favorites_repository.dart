@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:hive/hive.dart';
+import 'package:hive_ce/hive_ce.dart';
 import 'package:path/path.dart' as p;
 
 import '../../core/constants/storage_keys.dart';
@@ -11,6 +11,8 @@ import '../../core/utils/prompt_tag_utils.dart';
 import '../models/online_gallery/gallery_item.dart';
 import '../models/online_gallery/gallery_source.dart';
 import '../models/online_gallery/online_gallery_favorite_record.dart';
+import '../services/online_gallery/gallery_prompt_tags.dart';
+import '../services/online_gallery/online_gallery_query.dart';
 import '../services/online_gallery/quick_tag_cloud_access.dart';
 import '../services/online_gallery/quick_tag_cloud_media_resolver.dart';
 import '../services/online_gallery/quick_tag_cloud_user_service.dart';
@@ -72,6 +74,18 @@ class OnlineGalleryLocalFavoritesRepository {
     required LocalStorageService legacyStorage,
   }) : _box = box,
        _legacyStorage = legacyStorage;
+
+  factory OnlineGalleryLocalFavoritesRepository.fromOpenedBox({
+    required LocalStorageService legacyStorage,
+  }) {
+    return OnlineGalleryLocalFavoritesRepository(
+      box: Hive.box<dynamic>(StorageKeys.localFavoritesBox),
+      legacyStorage: legacyStorage,
+    );
+  }
+
+  static bool get isStorageOpen =>
+      Hive.isBoxOpen(StorageKeys.localFavoritesBox);
 
   static const String quickTagCloudMigrationMarkerKey =
       '__migration_quick_tag_cloud_favorites_v1__';
@@ -146,13 +160,7 @@ class OnlineGalleryLocalFavoritesRepository {
         .map(_normalizeTag)
         .where((value) => value.isNotEmpty)
         .toSet();
-    final terms = query.searchText
-        .trim()
-        .toLowerCase()
-        .replaceAll('_', ' ')
-        .split(RegExp(r'\s+'))
-        .where((value) => value.isNotEmpty)
-        .toList(growable: false);
+    final terms = OnlineGalleryQuery.favoriteSearchTerms(query.searchText);
     final candidateKeys = query.sourceId == null
         ? _sortedKeys
         : (_sortedKeysBySource[query.sourceId!] ?? const <String>[]);
@@ -207,11 +215,11 @@ class OnlineGalleryLocalFavoritesRepository {
       if (blacklist.isNotEmpty && _recordTags(record).any(blacklist.contains)) {
         return false;
       }
-      if (terms.isNotEmpty) {
-        final haystack = _searchHaystack(record);
-        if (!terms.every(haystack.contains)) return false;
-      }
-      return true;
+      return terms.isEmpty ||
+          OnlineGalleryQuery.matchesFavoriteSearchFields(
+            terms,
+            _searchFields(record),
+          );
     });
     var total = 0;
     final pageRecords = <OnlineGalleryFavoriteRecord>[];
@@ -471,6 +479,10 @@ Set<String> _recordTags(OnlineGalleryFavoriteRecord record) {
     ...item.artistTags,
     ...item.metaTags,
     ...record.detail.rawTags,
+    ...positiveGalleryCharacterTags(
+      record.detail.media,
+      workPrompts: record.detail.characterPrompts,
+    ),
   };
   return values.map(_normalizeTag).where((value) => value.isNotEmpty).toSet();
 }
@@ -478,7 +490,7 @@ Set<String> _recordTags(OnlineGalleryFavoriteRecord record) {
 String _normalizeTag(String value) =>
     value.trim().toLowerCase().replaceAll(RegExp(r'\s+'), '_');
 
-String _searchHaystack(OnlineGalleryFavoriteRecord record) {
+List<String?> _searchFields(OnlineGalleryFavoriteRecord record) {
   final item = record.item;
   final detail = record.detail;
   return [
@@ -506,7 +518,7 @@ String _searchHaystack(OnlineGalleryFavoriteRecord record) {
         )
         .join(' '),
     detail.contributors.map((value) => '${value.name} ${value.role}').join(' '),
-  ].whereType<String>().join('\n').toLowerCase().replaceAll('_', ' ');
+  ];
 }
 
 OnlineGalleryFavoriteRecord _quickTagCloudRecord(
@@ -558,9 +570,7 @@ OnlineGalleryFavoriteRecord _quickTagCloudRecord(
       ),
     );
   }
-  final cover = media.isEmpty
-      ? const GalleryMedia(id: 'no-image')
-      : media.first;
+  final cover = media.isEmpty ? GalleryMedia.noImage : media.first;
   final attribution = <String>[];
   for (final value in [entry.credit, entry.author, codex.author]) {
     final normalized = value.trim();

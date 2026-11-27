@@ -8,6 +8,28 @@ import '../../../core/utils/portable_logger.dart';
 import '../image/image_params.dart';
 import 'nai_image_metadata.dart';
 
+/// 判定 [source] 从 [start] 起是否逐段等于 [expected]（trim 后大小写不敏感）。
+///
+/// 固定词的剥离与回填必须共用这一条规则，否则会出现"判定说能剥、实际没剥"。
+bool promptSegmentsMatchAt(
+  List<String> source,
+  List<String> expected,
+  int start,
+) {
+  if (expected.isEmpty ||
+      start < 0 ||
+      start + expected.length > source.length) {
+    return false;
+  }
+  for (var offset = 0; offset < expected.length; offset++) {
+    if (NaiPromptParser.normalizeSegment(source[start + offset]) !=
+        NaiPromptParser.normalizeSegment(expected[offset])) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /// Projects imported metadata into prompt text and reusable image references.
 ///
 /// This keeps display/copy policy separate from the persisted Hive/Freezed
@@ -37,6 +59,12 @@ class NaiMetadataPromptProjection {
 
   bool get hasCharacters => metadata.characterPrompts.isNotEmpty;
 
+  String characterPositive(int index) {
+    final prompt = metadata.characterPrompts.elementAtOrNull(index) ?? '';
+    if (prompt.trim().isNotEmpty) return prompt;
+    return metadata.characterInfos.elementAtOrNull(index)?.prompt ?? prompt;
+  }
+
   bool get hasSeparatedFields =>
       metadata.fixedPrefixTags.isNotEmpty ||
       metadata.fixedSuffixTags.isNotEmpty ||
@@ -55,13 +83,16 @@ class NaiMetadataPromptProjection {
         final image = Uint8List.fromList(
           base64Decode(metadata.preciseReferenceImages[i]),
         );
-        final type = i < metadata.preciseReferenceTypes.length
-            ? _parsePreciseRefType(metadata.preciseReferenceTypes[i])
-            : PreciseRefType.character;
+        final settings = parsePreciseReferenceDescription(
+          i < metadata.preciseReferenceTypes.length
+              ? metadata.preciseReferenceTypes[i]
+              : null,
+        );
         results.add(
           PreciseReference(
             image: image,
-            type: type,
+            type: settings.type,
+            preferSameOutfit: settings.preferSameOutfit,
             strength: i < metadata.preciseReferenceStrengths.length
                 ? metadata.preciseReferenceStrengths[i]
                 : 1.0,
@@ -111,15 +142,31 @@ class NaiMetadataPromptProjection {
     includeFixedTags: false,
   );
 
-  String get negativePromptWithoutFixedTags {
-    var result = metadata.negativePrompt.trim();
-    for (final tag in metadata.fixedNegativePrefixTags) {
-      result = _stripLeadingPromptSegment(result, tag);
+  /// 发送时 UC 预设拼在最外层：`[预设][固定前缀][主负面][固定后缀]`，
+  /// 识别负向固定词前必须先拆掉预设。
+  UcPresetSplit get negativePresetSplit {
+    final ucPreset = metadata.ucPreset;
+    if (ucPreset == null) {
+      return (preset: '', body: metadata.negativePrompt.trim());
     }
-    for (final tag in metadata.fixedNegativeSuffixTags.reversed) {
-      result = _stripTrailingPromptSegment(result, tag);
-    }
-    return result;
+    return UcPresets.splitPresetByInt(
+      metadata.negativePrompt,
+      metadata.importableModel,
+      ucPreset,
+    );
+  }
+
+  /// 不含 UC 预设与负向固定词的负面，与正面的 [mainPrompt] 对应。
+  String get mainNegativePrompt {
+    final body = negativePresetSplit.body;
+    final prefix = _splitPromptEntries(metadata.fixedNegativePrefixTags);
+    final suffix = _splitPromptEntries(metadata.fixedNegativeSuffixTags);
+    if (prefix.isEmpty && suffix.isEmpty) return body;
+
+    final tags = _splitPromptSegments(body);
+    _removeLeadingSegments(tags, prefix);
+    _removeTrailingSegments(tags, suffix);
+    return tags.join(', ');
   }
 
   String get fullPrompt => _appendCharacterPrompts(metadata.prompt);
@@ -205,16 +252,6 @@ class NaiMetadataPromptProjection {
         .join(' ');
   }
 
-  static PreciseRefType _parsePreciseRefType(String? value) {
-    return switch (value?.trim().toLowerCase()) {
-      'style' => PreciseRefType.style,
-      'character&style' ||
-      'character_and_style' ||
-      'character and style' => PreciseRefType.characterAndStyle,
-      _ => PreciseRefType.character,
-    };
-  }
-
   static List<String> _splitPromptSegments(String text) =>
       NaiPromptParser.splitSegments(text);
 
@@ -225,10 +262,7 @@ class NaiMetadataPromptProjection {
     List<String> source,
     List<String> expected,
   ) {
-    if (expected.isEmpty || source.length < expected.length) return;
-    for (var i = 0; i < expected.length; i++) {
-      if (source[i].toLowerCase() != expected[i].toLowerCase()) return;
-    }
+    if (!promptSegmentsMatchAt(source, expected, 0)) return;
     source.removeRange(0, expected.length);
   }
 
@@ -236,52 +270,8 @@ class NaiMetadataPromptProjection {
     List<String> source,
     List<String> expected,
   ) {
-    if (expected.isEmpty || source.length < expected.length) return;
     final offset = source.length - expected.length;
-    for (var i = 0; i < expected.length; i++) {
-      if (source[offset + i].toLowerCase() != expected[i].toLowerCase()) return;
-    }
+    if (!promptSegmentsMatchAt(source, expected, offset)) return;
     source.removeRange(offset, source.length);
-  }
-
-  static bool _hasTrailingPromptSegment(String text, String segment) {
-    final trimmedText = text.trim();
-    final trimmedSegment = segment.trim();
-    if (trimmedText == trimmedSegment) return true;
-    if (!trimmedText.endsWith(trimmedSegment)) return false;
-    final prefix = trimmedText.substring(
-      0,
-      trimmedText.length - trimmedSegment.length,
-    );
-    return prefix.trimRight().endsWith(',');
-  }
-
-  static String _stripLeadingPromptSegment(String text, String segment) {
-    final trimmedText = text.trim();
-    final trimmedSegment = segment.trim();
-    if (trimmedText.isEmpty || trimmedSegment.isEmpty) return trimmedText;
-    if (trimmedText == trimmedSegment) return '';
-    if (!trimmedText.startsWith(trimmedSegment)) return trimmedText;
-
-    final rest = trimmedText.substring(trimmedSegment.length).trimLeft();
-    if (!rest.startsWith(',')) return trimmedText;
-    return rest.substring(1).trimLeft();
-  }
-
-  static String _stripTrailingPromptSegment(String text, String segment) {
-    final trimmedText = text.trim();
-    final trimmedSegment = segment.trim();
-    if (trimmedText.isEmpty || trimmedSegment.isEmpty) return trimmedText;
-    if (trimmedText == trimmedSegment) return '';
-    if (!_hasTrailingPromptSegment(trimmedText, trimmedSegment)) {
-      return trimmedText;
-    }
-
-    final rest = trimmedText.substring(
-      0,
-      trimmedText.length - trimmedSegment.length,
-    );
-    final trimmedRest = rest.trimRight();
-    return trimmedRest.substring(0, trimmedRest.length - 1).trimRight();
   }
 }

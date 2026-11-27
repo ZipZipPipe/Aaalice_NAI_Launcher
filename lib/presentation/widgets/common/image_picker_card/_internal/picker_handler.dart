@@ -4,6 +4,8 @@ import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
 import 'package:nai_launcher/l10n/app_localizations.dart';
 
+import '../../../../../core/platform/directory_picker.dart';
+import '../../../../../core/platform/image_file_picker.dart';
 import '../image_picker_result.dart';
 
 /// FilePicker 调用封装
@@ -20,10 +22,7 @@ class PickerHandler {
     void Function(String)? onError,
   }) async {
     try {
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.image,
-        allowMultiple: allowMultiple,
-      );
+      final result = await pickImageFiles(allowMultiple: allowMultiple);
 
       if (result == null || result.files.isEmpty) return null;
 
@@ -52,10 +51,7 @@ class PickerHandler {
     void Function(String)? onError,
   }) async {
     try {
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.image,
-        allowMultiple: true,
-      );
+      final result = await pickImageFiles(allowMultiple: true);
 
       if (result == null || result.files.isEmpty) return [];
 
@@ -126,9 +122,7 @@ class PickerHandler {
     void Function(String)? onError,
   }) async {
     try {
-      final path = await FilePicker.platform.getDirectoryPath(
-        dialogTitle: dialogTitle,
-      );
+      final path = await pickDirectoryPath(dialogTitle: dialogTitle);
       return path;
     } catch (e) {
       onError?.call(l10n.imagePicker_directorySelectionFailed(e.toString()));

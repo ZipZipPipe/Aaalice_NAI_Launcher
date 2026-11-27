@@ -11,6 +11,7 @@ import '../models/prompt/random_preset.dart';
 import '../models/prompt/tag_favorite.dart';
 import '../models/prompt/tag_template.dart';
 import '../repositories/gallery_folder_repository.dart';
+import '../services/fixed_tag/fixed_tag_usage_record_store.dart';
 import '../services/precise_ref_library_storage_service.dart';
 import '../services/tag_library_io_service.dart';
 import '../services/vibe_library_storage_service.dart';
@@ -21,6 +22,7 @@ import 'cloud_sync_data_adapter.dart';
 import 'cloud_sync_data_adapter_registry.dart';
 import 'agent_cloud_sync_adapters.dart';
 import 'ffdkj_install_intent_adapter.dart';
+import 'fixed_tag_usage_cloud_sync_adapter.dart';
 import 'gallery_album_cloud_sync_adapter.dart';
 import 'online_favorites_cloud_sync_adapter.dart';
 import 'portable_sync_record.dart';
@@ -181,6 +183,7 @@ CloudSyncDataAdapterRegistry createAppCloudSyncAdapterRegistry({
       },
       getRootPath: GalleryFolderRepository.instance.getRootPath,
     ),
+    FixedTagUsageCloudSyncAdapter(FixedTagUsageRecordStore()),
     VibeLibraryCloudSyncAdapter(vibeLibrary),
     PreciseRefCloudSyncAdapter(preciseRefLibrary),
     FfdkjInstallIntentAdapter(
@@ -194,6 +197,9 @@ CloudSyncDataAdapterRegistry createAppCloudSyncAdapterRegistry({
 const portableSettingKeys = <String>{
   'dlss_options',
   StorageKeys.themeType,
+  StorageKeys.themeMode,
+  StorageKeys.lightThemeType,
+  StorageKeys.darkThemeType,
   StorageKeys.fontFamily,
   StorageKeys.fontScale,
   StorageKeys.locale,
@@ -204,6 +210,7 @@ const portableSettingKeys = <String>{
   StorageKeys.compositionGuideColumns,
   StorageKeys.compositionGuideRows,
   StorageKeys.defaultModel,
+  StorageKeys.imageModelMode,
   StorageKeys.defaultSampler,
   StorageKeys.defaultSteps,
   StorageKeys.defaultScale,
@@ -211,6 +218,9 @@ const portableSettingKeys = <String>{
   StorageKeys.defaultHeight,
   StorageKeys.selectedResolutionPresetId,
   StorageKeys.autoSaveImages,
+  StorageKeys.syncImagesToSystemGallery,
+  StorageKeys.imageSaveFolderTemplate,
+  StorageKeys.imageSaveFileNameTemplate,
   StorageKeys.imageStraightAlpha,
   StorageKeys.shareStripMetadata,
   StorageKeys.shareWatermark,
@@ -238,7 +248,9 @@ const portableSettingKeys = <String>{
   StorageKeys.autoFormatPrompt,
   StorageKeys.highlightEmphasis,
   StorageKeys.sdSyntaxAutoConvert,
+  StorageKeys.separateNumericWeightClosing,
   StorageKeys.resolveAliasOnCopy,
+  StorageKeys.detectMultiCharacterOnPaste,
   StorageKeys.enablePromptWeightScroll,
   StorageKeys.promptRegexRules,
   StorageKeys.discordShareIncludeMetadata,

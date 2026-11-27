@@ -1,6 +1,45 @@
 import '../utils/alias_parser.dart';
 import '../utils/character_prompt_block_parser.dart';
+import '../utils/kaomoji_tags.dart';
+import '../utils/tag_normalizer.dart';
 import 'completion_models.dart';
+
+enum PromptTokenMode {
+  commaSeparated,
+  spaceSeparated,
+  gallerySearch;
+
+  static final _commas = RegExp(r'[,\n]');
+  static final _spacesAndCommas = RegExp(r'[,\n\s]+');
+  static final _galleryCommas = RegExp(r'[,，\r\n]');
+
+  bool splitsOnSpaces(String text) =>
+      this == spaceSeparated ||
+      (this == gallerySearch &&
+          !TagNormalizer.commaSeparatorPattern.hasMatch(text));
+
+  RegExp get _commaSeparator =>
+      this == gallerySearch ? _galleryCommas : _commas;
+
+  RegExp _separator(bool splitOnSpaces) =>
+      splitOnSpaces ? _spacesAndCommas : _commaSeparator;
+
+  bool _isComma(int unit) =>
+      unit == 0x2c || (this == gallerySearch && unit == 0xff0c);
+
+  bool _endsInComma(String text) =>
+      text.isNotEmpty && _isComma(text.codeUnitAt(text.length - 1));
+
+  bool _isStructuralSeparator(int unit) =>
+      _isComma(unit) || unit == 0x0a || unit == 0x0d;
+
+  bool _isSeparator(int unit, bool splitOnSpaces) =>
+      _isStructuralSeparator(unit) ||
+      (splitOnSpaces &&
+          (this == gallerySearch
+              ? _spacesAndCommas.hasMatch(String.fromCharCode(unit))
+              : unit == 0x20 || unit == 0x09));
+}
 
 class PromptTokenParser {
   const PromptTokenParser._();
@@ -12,14 +51,21 @@ class PromptTokenParser {
     r'^artist:',
     caseSensitive: false,
   );
+  static final RegExp _lineBreak = RegExp(r'[\r\n]');
+  static final RegExp _syntaxSuffix = RegExp(
+    r'^(?::\s*-?\d+(?:\.\d+)?)?[\}\]\)]*',
+  );
+  static final RegExp _leadingComma = RegExp(r'^\s*,\s*');
 
   static CompletionQuery parse({
     required String text,
     required int cursorPosition,
     required int limit,
     required String locale,
-    bool splitOnSpaces = false,
+    PromptTokenMode mode = PromptTokenMode.commaSeparated,
   }) {
+    final splitOnSpaces = mode.splitsOnSpaces(text);
+    final separator = mode._separator(splitOnSpaces);
     final cursor = cursorPosition.clamp(0, text.length);
     final syntax = CharacterPromptBlockParser.parse(text);
     final negativeBlock = syntax.blockContaining(cursor, contentOnly: true);
@@ -31,11 +77,7 @@ class PromptTokenParser {
         cursorPosition: cursor,
         token: '',
         replacementRange: TextReplacementRange(start: cursor, end: cursor),
-        existingTags: _existingTags(
-          syntax,
-          token: '',
-          splitOnSpaces: splitOnSpaces,
-        ),
+        existingTags: _existingTags(syntax, token: '', separator: separator),
         limit: limit.clamp(1, CompletionResultLimits.all),
         locale: locale,
       );
@@ -45,7 +87,7 @@ class PromptTokenParser {
     if (isTypingAlias) {
       var replacementEnd = cursor;
       final closingBracket = text.indexOf('>', cursor);
-      final nextLineBreak = text.indexOf(RegExp(r'[\r\n]'), cursor);
+      final nextLineBreak = text.indexOf(_lineBreak, cursor);
       if (closingBracket >= 0 &&
           (nextLineBreak < 0 || closingBracket < nextLineBreak)) {
         replacementEnd = closingBracket + 1;
@@ -71,11 +113,11 @@ class PromptTokenParser {
     var end = start;
 
     while (start > lowerBound &&
-        !_isSeparator(text.codeUnitAt(start - 1), splitOnSpaces)) {
+        !mode._isSeparator(text.codeUnitAt(start - 1), splitOnSpaces)) {
       start--;
     }
     while (end < upperBound &&
-        !_isSeparator(text.codeUnitAt(end), splitOnSpaces)) {
+        !mode._isSeparator(text.codeUnitAt(end), splitOnSpaces)) {
       end++;
     }
 
@@ -107,7 +149,7 @@ class PromptTokenParser {
     final existingTags = _existingTags(
       syntax,
       token: token,
-      splitOnSpaces: splitOnSpaces,
+      separator: separator,
     );
 
     return CompletionQuery(
@@ -135,23 +177,23 @@ class PromptTokenParser {
     required int cursorPosition,
     required int limit,
     required String locale,
-    bool splitOnSpaces = false,
+    PromptTokenMode mode = PromptTokenMode.commaSeparated,
   }) {
     final parsed = parse(
       text: text,
       cursorPosition: cursorPosition,
       limit: limit,
       locale: locale,
-      splitOnSpaces: splitOnSpaces,
+      mode: mode,
     );
     if (parsed.kind == CompletionQueryKind.libraryAlias) return null;
     if (parsed.token.isEmpty) {
       final before = text
           .substring(0, parsed.replacementRange.start)
           .trimRight();
-      if (!before.endsWith(',')) return null;
+      if (!mode._endsInComma(before)) return null;
       final withoutComma = before.substring(0, before.length - 1);
-      final previous = withoutComma.split(RegExp(r'[,\n]')).last;
+      final previous = withoutComma.split(mode._commaSeparator).last;
       final normalized = _normalizeExistingTag(previous);
       if (normalized.length < 2) return null;
       return parsed.copyWith(relatedTag: normalized);
@@ -165,12 +207,13 @@ class PromptTokenParser {
       contentOnly: true,
     );
     final upperBound = negativeBlock?.contentRange.end ?? text.length;
+    final splitOnSpaces = mode.splitsOnSpaces(text);
     while (insertionPosition < upperBound &&
-        !_isSeparator(text.codeUnitAt(insertionPosition), splitOnSpaces)) {
+        !mode._isSeparator(text.codeUnitAt(insertionPosition), splitOnSpaces)) {
       insertionPosition++;
     }
     if (insertionPosition < upperBound &&
-        text.codeUnitAt(insertionPosition) == 0x2c) {
+        mode._isComma(text.codeUnitAt(insertionPosition))) {
       insertionPosition++;
       while (insertionPosition < upperBound &&
           (text.codeUnitAt(insertionPosition) == 0x20 ||
@@ -203,7 +246,7 @@ class PromptTokenParser {
     required int previousCursorPosition,
     required String currentText,
     required int currentCursorPosition,
-    bool splitOnSpaces = false,
+    PromptTokenMode mode = PromptTokenMode.commaSeparated,
   }) {
     if (previousText == currentText) return false;
 
@@ -212,14 +255,14 @@ class PromptTokenParser {
       cursorPosition: previousCursorPosition,
       limit: 1,
       locale: '',
-      splitOnSpaces: splitOnSpaces,
+      mode: mode,
     );
     final current = parse(
       text: currentText,
       cursorPosition: currentCursorPosition,
       limit: 1,
       locale: '',
-      splitOnSpaces: splitOnSpaces,
+      mode: mode,
     );
     if (current.kind == CompletionQueryKind.tag &&
         current.token.isEmpty &&
@@ -251,9 +294,7 @@ class PromptTokenParser {
     final removed = previousText.substring(prefixLength, previousChangeEnd);
     final inserted = currentText.substring(prefixLength, currentChangeEnd);
     final changedCodeUnits = [...removed.codeUnits, ...inserted.codeUnits];
-    if (changedCodeUnits.every(
-      (unit) => unit == 0x2c || unit == 0x0a || unit == 0x0d,
-    )) {
+    if (changedCodeUnits.every(mode._isStructuralSeparator)) {
       return false;
     }
 
@@ -262,7 +303,7 @@ class PromptTokenParser {
         previous.token == current.token &&
         previous.categoryFilter == current.categoryFilter;
     if (sameActiveToken) {
-      return !_sameSemanticTags(previousText, currentText, splitOnSpaces);
+      return !_sameSemanticTags(previousText, currentText, mode);
     }
 
     final insertedTouchesCurrentToken =
@@ -288,11 +329,12 @@ class PromptTokenParser {
     required String canonicalTag,
     required bool autoInsertComma,
     required bool replaceUnderscores,
+    PromptTokenMode mode = PromptTokenMode.commaSeparated,
   }) {
     final tag = query.kind == CompletionQueryKind.libraryAlias
         ? '<$canonicalTag>'
         : replaceUnderscores
-        ? canonicalTag.replaceAll('_', ' ')
+        ? KaomojiTags.underscoresToSpaces(canonicalTag)
         : canonicalTag;
     final range = query.replacementRange;
     final before = text.substring(0, range.start);
@@ -305,7 +347,7 @@ class PromptTokenParser {
 
     if (query.relatedTag != null && range.start == range.end) {
       final alreadySeparated =
-          before.trimRight().endsWith(',') ||
+          mode._endsInComma(before.trimRight()) ||
           before.trimRight().endsWith('\n') ||
           before.trimRight().endsWith('\r');
       final prefix = before.isEmpty || alreadySeparated ? '' : ', ';
@@ -324,11 +366,11 @@ class PromptTokenParser {
       final syntaxEnd = negativeBlock == null
           ? after.length
           : (negativeBlock.contentRange.end - range.end).clamp(0, after.length);
-      final syntaxSuffix = RegExp(
-        r'^(?::\s*-?\d+(?:\.\d+)?)?[\}\]\)]*',
-      ).firstMatch(after.substring(0, syntaxEnd))!.group(0)!;
+      final syntaxSuffix = _syntaxSuffix
+          .firstMatch(after.substring(0, syntaxEnd))!
+          .group(0)!;
       final contentAfterSyntax = after.substring(syntaxSuffix.length);
-      final existingComma = RegExp(r'^\s*,\s*').firstMatch(contentAfterSyntax);
+      final existingComma = _leadingComma.firstMatch(contentAfterSyntax);
       if (existingComma == null) {
         insertion = '$insertion$syntaxSuffix, ';
         after = contentAfterSyntax;
@@ -345,11 +387,11 @@ class PromptTokenParser {
   static bool _sameSemanticTags(
     String previousText,
     String currentText,
-    bool splitOnSpaces,
+    PromptTokenMode mode,
   ) {
     List<String> tags(String text) {
       final parsed = CharacterPromptBlockParser.parse(text);
-      final separator = splitOnSpaces ? RegExp(r'[,\n\s]+') : RegExp(r'[,\n]');
+      final separator = mode._separator(mode.splitsOnSpaces(text));
       return _semanticText(parsed)
           .split(separator)
           .map(_normalizeExistingTag)
@@ -366,12 +408,6 @@ class PromptTokenParser {
     return true;
   }
 
-  static bool _isSeparator(int codeUnit, bool splitOnSpaces) =>
-      codeUnit == 0x2c ||
-      codeUnit == 0x0a ||
-      codeUnit == 0x0d ||
-      (splitOnSpaces && (codeUnit == 0x20 || codeUnit == 0x09));
-
   static String _normalizeExistingTag(String raw) {
     var value = raw.trim();
     value = value.replaceFirst(_weightPrefix, '');
@@ -384,10 +420,9 @@ class PromptTokenParser {
   static Set<String> _existingTags(
     CharacterPromptBlockParseResult parsed, {
     required String token,
-    required bool splitOnSpaces,
+    required RegExp separator,
   }) {
     final tags = <String>{};
-    final separator = splitOnSpaces ? RegExp(r'[,\n\s]+') : RegExp(r'[,\n]');
     for (final segment in _semanticText(parsed).split(separator)) {
       final normalized = _normalizeExistingTag(segment);
       if (normalized.isNotEmpty && normalized != token) tags.add(normalized);

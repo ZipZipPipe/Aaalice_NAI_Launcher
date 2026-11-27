@@ -3,14 +3,10 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hive/hive.dart';
 import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
-import 'package:nai_launcher/core/database/connection_pool_holder.dart';
 import 'package:nai_launcher/core/database/datasources/gallery_data_source.dart';
-import 'package:nai_launcher/core/utils/app_logger.dart';
 import 'package:nai_launcher/data/models/gallery/local_image_record.dart';
 import 'package:nai_launcher/data/services/gallery/gallery_stream_scanner.dart'
     show
@@ -23,51 +19,54 @@ import 'package:nai_launcher/data/services/image_metadata_service.dart';
 import 'package:nai_launcher/data/services/metadata/isolate_metadata_service.dart';
 import 'package:nai_launcher/data/services/metadata/unified_metadata_parser.dart';
 
+import '../../../helpers/gallery_database_sandbox.dart';
 import '../../../helpers/webp_metadata_fixture.dart';
 
 void main() {
+  test(
+    'discovered and supplied snapshots use identical normalized paths',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp(
+        'gallery_snapshot_',
+      );
+      addTearDown(() => tempDir.delete(recursive: true));
+      final file = await File(p.join(tempDir.path, 'image.png')).create();
+      final forwardPath = tempDir.path.replaceAll(Platform.pathSeparator, '/');
+      final root = Directory('$forwardPath/./');
+      final scanner = GalleryStreamScanner.forTesting(
+        dataSource: GalleryDataSource(),
+        metadataService: IsolateMetadataService.instance,
+      );
+      addTearDown(scanner.dispose);
+
+      final supplied = scanner.freezeFileSnapshot(root, [
+        File('${root.path}image.png'),
+        file,
+      ]);
+      final discovered = await scanner.createFileSnapshot(root);
+
+      expect(supplied.single.path, p.normalize(p.absolute(file.path)));
+      expect(discovered.single.path, supplied.single.path);
+      expect(() => discovered.add(file), throwsUnsupportedError);
+    },
+  );
+
   group('GalleryStreamScanner retryMissingMetadata', () {
+    final sandbox = useGalleryDatabaseSandbox('gallery_stream_scanner_retry_');
     late GalleryDataSource dataSource;
     late Directory tempDir;
-    late String testDbPath;
-
-    setUpAll(() async {
-      sqfliteFfiInit();
-      databaseFactory = databaseFactoryFfi;
-      await AppLogger.initialize(isTestEnvironment: true);
-    });
 
     setUp(() async {
-      tempDir = await Directory.systemTemp.createTemp(
-        'gallery_stream_scanner_retry_',
-      );
-      testDbPath = p.join(tempDir.path, 'gallery_retry.db');
-      final hivePath = p.join(tempDir.path, 'hive');
-      await Directory(hivePath).create(recursive: true);
-      Hive.init(hivePath);
-
-      await ConnectionPoolHolder.initialize(
-        dbPath: testDbPath,
-        maxConnections: 2,
-      );
-
-      dataSource = GalleryDataSource();
-      await dataSource.initialize();
+      dataSource = sandbox.dataSource;
+      tempDir = sandbox.root;
       await ImageMetadataService().initialize();
       IsolateMetadataService.instance.dispose();
       GalleryStreamScanner.resetInstance();
     });
 
-    tearDown(() async {
+    tearDown(() {
       GalleryStreamScanner.resetInstance();
       IsolateMetadataService.instance.dispose();
-      await Hive.close();
-      await dataSource.dispose();
-      await ConnectionPoolHolder.dispose();
-
-      if (await tempDir.exists()) {
-        await _deleteDirectoryWithRetry(tempDir);
-      }
     });
 
     test(
@@ -132,6 +131,78 @@ void main() {
       expect(metadata?.prompt, contains('evil_neuro-sama'));
       expect(results, contains(imageId));
     });
+
+    test('ordinary scans reparse files whose metadata write failed', () async {
+      final file = await _createWrappedNovelAiPng(
+        tempDir,
+        'rejected_scan.png',
+        prompt: '1girl, rejected_scan_tag',
+      );
+      final scanner = GalleryStreamScanner.instance(dataSource: dataSource);
+      await sandbox.rejectMetadataWrites();
+
+      await scanner.startScanning(tempDir);
+
+      final imageId = await dataSource.getImageIdByPath(file.path);
+      expect(imageId, isNotNull);
+      await _expectRetryable(dataSource, imageId!);
+
+      await sandbox.allowMetadataWrites();
+      await scanner.startScanning(tempDir);
+
+      await _expectIndexed(dataSource, imageId, 'rejected_scan_tag');
+    });
+
+    test(
+      'ordinary scans reparse an immediate add whose metadata write failed',
+      () async {
+        final file = await _createWrappedNovelAiPng(
+          tempDir,
+          'rejected_add.png',
+          prompt: '1girl, rejected_add_tag',
+        );
+        final repository = LocalGalleryRepository(dataSource: dataSource);
+        await sandbox.rejectMetadataWrites();
+
+        await expectLater(repository.addImage(file), throwsA(anything));
+
+        final imageId = await dataSource.getImageIdByPath(file.path);
+        expect(imageId, isNotNull);
+        await _expectRetryable(dataSource, imageId!);
+
+        await sandbox.allowMetadataWrites();
+        await GalleryStreamScanner.instance(
+          dataSource: dataSource,
+        ).startScanning(tempDir);
+
+        await _expectIndexed(dataSource, imageId, 'rejected_add_tag');
+      },
+    );
+
+    test(
+      'immediate add without metadata leaves the file to the next scan',
+      () async {
+        final file = File(p.join(tempDir.path, 'plain_add.png'));
+        await file.writeAsBytes(_buildBasePngBytes());
+        final repository = LocalGalleryRepository(dataSource: dataSource);
+
+        await repository.addImage(file);
+
+        final imageId = await dataSource.getImageIdByPath(file.path);
+        expect(imageId, isNotNull);
+        var imageRecord = await dataSource.getImageById(imageId!);
+        expect(imageRecord?.metadataStatus, MetadataStatus.none);
+        expect(imageRecord?.lastScannedAt, isNull);
+
+        await GalleryStreamScanner.instance(
+          dataSource: dataSource,
+        ).startScanning(tempDir);
+
+        imageRecord = await dataSource.getImageById(imageId);
+        expect(imageRecord?.metadataStatus, MetadataStatus.failed);
+        expect(imageRecord?.lastScannedAt, isNotNull);
+      },
+    );
 
     test('can explicitly skip stale unparsed records', () async {
       final file = await _createWrappedNovelAiPng(
@@ -379,7 +450,7 @@ void main() {
       final externalDir = await Directory.systemTemp.createTemp(
         'gallery_priority_external_',
       );
-      addTearDown(() => _deleteDirectoryWithRetry(externalDir));
+      addTearDown(() => externalDir.delete(recursive: true));
       final external = await _createWrappedNovelAiPng(
         externalDir,
         'external_retry.png',
@@ -409,7 +480,7 @@ void main() {
     });
 
     test('snapshot and scanning share the gallery file policy', () async {
-      final cacheDir = Directory(p.join(tempDir.path, 'cache'));
+      final cacheDir = Directory(p.join(tempDir.path, '.thumbs'));
       await cacheDir.create();
       final excluded = await _createWrappedNovelAiPng(
         cacheDir,
@@ -436,7 +507,7 @@ void main() {
       await scanner.startScanning(
         tempDir,
         retryMissingMetadata: true,
-        fileSnapshot: [included],
+        fileSnapshot: [included, excluded],
       );
 
       expect(await dataSource.getImageIdByPath(included.path), isNotNull);
@@ -450,6 +521,28 @@ void main() {
       );
     });
   });
+}
+
+Future<void> _expectRetryable(GalleryDataSource dataSource, int imageId) async {
+  final imageRecord = await dataSource.getImageById(imageId);
+  final metadata = (await dataSource.getMetadataByImageIds([imageId]))[imageId];
+
+  expect(imageRecord?.metadataStatus, MetadataStatus.transientFailure);
+  expect(metadata, isNull);
+}
+
+Future<void> _expectIndexed(
+  GalleryDataSource dataSource,
+  int imageId,
+  String tag,
+) async {
+  final imageRecord = await dataSource.getImageById(imageId);
+  final metadata = (await dataSource.getMetadataByImageIds([imageId]))[imageId];
+  final results = await dataSource.advancedSearch(textQuery: tag, limit: 10);
+
+  expect(imageRecord?.metadataStatus, MetadataStatus.success);
+  expect(metadata?.prompt, contains(tag));
+  expect(results, contains(imageId));
 }
 
 Future<int> _seedStaleNoneRecord(
@@ -528,21 +621,4 @@ Uint8List _buildBasePngBytes() {
   final image = img.Image(width: 4, height: 4);
   img.fill(image, color: img.ColorRgba8(255, 255, 255, 255));
   return Uint8List.fromList(img.encodePng(image));
-}
-
-Future<void> _deleteDirectoryWithRetry(
-  Directory dir, {
-  int maxAttempts = 5,
-}) async {
-  for (var attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      await dir.delete(recursive: true);
-      return;
-    } on PathAccessException {
-      if (attempt == maxAttempts) {
-        return;
-      }
-      await Future<void>.delayed(const Duration(milliseconds: 100));
-    }
-  }
 }

@@ -1,12 +1,16 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
+import '../../../core/database/base_data_source.dart'
+    show DataSourceOperationException;
 import '../../../core/database/datasources/gallery_data_source.dart';
 import '../../../core/utils/app_logger.dart';
 import '../../repositories/gallery_folder_repository.dart';
 import 'gallery_album_sidecar_service.dart';
+import 'gallery_image_files.dart';
 import 'gallery_stream_scanner.dart';
-import 'local_gallery_repository.dart';
 import 'scan_state_manager.dart';
 
 enum GalleryStartupIndexAction { none, fullScan }
@@ -16,9 +20,7 @@ GalleryStartupIndexAction chooseStartupIndexAction({
   required int fileSystemImageCount,
   int? unparsedImageCount = 0,
 }) {
-  if (databaseImageCount > 0 &&
-      databaseImageCount == fileSystemImageCount &&
-      unparsedImageCount == 0) {
+  if (databaseImageCount == fileSystemImageCount && unparsedImageCount == 0) {
     return GalleryStartupIndexAction.none;
   }
   return GalleryStartupIndexAction.fullScan;
@@ -34,14 +36,15 @@ bool shouldRunRefreshIndexScan({
 class GalleryScanCoordinator {
   GalleryScanCoordinator({
     required GalleryDataSource dataSource,
-    required LocalGalleryRepository repository,
+    required Future<List<File>> Function([String? rootPath]) loadFiles,
   }) : _dataSource = dataSource,
-       _repository = repository;
+       _loadFiles = loadFiles;
 
   final GalleryDataSource _dataSource;
-  final LocalGalleryRepository _repository;
+  final Future<List<File>> Function([String? rootPath]) _loadFiles;
   Future<List<File>>? _initializing;
-  Future<void>? _refreshing;
+  bool _isRefreshing = false;
+  _QueuedRefresh? _queuedRefresh;
   bool _isBackgroundScanning = false;
 
   Future<List<File>> initialize() {
@@ -63,12 +66,15 @@ class GalleryScanCoordinator {
   }
 
   Future<List<File>> _initialize() async {
-    final files = await _repository.findGalleryFiles();
+    final rootPath = await GalleryFolderRepository.instance.getRootPath();
+    final files = await _loadFiles(rootPath);
     AppLogger.i(
       'Found ${files.length} image files in file system',
       'LocalGalleryService',
     );
-    unawaited(_initializeIndexInBackground(List<File>.unmodifiable(files)));
+    unawaited(
+      _initializeIndexInBackground(rootPath!, List<File>.unmodifiable(files)),
+    );
     return files;
   }
 
@@ -77,34 +83,36 @@ class GalleryScanCoordinator {
     required int previousCount,
     required Future<void> Function(List<File> files) onFilesLoaded,
   }) {
-    final active = _refreshing;
-    if (active != null) return active;
-    final operation = _refresh(
+    final request = _RefreshRequest(
       scan: scan,
       previousCount: previousCount,
       onFilesLoaded: onFilesLoaded,
     );
-    _refreshing = operation;
-    unawaited(
-      operation.then<void>(
-        (_) {
-          if (identical(_refreshing, operation)) _refreshing = null;
-        },
-        onError: (Object _, StackTrace __) {
-          if (identical(_refreshing, operation)) _refreshing = null;
-        },
-      ),
-    );
-    return operation;
+    if (!_isRefreshing) return _runRefresh(request);
+    // 在途刷新可能早于调用方的文件改动就枚举完了目录，必须在它之后再刷一轮。
+    final queued = _queuedRefresh;
+    if (queued != null) return queued.absorb(request);
+    return (_queuedRefresh = _QueuedRefresh(request)).done;
   }
 
-  Future<void> _refresh({
-    required bool scan,
-    required int previousCount,
-    required Future<void> Function(List<File> files) onFilesLoaded,
-  }) async {
-    final files = await _repository.findGalleryFiles();
-    await onFilesLoaded(files);
+  Future<void> _runRefresh(_RefreshRequest request) async {
+    _isRefreshing = true;
+    try {
+      await _refresh(request);
+    } finally {
+      _isRefreshing = false;
+      final queued = _queuedRefresh;
+      if (queued != null) {
+        _queuedRefresh = null;
+        queued.complete(_runRefresh(queued.request));
+      }
+    }
+  }
+
+  Future<void> _refresh(_RefreshRequest request) async {
+    final _RefreshRequest(:scan, :previousCount) = request;
+    final files = await _loadFiles();
+    await request.onFilesLoaded(files);
     if (shouldRunRefreshIndexScan(
       scanRequested: scan,
       isBackgroundScanning: _isBackgroundScanning,
@@ -132,7 +140,46 @@ class GalleryScanCoordinator {
     await _rebindAlbumPendingPaths();
   }
 
-  Future<void> _initializeIndexInBackground(List<File> files) async {
+  @visibleForTesting
+  Future<GalleryStartupIndexAction> startupIndexAction(
+    String rootPath,
+    int fileCount,
+  ) async {
+    final existingCount = await _dataSource.countImages();
+    AppLogger.i(
+      'Database has $existingCount images, file system has $fileCount images',
+      'LocalGalleryService',
+    );
+    try {
+      final metadataCounts = await _dataSource.countImagesByMetadataStatus();
+      final action = chooseStartupIndexAction(
+        databaseImageCount: existingCount,
+        fileSystemImageCount: fileCount,
+        unparsedImageCount: metadataCounts['none'],
+      );
+      if (action == GalleryStartupIndexAction.none) return action;
+
+      final counts = await _dataSource.countImagesForPaths(
+        (path) => GalleryImageFiles.accepts(rootPath, path),
+      );
+      return chooseStartupIndexAction(
+        databaseImageCount: counts.total,
+        fileSystemImageCount: fileCount,
+        unparsedImageCount: counts.unparsed,
+      );
+    } on DataSourceOperationException catch (error) {
+      AppLogger.w(
+        'Metadata status count unavailable; running startup scan: $error',
+        'LocalGalleryService',
+      );
+      return GalleryStartupIndexAction.fullScan;
+    }
+  }
+
+  Future<void> _initializeIndexInBackground(
+    String rootPath,
+    List<File> files,
+  ) async {
     if (_isBackgroundScanning) {
       AppLogger.d(
         'Background scan already in progress, skipping',
@@ -146,26 +193,7 @@ class GalleryScanCoordinator {
       'LocalGalleryService',
     );
     try {
-      final existingCount = await _dataSource.countImages();
-      AppLogger.i(
-        'Database has $existingCount images, file system has ${files.length} images',
-        'LocalGalleryService',
-      );
-      int? unparsedImageCount;
-      try {
-        final metadataCounts = await _dataSource.countImagesByMetadataStatus();
-        unparsedImageCount = metadataCounts['none'];
-      } catch (error) {
-        AppLogger.w(
-          'Metadata status count unavailable; running startup scan: $error',
-          'LocalGalleryService',
-        );
-      }
-      final action = chooseStartupIndexAction(
-        databaseImageCount: existingCount,
-        fileSystemImageCount: files.length,
-        unparsedImageCount: unparsedImageCount,
-      );
+      final action = await startupIndexAction(rootPath, files.length);
       if (action == GalleryStartupIndexAction.none) {
         AppLogger.i(
           'Skipping startup metadata scan: database and file system counts match',
@@ -176,7 +204,7 @@ class GalleryScanCoordinator {
           'Performing startup file index scan (${files.length} files)',
           'LocalGalleryService',
         );
-        await _performScan(files, full: true);
+        await _performScan(files, full: true, rootPath: rootPath);
       }
       AppLogger.i(
         'Background index initialization completed',
@@ -238,8 +266,12 @@ class GalleryScanCoordinator {
     }
   }
 
-  Future<void> _performScan(List<File> files, {required bool full}) async {
-    final rootPath = await GalleryFolderRepository.instance.getRootPath();
+  Future<void> _performScan(
+    List<File> files, {
+    required bool full,
+    String? rootPath,
+  }) async {
+    rootPath ??= await GalleryFolderRepository.instance.getRootPath();
     if (rootPath == null) {
       AppLogger.w(
         '[UGS] ${full ? '_performFullScan' : '_performIncrementalScan'}: '
@@ -265,4 +297,37 @@ class GalleryScanCoordinator {
     );
     AppLogger.i('[UGS] ${full ? '全量' : ''}流式扫描完成', 'LocalGalleryService');
   }
+}
+
+class _RefreshRequest {
+  const _RefreshRequest({
+    required this.scan,
+    required this.previousCount,
+    required this.onFilesLoaded,
+  });
+
+  final bool scan;
+  final int previousCount;
+  final Future<void> Function(List<File> files) onFilesLoaded;
+}
+
+/// 在途刷新期间到达的请求合并成一轮；只要有一方要求索引扫描，这一轮就扫描。
+class _QueuedRefresh {
+  _QueuedRefresh(this.request);
+
+  _RefreshRequest request;
+  final _completer = Completer<void>();
+
+  Future<void> get done => _completer.future;
+
+  Future<void> absorb(_RefreshRequest next) {
+    request = _RefreshRequest(
+      scan: request.scan || next.scan,
+      previousCount: next.previousCount,
+      onFilesLoaded: next.onFilesLoaded,
+    );
+    return done;
+  }
+
+  void complete(Future<void> run) => _completer.complete(run);
 }

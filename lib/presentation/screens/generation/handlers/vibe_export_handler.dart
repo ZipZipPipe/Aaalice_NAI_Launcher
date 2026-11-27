@@ -2,11 +2,11 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image/image.dart' as img;
 
+import '../../../../core/platform/image_file_picker.dart';
 import '../../../../core/utils/app_logger.dart';
 import '../../../../core/utils/localization_extension.dart';
 import '../../../../core/utils/vibe_export_utils.dart';
@@ -14,6 +14,7 @@ import '../../../../data/models/vibe/vibe_reference.dart';
 import '../../../adaptive/adaptive_presenter.dart';
 import '../../../providers/generation/generation_params_notifier.dart';
 import '../../../widgets/common/app_toast.dart';
+import '../../../widgets/common/menu_action_label.dart';
 
 /// Vibe 导出处理器
 ///
@@ -259,11 +260,7 @@ class VibeExportHandler {
 
   /// 选择目标图片
   Future<String?> _selectTargetImage() async {
-    final result = await FilePicker.platform.pickFiles(
-      type: FileType.image,
-      allowMultiple: false,
-      withData: false,
-    );
+    final result = await pickImageFiles();
 
     return result?.files.firstOrNull?.path;
   }
@@ -329,26 +326,18 @@ class VibeExportHandler {
       itemBuilder: (context) => [
         PopupMenuItem(
           value: 'vibe',
-          child: Row(
-            children: [
-              Icon(
-                Icons.file_download,
-                size: 18,
-                color: theme.colorScheme.primary,
-              ),
-              const SizedBox(width: 8),
-              Text(l10n.common_export),
-            ],
+          child: MenuActionLabel(
+            leading: const Icon(Icons.file_download),
+            label: l10n.common_export,
+            iconColor: theme.colorScheme.primary,
           ),
         ),
         PopupMenuItem(
           value: 'image',
-          child: Row(
-            children: [
-              Icon(Icons.image, size: 18, color: theme.colorScheme.secondary),
-              const SizedBox(width: 8),
-              Text(l10n.vibe_embedToImage),
-            ],
+          child: MenuActionLabel(
+            leading: const Icon(Icons.image),
+            label: l10n.vibe_embedToImage,
+            iconColor: theme.colorScheme.secondary,
           ),
         ),
       ],
@@ -372,7 +361,11 @@ Future<List<VibeReference>> showVibeEmbedSelectionForm({
   required BuildContext context,
   required List<VibeReference> vibes,
 }) async {
-  final selected = <VibeReference>[];
+  // 按下标记录：Vibe 的 == 会深比较整张原图，内容相同的两项还会被连带勾选
+  final selectedIndices = <int>{};
+  List<VibeReference> selectedVibes() => List<VibeReference>.unmodifiable([
+    for (final index in selectedIndices) vibes[index],
+  ]);
   final result = await AdaptivePresenter.showForm<List<VibeReference>>(
     context: context,
     title: context.l10n.vibe_export_selectToEmbed,
@@ -388,19 +381,18 @@ Future<List<VibeReference>> showVibeEmbedSelectionForm({
               itemCount: vibes.length,
               itemBuilder: (context, index) {
                 final vibe = vibes[index];
-                final isSelected = selected.contains(vibe);
                 return CheckboxListTile(
                   title: Text(vibe.displayName),
                   subtitle: Text(
                     panelContext.vibeSourceTypeLabel(vibe.sourceType),
                   ),
-                  value: isSelected,
+                  value: selectedIndices.contains(index),
                   onChanged: (value) {
                     setState(() {
                       if (value == true) {
-                        selected.add(vibe);
+                        selectedIndices.add(index);
                       } else {
-                        selected.remove(vibe);
+                        selectedIndices.remove(index);
                       }
                     });
                   },
@@ -424,16 +416,15 @@ Future<List<VibeReference>> showVibeEmbedSelectionForm({
                   TextButton(
                     key: const ValueKey('vibe-embed-selection-cancel'),
                     onPressed: () {
-                      selected.clear();
+                      selectedIndices.clear();
                       Navigator.of(panelContext).pop(<VibeReference>[]);
                     },
                     child: Text(panelContext.l10n.common_cancel),
                   ),
                   FilledButton(
                     key: const ValueKey('vibe-embed-selection-confirm'),
-                    onPressed: () => Navigator.of(
-                      panelContext,
-                    ).pop(List<VibeReference>.unmodifiable(selected)),
+                    onPressed: () =>
+                        Navigator.of(panelContext).pop(selectedVibes()),
                     child: Text(panelContext.l10n.common_confirm),
                   ),
                 ],
@@ -445,5 +436,5 @@ Future<List<VibeReference>> showVibeEmbedSelectionForm({
     ),
   );
 
-  return result ?? List<VibeReference>.unmodifiable(selected);
+  return result ?? selectedVibes();
 }

@@ -1,4 +1,6 @@
-import '../../data/models/gallery/nai_image_metadata.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../core/utils/prompt_tag_utils.dart';
 import '../../data/models/online_gallery/gallery_item.dart';
 import '../../data/models/online_gallery/gallery_prompt_projection.dart';
 import '../../data/models/online_gallery/gallery_source.dart';
@@ -184,7 +186,7 @@ class GalleryPromptProjectionService {
     final seen = <String>{};
     for (final tag in tags) {
       final rendered = category == GalleryPromptCopyCategory.artist
-          ? _formatArtistTag(tag)
+          ? PromptTagUtils.artistPromptTag(tag)
           : tag;
       if (outputFilter.contains(tag) || outputFilter.contains(rendered)) {
         continue;
@@ -194,47 +196,14 @@ class GalleryPromptProjectionService {
     return values.join(', ');
   }
 
-  String _formatArtistTag(String tag) {
-    const prefix = 'artist:';
-    if (tag.toLowerCase().startsWith(prefix)) return tag;
-    return '$prefix$tag';
-  }
-
   List<GalleryCharacterPrompt> _aiTagCharacters(
     GalleryMedia? media,
     GalleryDetail? detail,
   ) {
-    final metadata = media?.promptMetadata;
-    if (metadata != null) {
-      final count = _metadataCharacterCount(metadata);
-      if (count > 0) {
-        return List.generate(count, (index) {
-          final info = index < metadata.characterInfos.length
-              ? metadata.characterInfos[index]
-              : null;
-          return GalleryCharacterPrompt(
-            label: '',
-            prompt: info?.prompt ?? _at(metadata.characterPrompts, index),
-            negativePrompt:
-                info?.negativePrompt ??
-                _at(metadata.characterNegativePrompts, index),
-            positionX: info?.centerX,
-            positionY: info?.centerY,
-          );
-        });
-      }
-    }
+    final characters = media?.characterPrompts;
+    if (characters != null && characters.isNotEmpty) return characters;
     return detail?.characterPrompts ?? const [];
   }
-
-  int _metadataCharacterCount(NaiImageMetadata metadata) => [
-    metadata.characterPrompts.length,
-    metadata.characterNegativePrompts.length,
-    metadata.characterInfos.length,
-  ].reduce((left, right) => left > right ? left : right);
-
-  String _at(List<String> values, int index) =>
-      index < values.length ? values[index] : '';
 
   List<GalleryCharacterPrompt> _detailOrMetadataCharacters(
     GalleryItem item,
@@ -301,3 +270,8 @@ class GalleryPromptProjectionService {
     _ => null,
   };
 }
+
+final galleryPromptProjectionServiceProvider =
+    Provider<GalleryPromptProjectionService>(
+      (ref) => const GalleryPromptProjectionService(),
+    );

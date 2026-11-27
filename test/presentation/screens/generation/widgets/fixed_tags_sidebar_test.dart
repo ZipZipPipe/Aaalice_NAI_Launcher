@@ -8,7 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hive/hive.dart';
+import 'package:hive_ce/hive_ce.dart';
 import 'package:nai_launcher/core/autocomplete/tag_translation_lookup.dart';
 import 'package:nai_launcher/core/constants/storage_keys.dart';
 import 'package:nai_launcher/core/platform/platform_capabilities.dart';
@@ -24,6 +24,7 @@ import 'package:nai_launcher/presentation/agent_chat/widgets/agent_resource_drop
 import 'package:nai_launcher/presentation/prompt_assistant/widgets/prompt_assistant_overlay.dart';
 import 'package:nai_launcher/presentation/providers/fixed_tags_provider.dart';
 import 'package:nai_launcher/presentation/providers/layout_state_provider.dart';
+import 'package:nai_launcher/presentation/providers/tag_library_page_provider.dart';
 import 'package:nai_launcher/presentation/screens/generation/widgets/fixed_tags_sidebar.dart';
 import 'package:nai_launcher/presentation/screens/generation/widgets/sidebar_entry_tile.dart';
 import 'package:nai_launcher/presentation/screens/generation/widgets/sidebar_link_painter.dart';
@@ -44,7 +45,8 @@ void main() {
   setUpAll(() async {
     hiveDir = Directory.systemTemp.createTempSync('fixed_tags_sidebar_hive_');
     Hive.init(hiveDir.path);
-    await Hive.openBox(StorageKeys.settingsBox);
+    // 内存后端：落盘写一旦从 widget test 的 FakeAsync 时钟发起就不会完成，会锁死 box
+    await Hive.openBox(StorageKeys.settingsBox, bytes: Uint8List(0));
   });
 
   setUp(() async {
@@ -52,7 +54,8 @@ void main() {
   });
 
   tearDownAll(() async {
-    await Hive.close();
+    // 有界等待：box 被锁死时快速失败，不把整个测试分片拖到看门狗超时
+    await Hive.close().timeout(const Duration(seconds: 10));
     if (await hiveDir.exists()) {
       await hiveDir.delete(recursive: true);
     }
@@ -596,6 +599,63 @@ void main() {
     },
   );
 
+  testWidgets('管理对话框新建固定词保留所选分类，并与同时保存的词库条目关联', (tester) async {
+    tester.view.physicalSize = const Size(1600, 1200);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final category = TagLibraryCategory.create(name: '画风');
+    final storage = _SidebarTestStorage(
+      fixedEntries: const [],
+      categories: [category],
+      libraryEntries: const [],
+    );
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [localStorageServiceProvider.overrideWith((ref) => storage)],
+        child: const MaterialApp(
+          locale: Locale('zh'),
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          home: Scaffold(body: FixedTagsDialog()),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(FixedTagsDialog)),
+    );
+
+    await tester.tap(find.text('新建').first);
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.descendant(
+        of: find.byKey(const ValueKey('fixed-tag-content-input')),
+        matching: find.byType(EditableText),
+      ),
+      'watercolor',
+    );
+    await tester.tap(find.byType(DropdownButtonFormField<String?>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('画风').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('同时保存到词库'));
+    await tester.pump();
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+
+    final libraryEntry = container
+        .read(tagLibraryPageNotifierProvider)
+        .entries
+        .single;
+    final fixedEntry = container.read(fixedTagsNotifierProvider).entries.single;
+    expect(fixedEntry.content, 'watercolor');
+    expect(fixedEntry.categoryId, category.id);
+    expect(libraryEntry.categoryId, category.id);
+    expect(fixedEntry.sourceEntryId, libraryEntry.id);
+  });
+
   testWidgets('desktop fixed-tag editor keeps binary selectors horizontal', (
     tester,
   ) async {
@@ -687,15 +747,28 @@ void main() {
     );
     expect(
       tester.widget<PromptAssistantOverlay>(assistant).placement,
-      PromptAssistantPlacement.viewport,
+      PromptAssistantPlacement.inline,
     );
     expect(
       tester.widget<PromptAssistantOverlay>(assistant).stripFixedTagsFromInput,
       false,
     );
     expect(
+      find.descendant(of: contentFooter, matching: assistant),
+      findsOneWidget,
+    );
+    final modeSwitch = find.byKey(const ValueKey('tag-mode-button'));
+    expect(
+      tester.getRect(assistantToolbar).left,
+      greaterThanOrEqualTo(tester.getRect(modeSwitch).right),
+    );
+    expect(
       tester.getTopRight(assistantToolbar).dx,
-      closeTo(tester.getTopRight(contentInput).dx - 4, 1),
+      closeTo(tester.getTopRight(contentFooter).dx - 4, 1),
+    );
+    expect(
+      tester.getCenter(assistantToolbar).dy,
+      closeTo(tester.getCenter(modeSwitch).dy, 0.5),
     );
     await tester.tap(
       find.descendant(
@@ -710,7 +783,7 @@ void main() {
       expandedAssistantRect.height,
       closeTo(collapsedAssistantHeight, .01),
     );
-    final footerRect = tester.getRect(contentInput);
+    final footerRect = tester.getRect(contentFooter);
     expect(expandedAssistantRect.left, greaterThanOrEqualTo(footerRect.left));
     expect(expandedAssistantRect.right, lessThanOrEqualTo(footerRect.right));
     expect(expandedAssistantRect.top, greaterThanOrEqualTo(footerRect.top));
@@ -1133,11 +1206,12 @@ void main() {
   testWidgets('folder groups support per-category and bulk collapse', (
     tester,
   ) async {
+    // 序号相同时按随机 id 排列，与真实新建分类一样给出递增序号
     final categories = [
-      TagLibraryCategory.create(name: '质量词'),
-      TagLibraryCategory.create(name: '画风'),
-      TagLibraryCategory.create(name: '角色'),
-      TagLibraryCategory.create(name: '构图'),
+      TagLibraryCategory.create(name: '质量词', sortOrder: 0),
+      TagLibraryCategory.create(name: '画风', sortOrder: 1),
+      TagLibraryCategory.create(name: '角色', sortOrder: 2),
+      TagLibraryCategory.create(name: '构图', sortOrder: 3),
     ];
     final entries = [
       for (final category in categories)
@@ -2598,11 +2672,18 @@ void main() {
       await tester.enterText(find.byType(TextField), 'section-0-');
       await tester.pumpAndSettle();
 
-      final filteredMax = controller.position.maxScrollExtent;
+      final filteredController = tester
+          .widget<CustomScrollView>(
+            find.byKey(
+              const ValueKey('fixed-tags-positive-filtered-group-list'),
+            ),
+          )
+          .controller!;
+      final filteredMax = filteredController.position.maxScrollExtent;
       expect(filteredMax, lessThanOrEqualTo(12));
       expect(filteredMax, lessThan(initialMax));
       await tester.pump(const Duration(milliseconds: 200));
-      expect(controller.position.maxScrollExtent, filteredMax);
+      expect(filteredController.position.maxScrollExtent, filteredMax);
       expect(tester.takeException(), isNull);
     },
   );

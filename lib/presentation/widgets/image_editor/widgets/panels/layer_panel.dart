@@ -5,23 +5,30 @@ import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart'
     show WebViewEnvironment;
 
+import '../../../common/checkerboard_pattern.dart';
 import '../../../common/image_viewport_surface.dart';
+import '../../../common/inline_rename_field.dart';
+import '../../../common/menu_action_label.dart';
 import '../../../../../core/platform/platform_capabilities.dart';
 import '../../../../../core/utils/app_logger.dart';
 import '../../../../adaptive/interaction_policy.dart';
 import '../../../../../core/utils/localization_extension.dart';
 import '../../core/editor_state.dart';
 import '../../layers/layer.dart';
+import '../../layers/layer_role.dart';
 import '../../layers/model3d_layer_data.dart';
+import '../editor_image_import.dart';
 import '../../../../widgets/common/themed_divider.dart';
-import 'package:nai_launcher/presentation/widgets/common/themed_input.dart';
 import '../../../model3d_editor/model3d_editor_screen.dart';
 
 /// 图层面板
 class LayerPanel extends StatefulWidget {
   final EditorState state;
 
-  const LayerPanel({super.key, required this.state});
+  /// 导入图片后调用；面板以底部弹层呈现时由调用方收起，露出变换框
+  final VoidCallback? onImageImported;
+
+  const LayerPanel({super.key, required this.state, this.onImageImported});
 
   @override
   State<LayerPanel> createState() => _LayerPanelState();
@@ -36,6 +43,8 @@ class _LayerPanelState extends State<LayerPanel> {
     super.initState();
     // 监听图层内容变化（用于触发缩略图更新）
     widget.state.layerManager.addListener(_onLayerContentChanged);
+    // 缩略图只展示取景框内的内容，框变化后同样需要重建
+    widget.state.frameNotifier.addListener(_onLayerContentChanged);
     // 初始化时立即更新缩略图
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _updateThumbnails();
@@ -45,6 +54,7 @@ class _LayerPanelState extends State<LayerPanel> {
   @override
   void dispose() {
     widget.state.layerManager.removeListener(_onLayerContentChanged);
+    widget.state.frameNotifier.removeListener(_onLayerContentChanged);
     _thumbnailUpdateTimer?.cancel();
     super.dispose();
   }
@@ -67,12 +77,12 @@ class _LayerPanelState extends State<LayerPanel> {
   }
 
   Future<void> _updateThumbnails() async {
-    final canvasSize = widget.state.canvasSize;
+    final region = widget.state.frame;
     final layers = widget.state.layerManager.layers;
 
     // 只获取需要更新的图层
     final layersToUpdate = layers
-        .where((layer) => layer.needsThumbnailUpdate)
+        .where((layer) => layer.needsThumbnailUpdateFor(region))
         .toList();
 
     // 如果没有需要更新的图层，直接返回
@@ -86,7 +96,7 @@ class _LayerPanelState extends State<LayerPanel> {
 
         final batch = layersToUpdate.skip(i).take(batchSize);
         await Future.wait(
-          batch.map((layer) => layer.updateThumbnail(canvasSize)),
+          batch.map((layer) => layer.updateThumbnail(region)),
           eagerError: false,
         );
 
@@ -128,19 +138,33 @@ class _LayerPanelState extends State<LayerPanel> {
     return false;
   }
 
+  Future<void> _onImportImage() async {
+    final picked = await pickEditorImageFile(context);
+    if (picked == null || !mounted) return;
+    final placed = await importImageAsLayer(
+      context,
+      widget.state,
+      bytes: picked.bytes,
+      layerName: picked.name,
+    );
+    if (placed && mounted) widget.onImageImported?.call();
+  }
+
   Future<void> _onAdd3dLayer() async {
     if (!await _ensureWebView2Available()) return;
     if (!mounted) return;
-    final size = widget.state.canvasSize;
+    // 渲染尺寸等于取景框，结果铺在取景框位置
+    final frame = widget.state.frame;
     final result = await Model3dEditorScreen.show(
       context,
-      renderWidth: size.width.round(),
-      renderHeight: size.height.round(),
+      renderWidth: frame.width.round(),
+      renderHeight: frame.height.round(),
     );
     if (result == null || !mounted) return;
-    final layer = await widget.state.layerManager.addLayerFromImage(
+    final layer = await widget.state.layerCommands.addImageLayer(
       result.pngBytes,
       name: context.l10n.model3d_editorTitle,
+      offset: frame.topLeft,
     );
     layer?.model3d = Model3dLayerData(
       modelRef: result.modelRef,
@@ -153,19 +177,20 @@ class _LayerPanelState extends State<LayerPanel> {
     if (data == null) return;
     if (!await _ensureWebView2Available()) return;
     if (!mounted) return;
-    final size = widget.state.canvasSize;
+    final frame = widget.state.frame;
     final result = await Model3dEditorScreen.show(
       context,
       existing: data,
-      renderWidth: size.width.round(),
-      renderHeight: size.height.round(),
+      renderWidth: frame.width.round(),
+      renderHeight: frame.height.round(),
     );
     if (result == null || !mounted) return;
-    await widget.state.layerManager.replaceLayerBaseImage(
+    final replacedLayer = await widget.state.layerManager.replaceLayerBaseImage(
       layer.id,
       result.pngBytes,
+      offset: layer.baseImageOffset,
     );
-    layer.model3d = Model3dLayerData(
+    replacedLayer?.model3d = Model3dLayerData(
       modelRef: result.modelRef,
       sceneState: result.sceneState,
     );
@@ -182,9 +207,12 @@ class _LayerPanelState extends State<LayerPanel> {
       listenable: Listenable.merge([
         state.layerManager,
         state.layerManager.uiUpdateNotifier,
+        state.layerManager.activeLayerNotifier,
       ]),
       builder: (context, _) {
         final layers = state.layerManager.layers;
+        final commands = state.layerCommands;
+        final active = state.layerManager.activeLayer;
 
         return Container(
           decoration: BoxDecoration(
@@ -198,22 +226,27 @@ class _LayerPanelState extends State<LayerPanel> {
             children: [
               // 标题栏
               _LayerPanelHeader(
-                onAddLayer: () {
-                  state.layerManager.addLayer(
-                    name: context.l10n.editor_layerName(
-                      state.layerManager.layerCount + 1,
-                    ),
+                rolesEnabled: state.rolePolicy.rolesEnabled,
+                onAddLayer: (role) {
+                  commands.addLayer(
+                    name: role == LayerRole.mask
+                        ? context.l10n.editor_maskLayerName
+                        : context.l10n.editor_layerName(
+                            state.layerManager.layerCount + 1,
+                          ),
+                    role: role,
                   );
                 },
+                onImportImage: _onImportImage,
                 onAdd3dLayer: _onAdd3dLayer,
-                onMergeDown: state.layerManager.layers.length > 1
-                    ? () => state.layerManager.mergeDown()
+                onMergeDown: active != null && commands.canMergeDown(active)
+                    ? () => commands.mergeDown(active)
                     : null,
               ),
 
               const ThemedDivider(height: 1),
 
-              // 图层列表
+              // 图层列表：与画布叠放顺序一致，最上层排在最前
               // 使用 RepaintBoundary 隔离整个图层列表，防止父组件更新触发重绘
               Expanded(
                 child: RepaintBoundary(
@@ -228,22 +261,10 @@ class _LayerPanelState extends State<LayerPanel> {
                         )
                       : ReorderableListView.builder(
                           buildDefaultDragHandles: false,
-                          // Krita 风格：顶部图层在列表顶部
                           itemCount: layers.length,
-                          onReorderItem: (oldIndex, newIndex) {
-                            // UI索引转换为实际图层索引
-                            // UI index 0 = 顶部图层 = layers[length-1]
-                            final actualOldIndex = layers.length - 1 - oldIndex;
-                            final actualNewIndex = layers.length - 1 - newIndex;
-                            state.layerManager.reorderLayer(
-                              actualOldIndex,
-                              actualNewIndex,
-                            );
-                          },
+                          onReorderItem: commands.reorder,
                           itemBuilder: (context, index) {
-                            // UI index 0 = 顶部图层 = layers[length-1]
-                            final actualIndex = layers.length - 1 - index;
-                            final layer = layers[actualIndex];
+                            final layer = layers[index];
                             // 使用 layer.isActiveNotifier 单独监听活动状态
                             // 切换活动图层时仅重建新旧活动图层的 tile（O(1)），而非所有图层（O(n)）
                             return ValueListenableBuilder<bool>(
@@ -255,6 +276,9 @@ class _LayerPanelState extends State<LayerPanel> {
                                   isActive: isActive,
                                   index: index,
                                   showThumbnail: true,
+                                  showMaskBadge:
+                                      state.rolePolicy.rolesEnabled &&
+                                      layer.isMask,
                                   onTap: () {
                                     state.layerManager.setActiveLayer(layer.id);
                                   },
@@ -266,13 +290,16 @@ class _LayerPanelState extends State<LayerPanel> {
                                   onLockToggle: () {
                                     state.layerManager.toggleLock(layer.id);
                                   },
-                                  onDelete: layers.length > 1
-                                      ? () => state.layerManager.removeLayer(
-                                          layer.id,
-                                        )
+                                  onDelete: commands.canDelete(layer)
+                                      ? () => commands.delete(layer)
                                       : null,
                                   onDuplicate: () {
-                                    state.layerManager.duplicateLayer(layer.id);
+                                    commands.duplicate(
+                                      layer,
+                                      name: context.l10n.layer_duplicateName(
+                                        layer.name,
+                                      ),
+                                    );
                                   },
                                   onRename: (newName) {
                                     state.layerManager.renameLayer(
@@ -307,12 +334,16 @@ class _LayerPanelState extends State<LayerPanel> {
 
 /// 图层面板头部
 class _LayerPanelHeader extends StatelessWidget {
-  final VoidCallback onAddLayer;
+  final bool rolesEnabled;
+  final ValueChanged<LayerRole> onAddLayer;
+  final VoidCallback onImportImage;
   final VoidCallback onAdd3dLayer;
   final VoidCallback? onMergeDown;
 
   const _LayerPanelHeader({
+    required this.rolesEnabled,
     required this.onAddLayer,
+    required this.onImportImage,
     required this.onAdd3dLayer,
     this.onMergeDown,
   });
@@ -332,11 +363,41 @@ class _LayerPanelHeader extends StatelessWidget {
             ),
           ),
           const Spacer(),
-          // 添加图层
+          // 重绘会话里图片层与蒙版层分开添加
+          if (rolesEnabled)
+            PopupMenuButton<LayerRole>(
+              icon: const Icon(Icons.add, size: 20),
+              tooltip: context.l10n.layer_add,
+              onSelected: onAddLayer,
+              itemBuilder: (context) => [
+                PopupMenuItem(
+                  value: LayerRole.image,
+                  child: ListTile(
+                    leading: const Icon(Icons.image_outlined),
+                    title: Text(context.l10n.layer_addImage),
+                  ),
+                ),
+                PopupMenuItem(
+                  value: LayerRole.mask,
+                  child: ListTile(
+                    leading: const Icon(Icons.gesture),
+                    title: Text(context.l10n.layer_addMask),
+                  ),
+                ),
+              ],
+            )
+          else
+            IconButton(
+              icon: const Icon(Icons.add, size: 20),
+              tooltip: context.l10n.layer_add,
+              onPressed: () => onAddLayer(LayerRole.image),
+              visualDensity: VisualDensity.compact,
+            ),
+          // 从文件导入图片，导入后直接带着变换框摆放
           IconButton(
-            icon: const Icon(Icons.add, size: 20),
-            tooltip: context.l10n.layer_add,
-            onPressed: onAddLayer,
+            icon: const Icon(Icons.add_photo_alternate_outlined, size: 20),
+            tooltip: context.l10n.layer_importImage,
+            onPressed: onImportImage,
             visualDensity: VisualDensity.compact,
           ),
           // 添加 3D 模型图层
@@ -374,12 +435,14 @@ class _LayerTile extends StatefulWidget {
   final ValueChanged<double> onOpacityChanged;
   final VoidCallback? onDoubleTap;
   final EditorState state;
+  final bool showMaskBadge;
 
   const _LayerTile({
     required this.layer,
     required this.isActive,
     required this.index,
     this.showThumbnail = false,
+    this.showMaskBadge = false,
     required this.onTap,
     required this.onVisibilityToggle,
     required this.onLockToggle,
@@ -398,31 +461,18 @@ class _LayerTile extends StatefulWidget {
 class _LayerTileState extends State<_LayerTile>
     with AutomaticKeepAliveClientMixin {
   bool _isEditing = false;
-  late TextEditingController _nameController;
 
   @override
   bool get wantKeepAlive => true;
 
-  @override
-  void initState() {
-    super.initState();
-    _nameController = TextEditingController(text: widget.layer.name);
+  void _startEditing() => setState(() => _isEditing = true);
+
+  void _commitEditing(String name) {
+    widget.onRename(name);
+    _stopEditing();
   }
 
-  @override
-  void didUpdateWidget(_LayerTile oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    // 图层名称变化时同步更新控制器（非编辑状态下）
-    if (oldWidget.layer.name != widget.layer.name && !_isEditing) {
-      _nameController.text = widget.layer.name;
-    }
-  }
-
-  @override
-  void dispose() {
-    _nameController.dispose();
-    super.dispose();
-  }
+  void _stopEditing() => setState(() => _isEditing = false);
 
   @override
   Widget build(BuildContext context) {
@@ -479,9 +529,8 @@ class _LayerTileState extends State<_LayerTile>
                 // 图层名称
                 Expanded(
                   child: _isEditing
-                      ? ThemedInput(
-                          controller: _nameController,
-                          autofocus: true,
+                      ? InlineRenameField(
+                          name: widget.layer.name,
                           style: theme.textTheme.bodySmall,
                           decoration: const InputDecoration(
                             isDense: true,
@@ -489,23 +538,14 @@ class _LayerTileState extends State<_LayerTile>
                               horizontal: 8,
                               vertical: 4,
                             ),
-                            border: OutlineInputBorder(),
                           ),
-                          onSubmitted: (value) {
-                            widget.onRename(value);
-                            setState(() => _isEditing = false);
-                          },
-                          onEditingComplete: () {
-                            widget.onRename(_nameController.text);
-                            setState(() => _isEditing = false);
-                          },
+                          onSubmit: _commitEditing,
+                          onCancel: _stopEditing,
                         )
                       : GestureDetector(
                           // 3D 图层(onDoubleTap 非空)双击名字进入 3D 编辑器;
                           // 普通图层保留双击重命名。3D 图层仍可经右键菜单重命名。
-                          onDoubleTap:
-                              widget.onDoubleTap ??
-                              () => setState(() => _isEditing = true),
+                          onDoubleTap: widget.onDoubleTap ?? _startEditing,
                           child: Text(
                             widget.layer.name,
                             style: theme.textTheme.bodySmall?.copyWith(
@@ -519,6 +559,9 @@ class _LayerTileState extends State<_LayerTile>
                           ),
                         ),
                 ),
+
+                if (widget.showMaskBadge)
+                  _LayerBadge(label: context.l10n.layer_roleMask),
 
                 // 3D 模型图层角标
                 if (widget.layer.hasModel3d)
@@ -565,16 +608,25 @@ class _LayerTileState extends State<_LayerTile>
   }
 
   void _showContextMenu(BuildContext context) async {
-    final theme = Theme.of(context);
-    final layerManager = widget.state.layerManager;
+    final commands = widget.state.layerCommands;
 
-    // 获取图层索引用于判断是否可以移动
-    final layers = layerManager.layers;
-    final layerIndex = layers.indexWhere((l) => l.id == widget.layer.id);
-    final canMoveUp = layerIndex > 0;
-    final canMoveDown = layerIndex < layers.length - 1;
-    final canMergeDown = layerIndex > 0;
-    final canDelete = widget.onDelete != null && !widget.layer.locked;
+    final canMoveUp = commands.canMoveUp(widget.layer);
+    final canMoveDown = commands.canMoveDown(widget.layer);
+    final canMergeDown = commands.canMergeDown(widget.layer);
+    final canDelete = widget.onDelete != null;
+
+    Widget menuLabel({
+      required IconData icon,
+      required String label,
+      bool enabled = true,
+      bool destructive = false,
+    }) => MenuActionLabel(
+      leading: Icon(icon),
+      label: label,
+      enabled: enabled,
+      destructive: destructive,
+      gap: 12,
+    );
 
     // 获取按钮位置用于定位菜单
     final RenderBox button = context.findRenderObject() as RenderBox;
@@ -597,12 +649,9 @@ class _LayerTileState extends State<_LayerTile>
         // 复制图层
         PopupMenuItem<String>(
           value: 'duplicate',
-          child: Row(
-            children: [
-              const Icon(Icons.copy_outlined, size: 18),
-              const SizedBox(width: 12),
-              Text(context.l10n.layer_duplicate),
-            ],
+          child: menuLabel(
+            icon: Icons.copy_outlined,
+            label: context.l10n.layer_duplicate,
           ),
         ),
 
@@ -610,19 +659,11 @@ class _LayerTileState extends State<_LayerTile>
         PopupMenuItem<String>(
           value: 'delete',
           enabled: canDelete,
-          child: Row(
-            children: [
-              Icon(
-                Icons.delete_outlined,
-                size: 18,
-                color: theme.colorScheme.error,
-              ),
-              const SizedBox(width: 12),
-              Text(
-                context.l10n.layer_delete,
-                style: TextStyle(color: theme.colorScheme.error),
-              ),
-            ],
+          child: menuLabel(
+            icon: Icons.delete_outlined,
+            label: context.l10n.layer_delete,
+            enabled: canDelete,
+            destructive: true,
           ),
         ),
 
@@ -630,12 +671,10 @@ class _LayerTileState extends State<_LayerTile>
         PopupMenuItem<String>(
           value: 'merge_down',
           enabled: canMergeDown,
-          child: Row(
-            children: [
-              const Icon(Icons.merge_type, size: 18),
-              const SizedBox(width: 12),
-              Text(context.l10n.layer_merge),
-            ],
+          child: menuLabel(
+            icon: Icons.merge_type,
+            label: context.l10n.layer_merge,
+            enabled: canMergeDown,
           ),
         ),
 
@@ -644,50 +683,29 @@ class _LayerTileState extends State<_LayerTile>
         // 切换可见性
         PopupMenuItem<String>(
           value: 'toggle_visibility',
-          child: Row(
-            children: [
-              Icon(
-                widget.layer.visible ? Icons.visibility_off : Icons.visibility,
-                size: 18,
-              ),
-              const SizedBox(width: 12),
-              Text(
-                widget.layer.visible
-                    ? context.l10n.layer_visibility
-                    : context.l10n.layer_visibility,
-              ),
-            ],
+          child: menuLabel(
+            icon: widget.layer.visible
+                ? Icons.visibility_off
+                : Icons.visibility,
+            label: context.l10n.layer_visibility,
           ),
         ),
 
         // 切换锁定
         PopupMenuItem<String>(
           value: 'toggle_lock',
-          child: Row(
-            children: [
-              Icon(
-                widget.layer.locked ? Icons.lock_open : Icons.lock,
-                size: 18,
-              ),
-              const SizedBox(width: 12),
-              Text(
-                widget.layer.locked
-                    ? context.l10n.layer_lock
-                    : context.l10n.layer_lock,
-              ),
-            ],
+          child: menuLabel(
+            icon: widget.layer.locked ? Icons.lock_open : Icons.lock,
+            label: context.l10n.layer_lock,
           ),
         ),
 
         // 重命名
         PopupMenuItem<String>(
           value: 'rename',
-          child: Row(
-            children: [
-              const Icon(Icons.edit_outlined, size: 18),
-              const SizedBox(width: 12),
-              Text(context.l10n.layer_rename),
-            ],
+          child: menuLabel(
+            icon: Icons.edit_outlined,
+            label: context.l10n.layer_rename,
           ),
         ),
 
@@ -697,12 +715,10 @@ class _LayerTileState extends State<_LayerTile>
         PopupMenuItem<String>(
           value: 'move_up',
           enabled: canMoveUp,
-          child: Row(
-            children: [
-              const Icon(Icons.arrow_upward, size: 18),
-              const SizedBox(width: 12),
-              Text(context.l10n.layer_moveUp),
-            ],
+          child: menuLabel(
+            icon: Icons.arrow_upward,
+            label: context.l10n.layer_moveUp,
+            enabled: canMoveUp,
           ),
         ),
 
@@ -710,12 +726,10 @@ class _LayerTileState extends State<_LayerTile>
         PopupMenuItem<String>(
           value: 'move_down',
           enabled: canMoveDown,
-          child: Row(
-            children: [
-              const Icon(Icons.arrow_downward, size: 18),
-              const SizedBox(width: 12),
-              Text(context.l10n.layer_moveDown),
-            ],
+          child: menuLabel(
+            icon: Icons.arrow_downward,
+            label: context.l10n.layer_moveDown,
+            enabled: canMoveDown,
           ),
         ),
       ],
@@ -731,7 +745,7 @@ class _LayerTileState extends State<_LayerTile>
         widget.onDelete?.call();
         break;
       case 'merge_down':
-        layerManager.mergeDown();
+        commands.mergeDown(widget.layer);
         break;
       case 'toggle_visibility':
         widget.onVisibilityToggle();
@@ -740,15 +754,41 @@ class _LayerTileState extends State<_LayerTile>
         widget.onLockToggle();
         break;
       case 'rename':
-        setState(() => _isEditing = true);
+        _startEditing();
         break;
       case 'move_up':
-        layerManager.moveLayerUp(widget.layer.id);
+        commands.moveUp(widget.layer);
         break;
       case 'move_down':
-        layerManager.moveLayerDown(widget.layer.id);
+        commands.moveDown(widget.layer);
         break;
     }
+  }
+}
+
+/// 图层名称后的角色角标
+class _LayerBadge extends StatelessWidget {
+  const _LayerBadge({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      margin: const EdgeInsets.only(left: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.secondaryContainer,
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Text(
+        label,
+        style: theme.textTheme.labelSmall?.copyWith(
+          color: theme.colorScheme.onSecondaryContainer,
+        ),
+      ),
+    );
   }
 }
 
@@ -782,13 +822,13 @@ class _LayerThumbnail extends StatelessWidget {
                   fit: BoxFit.contain,
                   filterQuality: FilterQuality.medium,
                 )
-              : _buildPlaceholder(theme),
+              : _buildPlaceholder(context, theme),
         ),
       ),
     );
   }
 
-  Widget _buildPlaceholder(ThemeData theme) {
+  Widget _buildPlaceholder(BuildContext context, ThemeData theme) {
     // 检查是否有内容
     if (layer.hasContent) {
       // 有内容但缩略图还没生成，显示加载指示
@@ -807,9 +847,7 @@ class _LayerThumbnail extends StatelessWidget {
     // 空图层，显示透明网格图案
     return CustomPaint(
       painter: _TransparentGridPainter(
-        gridSize: 5,
-        color1: Colors.white,
-        color2: Colors.grey.shade300,
+        devicePixelRatio: MediaQuery.devicePixelRatioOf(context),
       ),
     );
   }
@@ -817,33 +855,22 @@ class _LayerThumbnail extends StatelessWidget {
 
 /// 透明网格绘制器（棋盘格图案）
 class _TransparentGridPainter extends CustomPainter {
-  final double gridSize;
-  final Color color1;
-  final Color color2;
+  static final CheckerboardPattern _pattern = CheckerboardPattern(
+    cellSize: 5,
+    evenColor: Colors.white,
+    oddColor: Colors.grey.shade300,
+  );
 
-  _TransparentGridPainter({
-    required this.gridSize,
-    required this.color1,
-    required this.color2,
-  });
+  final double devicePixelRatio;
+
+  const _TransparentGridPainter({required this.devicePixelRatio});
 
   @override
   void paint(Canvas canvas, Size size) {
-    final paint1 = Paint()..color = color1;
-    final paint2 = Paint()..color = color2;
-
-    for (double y = 0; y < size.height; y += gridSize) {
-      for (double x = 0; x < size.width; x += gridSize) {
-        final isEven =
-            ((x / gridSize).floor() + (y / gridSize).floor()) % 2 == 0;
-        canvas.drawRect(
-          Rect.fromLTWH(x, y, gridSize, gridSize),
-          isEven ? paint1 : paint2,
-        );
-      }
-    }
+    _pattern.paint(canvas, Offset.zero & size, pixelScale: devicePixelRatio);
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+  bool shouldRepaint(_TransparentGridPainter oldDelegate) =>
+      oldDelegate.devicePixelRatio != devicePixelRatio;
 }

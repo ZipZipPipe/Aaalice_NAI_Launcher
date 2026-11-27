@@ -1,19 +1,26 @@
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hive/hive.dart';
+import 'package:hive_ce/hive_ce.dart';
 import 'package:image/image.dart' as img;
 import 'package:nai_launcher/core/constants/storage_keys.dart';
+import 'package:nai_launcher/core/derivatives/derivative_registry.dart';
 import 'package:nai_launcher/core/storage/local_storage_service.dart';
+import 'package:nai_launcher/core/watermark/watermark_render_service.dart';
 import 'package:nai_launcher/data/models/watermark/watermark_settings.dart';
 import 'package:nai_launcher/l10n/app_localizations.dart';
 import 'package:nai_launcher/presentation/screens/watermark/watermark_editor_controls.dart';
 import 'package:nai_launcher/presentation/screens/watermark/watermark_editor_launcher.dart';
 import 'package:nai_launcher/presentation/screens/watermark/watermark_editor_screen.dart';
+
+import '../../../helpers/adaptive_panel_expectations.dart';
+import '../../../helpers/derivative_copy_save_scenarios.dart';
+import '../../../helpers/labeled_rows_expectations.dart';
 
 void main() {
   late Directory directory;
@@ -22,14 +29,16 @@ void main() {
   setUpAll(() async {
     directory = await Directory.systemTemp.createTemp('watermark-editor-test');
     Hive.init(directory.path);
-    await Hive.openBox<dynamic>(StorageKeys.settingsBox);
+    // 内存后端：落盘写一旦从 widget test 的 FakeAsync 时钟发起就不会完成，会锁死 box
+    await Hive.openBox<dynamic>(StorageKeys.settingsBox, bytes: Uint8List(0));
     storage = LocalStorageService();
   });
 
   setUp(() => Hive.box<dynamic>(StorageKeys.settingsBox).clear());
 
   tearDownAll(() async {
-    await Hive.close();
+    // 有界等待：box 被锁死时快速失败，不把整个测试分片拖到看门狗超时
+    await Hive.close().timeout(const Duration(seconds: 10));
     await directory.delete(recursive: true);
   });
 
@@ -311,6 +320,7 @@ void main() {
     expect(find.byKey(const ValueKey('adaptive-bottom-sheet')), findsOneWidget);
     final form = find.byKey(const ValueKey('watermark-color-form'));
     expect(form, findsOneWidget);
+    expectPanelHeaderScrollsWithContent(tester);
     expect(find.byType(Dialog), findsNothing);
     await tester.scrollUntilVisible(
       find.text('Confirm'),
@@ -370,7 +380,283 @@ void main() {
     expect(find.text('Allura'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('ratio slider speaks its name and the displayed percentage', (
+    tester,
+  ) async {
+    const settings = WatermarkSettings();
+    await tester.binding.setSurfaceSize(const Size(420, 760));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      MaterialApp(
+        locale: const Locale('en'),
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: Scaffold(
+          body: WatermarkEditorControls(
+            settings: settings,
+            layout: settings.universalLayout,
+            selectedLayer: WatermarkEditableLayer.text,
+            logoAvailable: false,
+            preserveMetadata: false,
+            onOpenMetadataSettings: () {},
+            onSettingsChanged: (_) {},
+            onLayoutChanged: (_) {},
+            onSelectedLayerChanged: (_) {},
+            onChooseLogo: () {},
+          ),
+        ),
+      ),
+    );
+    await tester.scrollUntilVisible(
+      find.text('Opacity'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+
+    // 名称与读数只落在滑块自身节点；外包 Semantics 会多出一个读数不同的容器节点
+    final named = find.semantics.byPredicate(
+      (node) => node.label == 'Opacity' && node.value.isNotEmpty,
+    );
+    expect(named, findsOne);
+    final node = named.evaluate().single;
+    expect(node.flagsCollection.isSlider, isTrue);
+    expect(node.value, '82%');
+    expect(find.text('82%'), findsOneWidget);
+  });
+
+  testWidgets('auto placement switch is global and keeps the anchor', (
+    tester,
+  ) async {
+    WatermarkSettings? changed;
+    await tester.binding.setSurfaceSize(const Size(420, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      _controlsApp(
+        settings: const WatermarkSettings(),
+        selectedLayer: WatermarkEditableLayer.logo,
+        onSettingsChanged: (value) => changed = value,
+      ),
+    );
+
+    await tester.scrollUntilVisible(
+      find.text('Auto placement'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('Auto placement'));
+    await tester.pump();
+
+    expect(changed?.autoPlacement, isTrue);
+    expect(
+      changed?.universalLayout.textPlacement.anchor,
+      WatermarkAnchor.bottomRight,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('text auto grayscale replaces the color picker with a slider', (
+    tester,
+  ) async {
+    WatermarkSettings? changed;
+    await tester.binding.setSurfaceSize(const Size(420, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      _controlsApp(
+        settings: const WatermarkSettings(),
+        selectedLayer: WatermarkEditableLayer.text,
+        onSettingsChanged: (value) => changed = value,
+      ),
+    );
+
+    expect(find.text('Tone difference'), findsNothing);
+    await tester.scrollUntilVisible(
+      find.text('Auto grayscale'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('Auto grayscale'));
+    await tester.pump();
+    expect(changed?.textStyle.autoTone, isTrue);
+    expect(changed?.logoStyle.autoTone, isFalse);
+
+    await tester.pumpWidget(
+      _controlsApp(
+        settings: changed!,
+        selectedLayer: WatermarkEditableLayer.text,
+        onSettingsChanged: (value) => changed = value,
+      ),
+    );
+    await tester.pump();
+
+    final colorTile = tester.widget<ListTile>(
+      find.ancestor(
+        of: find.text('Color Picker'),
+        matching: find.byType(ListTile),
+      ),
+    );
+    expect(colorTile.enabled, isFalse);
+    expect(find.text('Color is set by auto grayscale'), findsOneWidget);
+    expect(find.text('Tone difference'), findsOneWidget);
+    expect(find.text('70%'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('logo auto grayscale is switched separately', (tester) async {
+    WatermarkSettings? changed;
+    await tester.binding.setSurfaceSize(const Size(420, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      _controlsApp(
+        settings: const WatermarkSettings(
+          logoStyle: WatermarkLogoStyle(enabled: true),
+        ),
+        selectedLayer: WatermarkEditableLayer.logo,
+        onSettingsChanged: (value) => changed = value,
+      ),
+    );
+
+    await tester.scrollUntilVisible(
+      find.text('Auto grayscale'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('Auto grayscale'));
+    await tester.pump();
+
+    expect(changed?.logoStyle.autoTone, isTrue);
+    expect(changed?.textStyle.autoTone, isFalse);
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final locale in const ['en', 'ja']) {
+    for (final width in labeledRowWidths) {
+      for (final scale in labeledRowTextScales) {
+        final scenario = '$locale ${width.toInt()} ${scale}x';
+        testWidgets('$scenario ratio sliders keep labels whole and reachable', (
+          tester,
+        ) async {
+          const settings = WatermarkSettings();
+          await tester.binding.setSurfaceSize(Size(width, 900));
+          addTearDown(() => tester.binding.setSurfaceSize(null));
+          await tester.pumpWidget(
+            MaterialApp(
+              locale: Locale(locale),
+              localizationsDelegates: AppLocalizations.localizationsDelegates,
+              supportedLocales: AppLocalizations.supportedLocales,
+              builder: (context, child) => MediaQuery(
+                data: MediaQuery.of(
+                  context,
+                ).copyWith(textScaler: TextScaler.linear(scale)),
+                child: child!,
+              ),
+              home: Scaffold(
+                body: WatermarkEditorControls(
+                  settings: settings,
+                  layout: settings.universalLayout,
+                  selectedLayer: WatermarkEditableLayer.text,
+                  logoAvailable: false,
+                  preserveMetadata: false,
+                  onOpenMetadataSettings: () {},
+                  onSettingsChanged: (_) {},
+                  onLayoutChanged: (_) {},
+                  onSelectedLayerChanged: (_) {},
+                  onChooseLogo: () {},
+                ),
+              ),
+            ),
+          );
+          // 字体与锚点下拉框在窄屏大字号下的既有溢出不属于滑块行，行内越界由逐项边界断言覆盖
+          tester.takeException();
+
+          final l10n = lookupAppLocalizations(Locale(locale));
+          await expectLabeledSliderRows(
+            tester,
+            labels: [
+              l10n.watermark_letterSpacing,
+              l10n.watermark_stroke,
+              l10n.watermark_shadow,
+              l10n.watermark_opacity,
+              l10n.watermark_size,
+              l10n.watermark_margin,
+            ],
+            labelsSingleLine: locale != 'en',
+            readouts: const ['82%'],
+            lazyScrollable: find.byType(Scrollable).first,
+            reason: scenario,
+          );
+          tester.takeException();
+        });
+      }
+    }
+  }
+
+  group('save copy', () {
+    late ui.Image preview;
+
+    setUpAll(() async {
+      preview = await WatermarkRenderService.decodePreview(
+        _pngBytes(48, 32),
+        requireStatic: true,
+      );
+    });
+    tearDownAll(() => preview.dispose());
+
+    defineDerivativeCopySaveTests<WatermarkRenderResult>(
+      kind: DerivativeKind.watermark,
+      editorType: WatermarkEditorScreen,
+      surfaceSize: const Size(1180, 760),
+      saveButton: find.text('Save copy'),
+      savingLabel: (l10n) => l10n.watermark_saving,
+      savedLabel: (l10n) => l10n.watermark_saved,
+      galleryIndexFailedLabel: (l10n) => l10n.watermark_galleryRefreshFailed,
+      systemGalleryFailedLabel: (l10n) =>
+          l10n.watermark_systemGalleryExportFailed,
+      overrides: () => [localStorageServiceProvider.overrideWithValue(storage)],
+      renderResult: (bytes, fileName) => WatermarkRenderResult(
+        bytes: bytes,
+        fileName: fileName,
+        width: 48,
+        height: 32,
+        metadataPreserved: false,
+      ),
+      buildEditor: (render) => WatermarkEditorScreen(
+        sourceBytes: _pngBytes(48, 32),
+        sourceFileName: 'source.png',
+        sourcePath: 'source.png',
+        defaultsOnly: false,
+        decodePreview: (_, {requireStatic = false}) async => preview.clone(),
+        renderCopy: (request, {cancellationToken}) =>
+            render(request.sourceBytes),
+      ),
+    );
+  });
 }
+
+Widget _controlsApp({
+  required WatermarkSettings settings,
+  required WatermarkEditableLayer selectedLayer,
+  required ValueChanged<WatermarkSettings> onSettingsChanged,
+}) => MaterialApp(
+  locale: const Locale('en'),
+  localizationsDelegates: AppLocalizations.localizationsDelegates,
+  supportedLocales: AppLocalizations.supportedLocales,
+  home: Scaffold(
+    body: WatermarkEditorControls(
+      settings: settings,
+      layout: settings.universalLayout,
+      selectedLayer: selectedLayer,
+      logoAvailable: true,
+      preserveMetadata: false,
+      onOpenMetadataSettings: () {},
+      onSettingsChanged: onSettingsChanged,
+      onLayoutChanged: (_) {},
+      onSelectedLayerChanged: (_) {},
+      onChooseLogo: () {},
+    ),
+  ),
+);
 
 Uint8List _pngBytes(int width, int height) {
   final image = img.Image(width: width, height: height, numChannels: 4);

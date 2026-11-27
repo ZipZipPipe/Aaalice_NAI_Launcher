@@ -14,7 +14,7 @@ import '../../providers/selection_mode_provider.dart';
 import '../bulk_action_bar.dart';
 import '../common/translated_tag_text.dart';
 import '../gallery_filter_panel.dart';
-import '../grouped_grid_view.dart' show ImageDateGroup;
+import '../../utils/image_date_grouping.dart' show ImageDateGroup;
 import 'gallery_sidebar.dart';
 import 'gallery_library_toolbar.dart';
 
@@ -25,14 +25,6 @@ import '../autocomplete/autocomplete_wrapper.dart';
 /// Local gallery toolbar with search, filter and actions
 /// 本地画廊工具栏（搜索、过滤、操作按钮）
 class LocalGalleryToolbar extends ConsumerStatefulWidget {
-  /// Whether 3D card view mode is active
-  /// 是否启用3D卡片视图模式
-  final bool use3DCardView;
-
-  /// Callback when view mode is toggled
-  /// 视图模式切换回调
-  final VoidCallback? onToggleViewMode;
-
   /// Callback when open folder button is pressed
   /// 打开文件夹按钮回调
   final VoidCallback? onOpenFolder;
@@ -81,10 +73,12 @@ class LocalGalleryToolbar extends ConsumerStatefulWidget {
   final bool showPageTitle;
   final List<ImageCardAction> batchActions;
 
+  /// Search field focus node owned by the caller; created internally when null.
+  /// 搜索框焦点节点，由调用方持有并销毁；不传时工具栏自建。
+  final FocusNode? searchFocusNode;
+
   const LocalGalleryToolbar({
     super.key,
-    this.use3DCardView = true,
-    this.onToggleViewMode,
     this.onOpenFolder,
     this.onRefresh,
     this.onEnterSelectionMode,
@@ -98,6 +92,7 @@ class LocalGalleryToolbar extends ConsumerStatefulWidget {
     this.onToggleCategoryPanel,
     this.enableSearchAutocomplete = true,
     this.showPageTitle = true,
+    this.searchFocusNode,
   });
 
   @override
@@ -106,20 +101,25 @@ class LocalGalleryToolbar extends ConsumerStatefulWidget {
 }
 
 class _LocalGalleryToolbarState extends ConsumerState<LocalGalleryToolbar> {
-  final TextEditingController _searchController = TextEditingController();
-  late final FocusNode _searchFocusNode;
+  late final TextEditingController _searchController;
+  FocusNode? _ownedSearchFocusNode;
   Timer? _debounceTimer;
+
+  FocusNode get _searchFocusNode =>
+      widget.searchFocusNode ?? (_ownedSearchFocusNode ??= FocusNode());
 
   @override
   void initState() {
     super.initState();
-    _searchFocusNode = FocusNode(onKeyEvent: _handleSearchKeyEvent);
+    _searchController = TextEditingController(
+      text: ref.read(localGalleryNotifierProvider).filterCriteria.searchQuery,
+    );
   }
 
   @override
   void dispose() {
     _searchController.dispose();
-    _searchFocusNode.dispose();
+    _ownedSearchFocusNode?.dispose();
     _debounceTimer?.cancel();
     // Future 不需要 dispose
     super.dispose();
@@ -128,6 +128,7 @@ class _LocalGalleryToolbarState extends ConsumerState<LocalGalleryToolbar> {
   /// Search with debounce
   /// 搜索防抖
   void _onSearchChanged(String value) {
+    setState(() {});
     _debounceTimer?.cancel();
     _debounceTimer = Timer(const Duration(milliseconds: 300), () {
       ref.read(localGalleryNotifierProvider.notifier).setSearchQuery(value);
@@ -165,6 +166,22 @@ class _LocalGalleryToolbarState extends ConsumerState<LocalGalleryToolbar> {
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(localGalleryNotifierProvider);
+    ref.listen(localGalleryNotifierProvider.select((s) => s.filterCriteria), (
+      previous,
+      next,
+    ) {
+      if (previous?.searchQuery != next.searchQuery ||
+          (previous?.hasClearableFilters == true &&
+              !next.hasClearableFilters)) {
+        _debounceTimer?.cancel();
+        if (_searchController.text != next.searchQuery) {
+          _searchController.value = TextEditingValue(
+            text: next.searchQuery,
+            selection: TextSelection.collapsed(offset: next.searchQuery.length),
+          );
+        }
+      }
+    });
     final selectionState = ref.watch(localGallerySelectionNotifierProvider);
     final theme = Theme.of(context);
     final l10n = context.l10n;
@@ -268,7 +285,8 @@ class _LocalGalleryToolbarState extends ConsumerState<LocalGalleryToolbar> {
           shortcutId: ShortcutIds.openFilterPanel,
           onPressed: () => showGalleryFilterPanel(context),
         ),
-        if (state.hasFilters)
+        if (state.filterCriteria.hasClearableFilters ||
+            _searchController.text.isNotEmpty)
           GalleryLibraryAction(
             icon: Icons.filter_alt_off,
             label: l10n.common_clear,
@@ -276,8 +294,11 @@ class _LocalGalleryToolbarState extends ConsumerState<LocalGalleryToolbar> {
             shortcutId: ShortcutIds.clearFilter,
             isDanger: true,
             onPressed: () {
-              _searchController.clear();
-              ref.read(localGalleryNotifierProvider.notifier).clearAllFilters();
+              _debounceTimer?.cancel();
+              setState(_searchController.clear);
+              ref
+                  .read(localGalleryNotifierProvider.notifier)
+                  .clearFiltersWithinScope();
             },
           ),
         if (widget.onToggleCategoryPanel != null)
@@ -334,24 +355,29 @@ class _LocalGalleryToolbarState extends ConsumerState<LocalGalleryToolbar> {
   }
 
   void _clearSearch() {
-    _searchController.clear();
+    _debounceTimer?.cancel();
+    setState(_searchController.clear);
     ref.read(localGalleryNotifierProvider.notifier).setSearchQuery('');
-    setState(() {});
   }
 
   /// Build search field
   /// 构建搜索框 - 类似在线画廊的简洁圆角样式
   Widget _buildSearchField() {
-    final searchField = GalleryLibrarySearchField(
-      controller: _searchController,
-      focusNode: _searchFocusNode,
-      hintText: context.l10n.localGallery_searchFilenamePromptPlaceholder,
-      onChanged: _onSearchChanged,
-      onClear: _clearSearch,
-      onSubmitted: (value) {
-        _debounceTimer?.cancel();
-        ref.read(localGalleryNotifierProvider.notifier).setSearchQuery(value);
-      },
+    final searchField = Focus(
+      canRequestFocus: false,
+      skipTraversal: true,
+      onKeyEvent: _handleSearchKeyEvent,
+      child: GalleryLibrarySearchField(
+        controller: _searchController,
+        focusNode: _searchFocusNode,
+        hintText: context.l10n.localGallery_searchFilenamePromptPlaceholder,
+        onChanged: _onSearchChanged,
+        onClear: _clearSearch,
+        onSubmitted: (value) {
+          _debounceTimer?.cancel();
+          ref.read(localGalleryNotifierProvider.notifier).setSearchQuery(value);
+        },
+      ),
     );
 
     if (!widget.enableSearchAutocomplete) {
@@ -367,6 +393,7 @@ class _LocalGalleryToolbarState extends ConsumerState<LocalGalleryToolbar> {
         showCategory: true,
         showCount: true,
         autoInsertComma: false,
+        useGallerySearchSyntax: true,
       ),
       onSuggestionSelected: (value) {
         // 选择补全建议后仍然作为搜索框文本处理，不转为标签 chip。

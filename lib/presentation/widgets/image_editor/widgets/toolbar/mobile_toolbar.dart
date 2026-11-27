@@ -3,8 +3,12 @@ import 'package:flutter/material.dart';
 
 import '../../../../../core/utils/localization_extension.dart';
 import '../../core/editor_state.dart';
+import '../../core/editor_tool_groups.dart';
 import '../../tools/tool_base.dart';
 import '../../../../widgets/common/themed_divider.dart';
+import 'editor_tool_group_section.dart';
+import 'editor_toolbar_flyout.dart';
+import 'editor_toolbar_tools.dart';
 
 /// 移动端底部工具栏
 class MobileToolbar extends StatelessWidget {
@@ -12,10 +16,7 @@ class MobileToolbar extends StatelessWidget {
   final VoidCallback? onUndo;
   final VoidCallback? onRedo;
   final VoidCallback? onClear;
-  final VoidCallback? onFillMask;
-  final bool Function()? canFillMask;
   final VoidCallback? onLayersPressed;
-  final Set<String>? allowedToolIds;
 
   const MobileToolbar({
     super.key,
@@ -23,20 +24,8 @@ class MobileToolbar extends StatelessWidget {
     this.onUndo,
     this.onRedo,
     this.onClear,
-    this.onFillMask,
-    this.canFillMask,
     this.onLayersPressed,
-    this.allowedToolIds,
   });
-
-  List<EditorTool> get _visibleTools {
-    if (allowedToolIds == null || allowedToolIds!.isEmpty) {
-      return state.tools;
-    }
-    return state.tools
-        .where((tool) => allowedToolIds!.contains(tool.id))
-        .toList();
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -54,11 +43,12 @@ class MobileToolbar extends StatelessWidget {
       ),
       child: Row(
         children: [
-          // 撤销/重做 - 监听历史管理器
+          // 撤销/重做/清空 - 监听历史、图层内容与当前图层
           ListenableBuilder(
             listenable: Listenable.merge([
               state.historyManager,
               state.layerManager,
+              state.layerManager.activeLayerNotifier,
             ]),
             builder: (context, _) {
               return Row(
@@ -75,20 +65,12 @@ class MobileToolbar extends StatelessWidget {
                     enabled: state.canRedo,
                     onTap: onRedo ?? () => state.redo(),
                   ),
-                  if (onClear != null)
-                    _ActionButton(
-                      icon: Icons.delete_outline,
-                      tooltip: context.l10n.editor_clearLayer,
-                      enabled: true,
-                      onTap: onClear!,
-                    ),
-                  if (onFillMask != null)
-                    _ActionButton(
-                      icon: Icons.format_color_fill,
-                      tooltip: context.l10n.editor_fillClosedRegion,
-                      enabled: canFillMask?.call() ?? false,
-                      onTap: onFillMask!,
-                    ),
+                  _ActionButton(
+                    icon: Icons.delete_outline,
+                    tooltip: clearToolbarTooltip(context, state),
+                    enabled: canClearFromToolbar(state),
+                    onTap: onClear ?? state.clearActiveLayerWithHistory,
+                  ),
                 ],
               );
             },
@@ -101,24 +83,14 @@ class MobileToolbar extends StatelessWidget {
             endIndent: 12,
           ),
 
-          // 工具列表 - 监听工具切换
+          // 工具分组 - 监听工具切换与当前图层
           Expanded(
-            child: ValueListenableBuilder<String?>(
-              valueListenable: state.toolNotifier,
-              builder: (context, currentToolId, _) {
-                return HorizontalActionStrip(
-                  padding: const EdgeInsets.symmetric(horizontal: 4),
-                  child: Row(
-                    children: _visibleTools.map((tool) {
-                      return _MobileToolButton(
-                        tool: tool,
-                        isSelected: tool.id == currentToolId,
-                        onTap: () => state.setTool(tool),
-                      );
-                    }).toList(),
-                  ),
-                );
-              },
+            child: ListenableBuilder(
+              listenable: editorToolAvailability(state),
+              builder: (context, _) => HorizontalActionStrip(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: _MobileToolSections(state: state),
+              ),
             ),
           ),
 
@@ -141,68 +113,127 @@ class MobileToolbar extends StatelessWidget {
   }
 }
 
+class _MobileToolSections extends StatelessWidget {
+  const _MobileToolSections({required this.state});
+
+  final EditorState state;
+
+  static const double _sectionGap = 6;
+
+  @override
+  Widget build(BuildContext context) {
+    final showTitles = showsEditorToolGroupTitles(state);
+    final sections = editorToolSections(state);
+    return Row(
+      children: [
+        for (final (index, section) in sections.indexed) ...[
+          if (index > 0) const SizedBox(width: _sectionGap),
+          EditorToolGroupSection(
+            key: ValueKey('editor-tool-group-${section.group.name}'),
+            axis: Axis.horizontal,
+            title: showTitles
+                ? editorToolGroupLabel(context, section.group)
+                : null,
+            children: [
+              for (final slot in section.slots)
+                _MobileToolSlot(
+                  key: ValueKey('editor-tool-slot-${slot.key}'),
+                  state: state,
+                  slot: slot,
+                ),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+/// 折叠按钮显示该族当前或最近用过的工具，长按向上展开同族工具
+class _MobileToolSlot extends StatelessWidget {
+  const _MobileToolSlot({super.key, required this.state, required this.slot});
+
+  final EditorState state;
+  final EditorToolSlot slot;
+
+  @override
+  Widget build(BuildContext context) {
+    final entry = displayedEntryOf(state, slot);
+    final button = _MobileToolButton(
+      key: ValueKey('editor-tool-${entry.key}'),
+      tool: entry.tool,
+      label: editorToolLabel(context, entry.tool, entry.targetRole),
+      isSelected: isEditorToolEntrySelected(state, entry),
+      folded: slot.isFolded,
+      onTap: () => activateEditorToolEntry(state, entry),
+    );
+    if (!slot.isFolded) return button;
+    return EditorToolbarFlyout(
+      placement: EditorToolbarFlyoutPlacement.above,
+      items: editorToolSlotFlyoutItems(context, state, slot),
+      child: button,
+    );
+  }
+}
+
 /// 移动端工具按钮
 class _MobileToolButton extends StatelessWidget {
   final EditorTool tool;
+  final String label;
   final bool isSelected;
   final VoidCallback onTap;
 
+  /// 同族还有其他工具，可展开二级菜单
+  final bool folded;
+
   const _MobileToolButton({
+    super.key,
     required this.tool,
+    required this.label,
     required this.isSelected,
     required this.onTap,
+    this.folded = false,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final localizedName = switch (tool.id) {
-      'brush' => context.l10n.editor_toolBrush,
-      'eraser' => context.l10n.editor_toolEraser,
-      'fill' => context.l10n.editor_toolFill,
-      'magic_wand' => context.l10n.editor_toolMagicWand,
-      'line' => context.l10n.editor_toolLine,
-      'rect_selection' => context.l10n.editor_toolRectSelect,
-      'ellipse_selection' => context.l10n.editor_toolEllipseSelect,
-      'lasso_selection' => context.l10n.editor_toolLassoSelect,
-      'color_picker' => context.l10n.editor_toolColorPicker,
-      'clone_stamp' => context.l10n.editor_toolCloneStamp,
-      'blur' => context.l10n.editor_toolBlur,
-      _ => tool.name,
-    };
+    final foreground = isSelected
+        ? theme.colorScheme.onPrimaryContainer
+        : theme.colorScheme.onSurface;
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 2),
-      child: Tooltip(
-        message: localizedName,
-        excludeFromSemantics: true,
-        child: Semantics(
-          button: true,
-          selected: isSelected,
-          label: localizedName,
-          child: Material(
-            color: isSelected
-                ? theme.colorScheme.primaryContainer
-                : Colors.transparent,
-            borderRadius: BorderRadius.circular(8),
-            child: InkWell(
-              onTap: onTap,
-              borderRadius: BorderRadius.circular(8),
-              child: SizedBox(
-                width: 48,
-                height: 48,
-                child: Icon(
-                  tool.icon,
-                  size: 22,
-                  color: isSelected
-                      ? theme.colorScheme.onPrimaryContainer
-                      : theme.colorScheme.onSurface,
-                ),
-              ),
+    final button = Semantics(
+      button: true,
+      selected: isSelected,
+      label: label,
+      child: Material(
+        color: isSelected
+            ? theme.colorScheme.primaryContainer
+            : Colors.transparent,
+        borderRadius: BorderRadius.circular(8),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(8),
+          child: SizedBox.square(
+            dimension: 48,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                Center(child: Icon(tool.icon, size: 22, color: foreground)),
+                if (folded) EditorToolbarFoldIndicator(color: foreground),
+              ],
             ),
           ),
         ),
       ),
+    );
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 2),
+      // 折叠按钮的说明交给二级菜单，长按也留给它
+      child: folded
+          ? button
+          : Tooltip(message: label, excludeFromSemantics: true, child: button),
     );
   }
 }
@@ -249,51 +280,6 @@ class _ActionButton extends StatelessWidget {
             ),
           ),
         ),
-      ),
-    );
-  }
-}
-
-/// 移动端工具设置底部面板
-class MobileToolSettingsSheet extends StatelessWidget {
-  final EditorState state;
-
-  const MobileToolSettingsSheet({super.key, required this.state});
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final tool = state.currentTool;
-
-    return Container(
-      constraints: const BoxConstraints(maxHeight: 300),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surface,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // 拖动指示器
-          Container(
-            margin: const EdgeInsets.symmetric(vertical: 8),
-            width: 40,
-            height: 4,
-            decoration: BoxDecoration(
-              color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.4),
-              borderRadius: BorderRadius.circular(2),
-            ),
-          ),
-
-          // 工具设置内容
-          if (tool != null)
-            Flexible(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.only(bottom: 16),
-                child: tool.buildSettingsPanel(context, state),
-              ),
-            ),
-        ],
       ),
     );
   }

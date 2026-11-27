@@ -8,11 +8,14 @@ import '../../../../core/utils/localization_extension.dart';
 import '../../../../data/models/image/image_params.dart'
     show ImageParamsExtension;
 import '../../../providers/image_generation_provider.dart';
+import '../../../prompt_assistant/widgets/prompt_assistant_dock.dart';
+import '../../../prompt_assistant/widgets/prompt_assistant_overlay.dart';
 import '../../../providers/prompt_token_counter_provider.dart';
 import '../../../widgets/prompt/prompt_token_count_bar.dart';
 import '../../../widgets/common/translated_tag_text.dart';
 import '../../../widgets/prompt/prompt_footer_style.dart';
 import '../../../widgets/prompt/prompt_tag_mode_toggle.dart';
+import '../../../widgets/prompt/uc_preset_type_label.dart';
 
 class PromptInputFooter extends ConsumerWidget {
   const PromptInputFooter({
@@ -20,11 +23,17 @@ class PromptInputFooter extends ConsumerWidget {
     required this.target,
     required this.topPadding,
     this.leading,
+    this.trailing,
+    this.assistant,
   });
 
   final PromptTokenCountTarget target;
   final double topPadding;
   final Widget? leading;
+  final Widget? trailing;
+
+  /// Inline assistant docked beside the count; expanding covers the actions.
+  final PromptAssistantOverlay? assistant;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -39,6 +48,13 @@ class PromptInputFooter extends ConsumerWidget {
       ),
     );
     final showTransparentBackground = transparentBackground.supported;
+    final fixedUcPreset = target == PromptTokenCountTarget.negative
+        ? ref.watch(
+            generationParamsNotifierProvider.select(
+              (params) => params.capabilities.fixedSettings?.ucPreset,
+            ),
+          )
+        : null;
 
     final tokenCount = RepaintBoundary(
       key: const ValueKey('generation_prompt_footer_count'),
@@ -48,6 +64,14 @@ class PromptInputFooter extends ConsumerWidget {
     final leadingControls = Row(
       mainAxisSize: MainAxisSize.min,
       children: [
+        if (fixedUcPreset != null) ...[
+          _NegativeLockedLabel(
+            presetLabel: UcPresets.getPresetTypeFromInt(
+              fixedUcPreset,
+            ).label(context.l10n),
+          ),
+          const SizedBox(width: 4),
+        ],
         if (showTransparentBackground) ...[
           Tooltip(
             richMessage: WidgetSpan(
@@ -138,35 +162,38 @@ class PromptInputFooter extends ConsumerWidget {
       ],
     );
 
+    final actionStrip = LayoutBuilder(
+      builder: (context, constraints) => HorizontalActionStrip(
+        scrollKey: const ValueKey('generation_prompt_footer_actions_scroll'),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(minWidth: constraints.maxWidth),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              leadingControls,
+              if (leading != null)
+                Padding(
+                  padding: const EdgeInsets.only(left: 4),
+                  child: leading,
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+    final assistant = this.assistant;
+
     final supportingContent = KeyedSubtree(
       key: const ValueKey('generation_prompt_footer_supporting'),
       child: Row(
         children: [
           Expanded(
-            child: LayoutBuilder(
-              builder: (context, constraints) => HorizontalActionStrip(
-                scrollKey: const ValueKey(
-                  'generation_prompt_footer_actions_scroll',
-                ),
-                child: ConstrainedBox(
-                  constraints: BoxConstraints(minWidth: constraints.maxWidth),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      leadingControls,
-                      if (leading != null)
-                        Padding(
-                          padding: const EdgeInsets.only(left: 4),
-                          child: leading,
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
+            child: assistant == null
+                ? actionStrip
+                : PromptAssistantDock(assistant: assistant, child: actionStrip),
           ),
+          if (trailing case final action?) action,
           const SizedBox(width: 8),
-
           tokenCount,
         ],
       ),
@@ -176,6 +203,41 @@ class PromptInputFooter extends ConsumerWidget {
       key: const ValueKey('generation_prompt_footer'),
       padding: EdgeInsets.only(top: topPadding),
       child: supportingContent,
+    );
+  }
+}
+
+/// 负向提示词被模型固定预设接管时的说明标签，悬停查看完整原因。
+class _NegativeLockedLabel extends StatelessWidget {
+  const _NegativeLockedLabel({required this.presetLabel});
+
+  final String presetLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final color = theme.colorScheme.onSurfaceVariant;
+    return Tooltip(
+      key: const ValueKey('generation_negative_locked_label'),
+      message: context.l10n.generation_effortNegativeLockedHint(presetLabel),
+      child: Semantics(
+        container: true,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.lock_outline,
+              size: PromptFooterStyle.iconSize,
+              color: color,
+            ),
+            const SizedBox(width: 4),
+            Text(
+              context.l10n.generation_effortNegativeLocked,
+              style: theme.textTheme.labelMedium?.copyWith(color: color),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

@@ -124,6 +124,12 @@ class _PresetImportDialogState extends State<PresetImportDialog> {
         _error = null;
         _isExportError = false;
       });
+    } on RandomPresetVersionException catch (e) {
+      setState(() {
+        _previewPreset = null;
+        _error = context.l10n.diy_presetVersionTooNew(e.version);
+        _isExportError = false;
+      });
     } catch (e) {
       setState(() {
         _previewPreset = null;
@@ -214,9 +220,8 @@ class _PresetImportDialogState extends State<PresetImportDialog> {
                   hintText: widget.isExport ? '' : l10n.diy_presetPasteJsonHint,
                   contentPadding: const EdgeInsets.all(14),
                 ),
-                style: TextStyle(
+                style: theme.textTheme.bodySmall?.copyWith(
                   fontFamily: 'monospace',
-                  fontSize: 11,
                   color: colorScheme.onSurface,
                 ),
               ),

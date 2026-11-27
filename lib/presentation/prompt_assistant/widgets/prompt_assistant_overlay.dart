@@ -14,7 +14,7 @@ import '../../providers/fixed_tags_provider.dart';
 import '../../providers/prompt_editor_preferences_provider.dart';
 import '../../providers/tag_library_page_provider.dart';
 import '../../widgets/tag_library/tag_library_picker_dialog.dart';
-import '../models/prompt_assistant_models.dart';
+import '../../../data/models/prompt_assistant/prompt_assistant_models.dart';
 import '../providers/prompt_assistant_config_provider.dart';
 import '../providers/prompt_assistant_history_provider.dart';
 import '../providers/prompt_assistant_state_provider.dart';
@@ -123,7 +123,8 @@ class _PromptAssistantOverlayState
   void didUpdateWidget(PromptAssistantOverlay oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.sessionId != widget.sessionId ||
-        oldWidget.controller != widget.controller) {
+        oldWidget.controller != widget.controller ||
+        (oldWidget.enabled && !widget.enabled)) {
       _operation++;
       _abandonOperation?.call();
       _abandonOperation = null;
@@ -266,10 +267,10 @@ class _PromptAssistantOverlayState
     _abandonOperation = () {
       unawaited(service.cancelCurrentTask(sessionId: sessionId));
       // Defer provider mutation when the owning editor is being unmounted.
-      if (!stateNotifier.mounted) return;
+      if (!stateNotifier.isMounted) return;
       final abandonedState = stateNotifier.getState(sessionId);
       scheduleMicrotask(() {
-        if (stateNotifier.mounted &&
+        if (stateNotifier.isMounted &&
             identical(stateNotifier.getState(sessionId), abandonedState)) {
           stateNotifier.finishProcessing(sessionId);
         }
@@ -738,9 +739,9 @@ class _PromptAssistantOverlayState
         requestCancellation,
         if (streamCancellation != null) streamCancellation,
       ]);
-      if (notifier.mounted) notifier.finishProcessing(sessionId);
+      if (notifier.isMounted) notifier.finishProcessing(sessionId);
     } catch (error) {
-      if (notifier.mounted) notifier.setError(sessionId, error.toString());
+      if (notifier.isMounted) notifier.setError(sessionId, error.toString());
       if (mounted) {
         AppToast.error(
           context,

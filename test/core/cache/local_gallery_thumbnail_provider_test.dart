@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 import 'package:nai_launcher/core/cache/local_gallery_thumbnail_provider.dart';
 
+import '../../helpers/image_stream_resolution.dart';
 import '../../helpers/webp_metadata_fixture.dart';
 
 void main() {
@@ -138,7 +139,7 @@ void main() {
       );
       addTearDown(() => provider.evict());
 
-      final info = await _resolve(provider);
+      final info = await resolveImageInfo(provider);
       addTearDown(info.dispose);
       expect((info.image.width, info.image.height), (128, 96));
       final pixels = await info.image.toByteData(
@@ -165,7 +166,7 @@ void main() {
         target: const LocalGalleryThumbnailTarget(width: 64, height: 64),
       );
 
-      final info = await _resolve(provider);
+      final info = await resolveImageInfo(provider);
       addTearDown(info.dispose);
       expect((info.image.width, info.image.height), (1, 1));
     });
@@ -190,7 +191,7 @@ void main() {
         fit: LocalGalleryThumbnailFit.contain,
       );
 
-      final info = await _resolve(provider);
+      final info = await resolveImageInfo(provider);
       addTearDown(info.dispose);
       expect((info.image.width, info.image.height), (60, 120));
     });
@@ -308,12 +309,14 @@ void main() {
       );
     });
 
-    test('隐藏分支和后台状态都会暂停新的缩略图解码', () async {
+    test('可见失焦和恢复会启动排队解码，分支隐藏和后台会暂停', () async {
       final tempDir = await Directory.systemTemp.createTemp(
         'nai_local_thumbnail_pause_',
       );
       addTearDown(() async {
-        LocalGalleryThumbnailProvider.setAppForeground(true);
+        LocalGalleryThumbnailProvider.setAppLifecycleState(
+          ui.AppLifecycleState.resumed,
+        );
         LocalGalleryThumbnailProvider.setGalleryVisible(true);
         LocalGalleryThumbnailMemoryCache.instance.clear();
         await tempDir.delete(recursive: true);
@@ -329,63 +332,40 @@ void main() {
         size: stat.size,
         modifiedAt: stat.modified,
       );
-      final releaseDecoder = Completer<void>();
-      Future<ui.Codec> delayedDecoder(
-        ui.ImmutableBuffer buffer, {
-        ui.TargetImageSize Function(int, int)? getTargetSize,
-      }) async {
-        await releaseDecoder.future;
-        return PaintingBinding.instance.instantiateImageCodecWithSize(
-          buffer,
-          getTargetSize: getTargetSize,
+      final cache = LocalGalleryThumbnailMemoryCache.instance;
+      for (final (background, visible, hideBranch) in [
+        (ui.AppLifecycleState.hidden, ui.AppLifecycleState.inactive, false),
+        (ui.AppLifecycleState.paused, ui.AppLifecycleState.resumed, false),
+        (ui.AppLifecycleState.detached, ui.AppLifecycleState.inactive, true),
+      ]) {
+        LocalGalleryThumbnailProvider.setGalleryVisible(true);
+        LocalGalleryThumbnailProvider.setAppLifecycleState(background);
+        final width = 64 + background.index;
+        final provider = LocalGalleryThumbnailProvider(
+          source: source,
+          target: LocalGalleryThumbnailTarget(width: width, height: width),
         );
-      }
-
-      LocalGalleryThumbnailProvider.setAppForeground(false);
-      LocalGalleryThumbnailProvider.setGalleryVisible(true);
-      final provider = LocalGalleryThumbnailProvider(
-        source: source,
-        target: const LocalGalleryThumbnailTarget(width: 128, height: 128),
-      );
-      LocalGalleryThumbnailMemoryCache.instance.register(provider);
-      provider.loadImage(provider.cacheKey, delayedDecoder);
-
-      expect(
-        LocalGalleryThumbnailMemoryCache.instance.statistics.activeDecodes,
-        0,
-      );
-      expect(
-        LocalGalleryThumbnailMemoryCache.instance.statistics.queuedDecodes,
-        1,
-      );
-
-      LocalGalleryThumbnailProvider.setGalleryVisible(false);
-      LocalGalleryThumbnailProvider.setAppForeground(true);
-      expect(
-        LocalGalleryThumbnailMemoryCache.instance.statistics.activeDecodes,
-        0,
-      );
-
-      LocalGalleryThumbnailProvider.setGalleryVisible(true);
-      expect(
-        LocalGalleryThumbnailMemoryCache.instance.statistics.activeDecodes,
-        1,
-      );
-      releaseDecoder.complete();
-      for (var attempt = 0; attempt < 100; attempt++) {
-        if (LocalGalleryThumbnailMemoryCache
-                .instance
-                .statistics
-                .activeDecodes ==
-            0) {
-          break;
+        cache.register(provider);
+        final frame = firstImageInfo(
+          provider.loadImage(
+            provider.cacheKey,
+            PaintingBinding.instance.instantiateImageCodecWithSize,
+          ),
+        );
+        expect(cache.statistics.activeDecodes, 0);
+        expect(cache.statistics.queuedDecodes, 1);
+        LocalGalleryThumbnailProvider.setGalleryVisible(!hideBranch);
+        LocalGalleryThumbnailProvider.setAppLifecycleState(visible);
+        if (hideBranch) {
+          expect(cache.statistics.activeDecodes, 0);
+          expect(cache.statistics.queuedDecodes, 1);
+          LocalGalleryThumbnailProvider.setGalleryVisible(true);
         }
-        await Future<void>.delayed(const Duration(milliseconds: 10));
+        expect(cache.statistics.activeDecodes, 1);
+        expect(cache.statistics.queuedDecodes, 0);
+        (await frame).dispose();
+        expect(cache.statistics.activeDecodes, 0);
       }
-      expect(
-        LocalGalleryThumbnailMemoryCache.instance.statistics.activeDecodes,
-        0,
-      );
     });
 
     test('共享同一缓存键的卡片只在最后一个 owner 离开时取消', () async {
@@ -473,25 +453,7 @@ void main() {
         target: const LocalGalleryThumbnailTarget(width: 64, height: 64),
       );
 
-      await expectLater(_resolve(provider), throwsA(isA<StateError>()));
+      await expectLater(resolveImageInfo(provider), throwsA(isA<StateError>()));
     });
   });
-}
-
-Future<ImageInfo> _resolve(ImageProvider provider) {
-  final completer = Completer<ImageInfo>();
-  late ImageStreamListener listener;
-  final stream = provider.resolve(ImageConfiguration.empty);
-  listener = ImageStreamListener(
-    (info, _) {
-      stream.removeListener(listener);
-      if (!completer.isCompleted) completer.complete(info);
-    },
-    onError: (Object error, StackTrace? stackTrace) {
-      stream.removeListener(listener);
-      if (!completer.isCompleted) completer.completeError(error, stackTrace);
-    },
-  );
-  stream.addListener(listener);
-  return completer.future.timeout(const Duration(seconds: 5));
 }

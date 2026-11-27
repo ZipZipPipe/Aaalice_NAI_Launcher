@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter/widgets.dart';
 import 'package:path/path.dart' as p;
 
+import '../../../../core/cache/local_file_image.dart';
 import '../../../../core/utils/app_logger.dart';
 import '../../../../data/models/gallery/nai_image_metadata.dart';
 import '../../../../data/services/image_metadata_service.dart';
@@ -13,12 +14,17 @@ import 'image_detail_data.dart';
 ///
 /// 从文件路径加载图像，并使用 ImageMetadataService 解析元数据
 /// 用于主页生成的已保存图像和历史队列中的图像
-class FileImageDetailData implements ImageDetailData {
+class FileImageDetailData extends ImageDetailData {
   final String filePath;
   final Uint8List? _cachedBytes;
   final String? _id;
   final NaiImageMetadata? _initialMetadata;
+  final ImageMetadataService _metadataService;
+  final Future<NaiImageMetadata?> Function(String path) _readCachedMetadata;
+  NaiImageMetadata? _prefetchedMetadata;
+  Future<void>? _pendingPrefetch;
   final bool _showCopyButton;
+  final bool _showSaveAsButton;
 
   /// 图像最大维度阈值（超过此值会进行缩放优化）
   static const int _maxImageDimension = 4096;
@@ -29,18 +35,25 @@ class FileImageDetailData implements ImageDetailData {
     String? id,
     NaiImageMetadata? initialMetadata,
     bool showCopyButton = true,
+    bool showSaveAsButton = true,
+    ImageMetadataService? metadataService,
+    Future<NaiImageMetadata?> Function(String path)? readCachedMetadata,
   }) : _cachedBytes = cachedBytes,
        _id = id ?? filePath,
        _initialMetadata = initialMetadata,
-       _showCopyButton = showCopyButton;
+       _metadataService = metadataService ?? ImageMetadataService.instance,
+       _readCachedMetadata =
+           readCachedMetadata ??
+           (metadataService ?? ImageMetadataService.instance).getCachedAsync,
+       _showCopyButton = showCopyButton,
+       _showSaveAsButton = showSaveAsButton;
 
   @override
   ImageProvider getImageProvider() {
-    final fileImage = FileImage(File(filePath));
+    final fileImage = LocalFileImage(filePath);
 
     // 尝试从初始元数据或缓存获取元数据以进行缩放优化
-    final cachedMetadata =
-        _initialMetadata ?? ImageMetadataService().getCached(filePath);
+    final cachedMetadata = _knownMetadata;
     if (cachedMetadata != null) {
       final width = cachedMetadata.width ?? 0;
       final height = cachedMetadata.height ?? 0;
@@ -72,11 +85,42 @@ class FileImageDetailData implements ImageDetailData {
     return File(filePath).readAsBytes();
   }
 
-  /// 同步获取元数据（优先使用初始传入的元数据，其次从缓存获取）
+  /// 首帧前把 L2 命中取进来：L2 只能异步读，同步的 [metadata] 否则先空后填
+  ///
+  /// 读取在途时重复调用共享同一次读取，等待方超时放弃后读取照常完成。
+  @override
+  Future<void> prefetchMetadata() {
+    if (_resolvedMetadata != null) return Future.value();
+    return _pendingPrefetch ??= _readPrefetch().whenComplete(
+      () => _pendingPrefetch = null,
+    );
+  }
+
+  @override
+  bool get isPrefetchingMetadata => _pendingPrefetch != null;
+
+  Future<void> _readPrefetch() async {
+    try {
+      _prefetchedMetadata = await _readCachedMetadata(filePath);
+    } catch (error) {
+      AppLogger.w(
+        '[MetadataFlow] Metadata prefetch failed: path=$filePath, error=$error',
+        'FileImageDetailData',
+      );
+    }
+  }
+
+  // 不碰磁盘就已知的元数据；异步路径只看它，L1 留给异步读取去查，免得在 UI isolate 上同步 stat
+  NaiImageMetadata? get _resolvedMetadata =>
+      _initialMetadata ?? _prefetchedMetadata;
+
+  NaiImageMetadata? get _knownMetadata =>
+      _resolvedMetadata ?? _metadataService.getCached(filePath);
+
+  /// 同步获取元数据（初始传入、预取结果、L1 缓存依次兜底）
   @override
   NaiImageMetadata? get metadata {
-    final result =
-        _initialMetadata ?? ImageMetadataService().getCached(filePath);
+    final result = _knownMetadata;
     AppLogger.d(
       '[MetadataFlow] FileImageDetailData.metadata sync: path=$filePath, hasInitial=${_initialMetadata != null}, result=${result?.hasData}',
       'FileImageDetailData',
@@ -84,51 +128,48 @@ class FileImageDetailData implements ImageDetailData {
     return result;
   }
 
-  /// 异步获取元数据（从文件解析）
-  ///
-  /// **前台高优先级调用** - 用户主动打开详情页时使用
-  /// 不受后台预加载队列影响，立即开始解析
+  /// 用户打开详情页时前台高优先级解析
+  @override
   Future<NaiImageMetadata?> getMetadataAsync() async {
     AppLogger.i(
       '[MetadataFlow] getMetadataAsync START: path=$filePath',
       'FileImageDetailData',
     );
 
-    // 1. 先检查初始元数据
-    if (_initialMetadata != null) {
+    final resolved = _resolvedMetadata;
+    if (resolved != null) {
       AppLogger.i(
-        '[MetadataFlow] Returning initial metadata',
+        '[MetadataFlow] Returning resolved metadata: hasData=${resolved.hasData}',
         'FileImageDetailData',
       );
-      return _initialMetadata;
+      return resolved;
     }
 
-    // 2. 检查缓存
-    final cached = ImageMetadataService().getCached(filePath);
-    if (cached != null) {
-      AppLogger.i(
-        '[MetadataFlow] Returning cached metadata: hasData=${cached.hasData}',
-        'FileImageDetailData',
-      );
-      return cached;
+    // 预取还在读缓存时接着等它，不并行再读一次
+    final pending = _pendingPrefetch;
+    if (pending != null) {
+      await pending;
+      final prefetched = _prefetchedMetadata;
+      if (prefetched != null) {
+        AppLogger.i(
+          '[MetadataFlow] Returning prefetched metadata: hasData=${prefetched.hasData}',
+          'FileImageDetailData',
+        );
+        return prefetched;
+      }
     }
 
-    // 3. 前台立即解析（高优先级，不受后台队列影响）
+    // 按内容哈希先查 L1、L2，未命中再前台高优先级解析
     AppLogger.i(
-      '[MetadataFlow] No cache, calling getMetadataImmediate...',
+      '[MetadataFlow] Not resolved yet, calling getMetadataImmediate...',
       'FileImageDetailData',
     );
-    final result = await ImageMetadataService().getMetadataImmediate(filePath);
+    final result = await _metadataService.getMetadataImmediate(filePath);
     AppLogger.i(
       '[MetadataFlow] getMetadataImmediate returned: hasData=${result?.hasData}',
       'FileImageDetailData',
     );
     return result;
-  }
-
-  /// 预加载元数据（后台使用）
-  void preloadMetadata() {
-    ImageMetadataService().preload(filePath);
   }
 
   @override
@@ -137,48 +178,32 @@ class FileImageDetailData implements ImageDetailData {
   @override
   String get identifier => _id ?? filePath;
 
-  /// 异步获取文件信息
-  ///
-  /// 使用异步文件操作避免阻塞 UI 线程
+  /// 读盘补上大小与修改时间
+  @override
   Future<FileInfo> getFileInfoAsync() async {
-    final file = File(filePath);
-    final stat = await file.stat();
+    final stat = await File(filePath).stat();
     return FileInfo(
       path: filePath,
       fileName: p.basename(filePath),
-      size: stat.size,
-      modifiedAt: stat.modified,
+      size: stat.type == FileSystemEntityType.notFound ? null : stat.size,
+      modifiedAt: stat.type == FileSystemEntityType.notFound
+          ? null
+          : stat.modified,
     );
   }
 
   @override
-  FileInfo get fileInfo {
-    // 同步回退：返回默认值，实际数据通过 getFileInfoAsync 获取
-    // 警告：同步获取文件信息可能在文件系统繁忙时阻塞 UI
-    final file = File(filePath);
-    try {
-      return FileInfo(
-        path: filePath,
-        fileName: p.basename(filePath),
-        size: file.lengthSync(),
-        modifiedAt: file.lastModifiedSync(),
-      );
-    } catch (_) {
-      // 如果同步获取失败，返回默认值
-      return FileInfo(
-        path: filePath,
-        fileName: p.basename(filePath),
-        size: 0,
-        modifiedAt: DateTime.now(),
-      );
-    }
-  }
+  FileInfo get fileInfo =>
+      FileInfo(path: filePath, fileName: p.basename(filePath));
 
   @override
   bool get showSaveButton => false;
 
   @override
   bool get showCopyButton => _showCopyButton;
+
+  @override
+  bool get showSaveAsButton => _showSaveAsButton;
 
   @override
   bool get showFavoriteButton => true;

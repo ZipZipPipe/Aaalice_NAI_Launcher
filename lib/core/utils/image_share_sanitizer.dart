@@ -7,9 +7,12 @@ import 'package:flutter/foundation.dart';
 import 'package:image/image.dart' as img;
 import 'package:nai_png_codec/nai_png_codec.dart';
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 
+import 'exif_orientation.dart';
+import 'file_name_sanitizer.dart';
+import 'isolate_pool.dart';
 import 'png_share_source.dart';
+import 'share_temp_directories.dart';
 
 typedef ShareImagePrepareFunction =
     Future<SanitizedShareImage> Function(
@@ -458,18 +461,10 @@ class ShareImagePreparationService extends ChangeNotifier {
     required String fileName,
     required bool stripMetadata,
   }) {
-    if (stripMetadata) {
-      return ImageShareSanitizer.prepareForCopyOrDragInBackground(
-        bytes,
-        fileName: fileName,
-        stripMetadata: true,
-      );
-    }
-
-    return ImageShareSanitizer.prepareForCopyOrDrag(
+    return ImageShareSanitizer.prepareForCopyOrDragInBackground(
       bytes,
       fileName: fileName,
-      stripMetadata: false,
+      stripMetadata: stripMetadata,
     );
   }
 
@@ -556,7 +551,7 @@ class ImageShareSanitizer {
 
     final img.Image? decoded;
     try {
-      decoded = img.decodeImage(bytes);
+      decoded = ExifOrientation.decodeUpright(bytes);
     } on Object {
       throw const ImageSanitizeException('Image bytes could not be decoded');
     }
@@ -564,9 +559,8 @@ class ImageShareSanitizer {
       throw const ImageSanitizeException('Image bytes could not be decoded');
     }
 
-    final oriented = img.bakeOrientation(decoded);
     return SanitizedShareImage(
-      bytes: _encodePng(_clearStealthAlphaLsb(oriented)),
+      bytes: _encodePng(_clearStealthAlphaLsb(decoded)),
       fileName: p.setExtension(p.basename(fileName), '.png'),
       mimeType: 'image/png',
     );
@@ -592,7 +586,7 @@ class ImageShareSanitizer {
       return sanitizeForShare(bytes, fileName: normalizedFileName);
     }
 
-    if (!_clipboardFriendlyExtensions.contains(extension)) {
+    if (!_isClipboardFriendly(normalizedFileName)) {
       return _normalizeWithoutProtection(bytes, fileName: normalizedFileName);
     }
 
@@ -618,7 +612,7 @@ class ImageShareSanitizer {
       );
       return transform.apply(image, stripMetadata: stripMetadata);
     }
-    if (!stripMetadata) {
+    if (preservesSourceBytes(fileName, stripMetadata: stripMetadata)) {
       return prepareForCopyOrDrag(
         bytes,
         fileName: fileName,
@@ -627,19 +621,28 @@ class ImageShareSanitizer {
     }
 
     final transferableBytes = TransferableTypedData.fromList([bytes]);
-    return Isolate.run(() {
+    return ComputeGate().runIsolate(() {
       final materializedBytes = transferableBytes.materialize().asUint8List();
       return prepareForCopyOrDrag(
         materializedBytes,
         fileName: fileName,
-        stripMetadata: true,
+        stripMetadata: stripMetadata,
       );
     });
   }
 
+  /// Copy and drag hand back the source bytes untouched, so the source file
+  /// itself can stand in for the prepared one.
+  static bool preservesSourceBytes(
+    String fileName, {
+    required bool stripMetadata,
+    ShareImageTransform? transform,
+  }) => transform == null && !stripMetadata && _isClipboardFriendly(fileName);
+
   static Future<File> writeTempShareFile(SanitizedShareImage image) async {
-    final tempDir = await getTemporaryDirectory();
-    final shareDir = Directory(p.join(tempDir.path, 'nai_launcher_share'));
+    final shareDir = await ShareTempDirectories.resolve(
+      ShareTempDirectories.share,
+    );
     if (!await shareDir.exists()) {
       await shareDir.create(recursive: true);
     }
@@ -651,23 +654,30 @@ class ImageShareSanitizer {
     return file;
   }
 
+  /// One folder per cache key, so receivers see the image's own file name.
   static Future<File> writeCachedShareFile(
     String cacheKey,
     SanitizedShareImage image,
   ) async {
-    final tempDir = await getTemporaryDirectory();
-    final shareDir = Directory(
-      p.join(tempDir.path, 'nai_launcher_share_cache'),
+    final shareDir = await ShareTempDirectories.resolve(
+      ShareTempDirectories.shareCache,
     );
-    if (!await shareDir.exists()) {
-      await shareDir.create(recursive: true);
-    }
-
     final safeKey = cacheKey.replaceAll(RegExp(r'[^A-Za-z0-9_.-]+'), '_');
+    final folder = Directory(p.join(shareDir.path, safeKey));
+    await folder.create(recursive: true);
+
     final extension = p.extension(image.fileName).isEmpty
         ? '.png'
         : p.extension(image.fileName).toLowerCase();
-    final target = File(p.join(shareDir.path, '$safeKey$extension'));
+    final target = File(
+      p.join(
+        folder.path,
+        FileNameSanitizer.fileName(
+          p.setExtension(image.fileName, extension),
+          fallback: 'image',
+        ),
+      ),
+    );
     final temporary = File('${target.path}.tmp');
 
     await temporary.writeAsBytes(image.bytes);
@@ -702,7 +712,7 @@ class ImageShareSanitizer {
   }) async {
     img.Image? decoded;
     try {
-      decoded = img.decodeImage(bytes);
+      decoded = ExifOrientation.decodeUpright(bytes);
     } on Object {
       decoded = null;
     }
@@ -714,7 +724,7 @@ class ImageShareSanitizer {
       );
     }
     return SanitizedShareImage(
-      bytes: Uint8List.fromList(img.encodePng(img.bakeOrientation(decoded))),
+      bytes: Uint8List.fromList(img.encodePng(decoded)),
       fileName: p.setExtension(p.basename(fileName), '.png'),
       mimeType: 'image/png',
     );
@@ -726,6 +736,11 @@ class ImageShareSanitizer {
       return 'shared.png';
     }
     return normalized;
+  }
+
+  static bool _isClipboardFriendly(String fileName) {
+    final extension = p.extension(_normalizeShareFileName(fileName));
+    return _clipboardFriendlyExtensions.contains(extension.toLowerCase());
   }
 
   static String _mimeTypeForExtension(String extension) {

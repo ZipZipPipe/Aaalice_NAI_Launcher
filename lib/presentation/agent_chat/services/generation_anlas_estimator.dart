@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/services/anlas_calculator.dart';
 import '../../../data/models/image/image_params.dart';
 import '../../providers/image_generation_provider.dart';
+import '../../providers/subscription_billing.dart';
 import '../../providers/subscription_provider.dart';
 
 class GenerationAnlasEstimator {
@@ -12,36 +13,47 @@ class GenerationAnlasEstimator {
 
   int get currentBatchSize => _ref.read(imagesPerRequestProvider);
 
+  /// 智能体与 MCP 的生成放行和审批使用本次核实结果。
+  Future<SubscriptionBillingView> freshBilling() =>
+      _ref.read(subscriptionNotifierProvider.notifier).freshBillingView();
+
+  /// [billing] 必须来自 [freshBilling]，不能拿未经刷新的订阅视图判定免费。
   int estimate(
     ImageParams params, {
     required int requestCount,
     int? batchSize,
-  }) {
-    final subscription = _ref.read(subscriptionNotifierProvider).subscription;
-    final tier = subscription?.isOpus == true ? AnlasCalculator.opusTier : 0;
-    return AnlasCalculator.calculateRequestCost(
-      width: params.width,
-      height: params.height,
-      steps: params.steps,
-      batchCount: params.nSamples * requestCount,
-      batchSize: batchSize ?? currentBatchSize,
-      smea: params.effectiveSmea,
-      smeaDyn: params.effectiveSmeaDyn,
-      model: params.model,
-      subscriptionTier: tier,
-      opusQuotaExhausted: subscription?.usage?.isNegative ?? false,
-      strength: switch (params.action) {
-        ImageGenerationAction.img2img => params.strength,
-        ImageGenerationAction.infill => params.inpaintStrength,
-        ImageGenerationAction.generate => 1.0,
-      },
-      extraPerSampleCost: AnlasCalculator.resolvePreciseReferenceExtraCost(
-        params,
-      ),
-      extraPerRequestCost: AnlasCalculator.resolveVibeReferenceExtraCost(
-        params,
-      ),
-      oneTimeCost: AnlasCalculator.resolveVibeEncodingCost(params),
+    required SubscriptionBillingView billing,
+  }) => estimateWithBilling(
+    params,
+    requestCount: requestCount,
+    batchSize: batchSize ?? currentBatchSize,
+    billing: billing,
+  );
+
+  Future<int> estimateFresh(
+    ImageParams params, {
+    required int requestCount,
+    int? batchSize,
+  }) async {
+    final billing = await freshBilling();
+    return estimate(
+      params,
+      requestCount: requestCount,
+      batchSize: batchSize,
+      billing: billing,
     );
   }
+
+  static int estimateWithBilling(
+    ImageParams params, {
+    required int requestCount,
+    required int batchSize,
+    required SubscriptionBillingView billing,
+  }) => AnlasCalculator.calculate(
+    params,
+    batchCount: params.nSamples * requestCount,
+    batchSize: batchSize,
+    isOpus: billing.isOpus,
+    opusQuotaExhausted: billing.opusQuotaExhausted,
+  );
 }

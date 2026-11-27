@@ -1,4 +1,3 @@
-import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
@@ -6,12 +5,15 @@ import 'package:image/image.dart' as img;
 
 import '../network/error_mappers/api_error_mapper.dart';
 import 'app_logger.dart';
+import 'exif_orientation.dart';
+import 'isolate_pool.dart';
 
 /// NAI API 工具类
 /// 提供 NovelAI API 相关的共享静态方法
 class NAIApiUtils {
   static final Expando<bool> _normalizedPreciseReferencePngCache =
       Expando<bool>('normalizedPreciseReferencePng');
+  static final _preciseReferencePngByOriginal = Expando<Future<Uint8List>>();
 
   /// 标记该字节对象已经是 Director Reference 可直接提交的 PNG。
   static Uint8List markNormalizedPreciseReferencePng(Uint8List imageBytes) {
@@ -24,12 +26,6 @@ class NAIApiUtils {
     return _normalizedPreciseReferencePngCache[imageBytes] == true;
   }
 
-  /// 将 double 转换为 JSON 数值（整数或浮点数）
-  /// 如果是整数值（如 5.0），返回 int；否则返回 double
-  static num toJsonNumber(double value) {
-    return value == value.truncateToDouble() ? value.toInt() : value;
-  }
-
   /// 将图片转换为 NovelAI Director Reference 要求的格式
   /// 按官方 Web 客户端 Q6 路径处理：
   /// - 选择三种目标画布之一：(1024,1536), (1536,1024), (1472,1472)
@@ -38,7 +34,7 @@ class NAIApiUtils {
   /// - 转换为 PNG 格式
   static Uint8List ensurePngFormat(Uint8List imageBytes) {
     // 解码图片
-    final originalImage = img.decodeImage(imageBytes);
+    final originalImage = ExifOrientation.decodeUpright(imageBytes);
     if (originalImage == null) {
       AppLogger.w('Failed to decode image, returning original bytes', 'Utils');
       return imageBytes;
@@ -105,11 +101,24 @@ class NAIApiUtils {
   }
 
   /// 在后台 isolate 中执行 Director Reference 图片规范化，避免阻塞 UI isolate。
-  static Future<Uint8List> ensurePngFormatAsync(Uint8List imageBytes) async {
-    final normalizedBytes = await Isolate.run(
-      () => ensurePngFormat(imageBytes),
-    );
-    return markNormalizedPreciseReferencePng(normalizedBytes);
+  static Future<Uint8List> ensurePngFormatAsync(Uint8List imageBytes) {
+    if (isKnownNormalizedPreciseReferencePng(imageBytes)) {
+      return Future.value(imageBytes);
+    }
+    return _preciseReferencePngByOriginal[imageBytes] ??=
+        _normalizePreciseReferencePng(imageBytes);
+  }
+
+  static Future<Uint8List> _normalizePreciseReferencePng(
+    Uint8List bytes,
+  ) async {
+    try {
+      final normalized = await ComputeGate().runCompute(ensurePngFormat, bytes);
+      return markNormalizedPreciseReferencePng(normalized);
+    } catch (_) {
+      _preciseReferencePngByOriginal[bytes] = null;
+      rethrow;
+    }
   }
 
   /// 格式化 DioException 为错误代码（供 UI 层本地化显示）

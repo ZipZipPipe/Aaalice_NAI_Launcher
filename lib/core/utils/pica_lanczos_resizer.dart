@@ -29,7 +29,11 @@ class PicaLanczosResizer {
       return source.clone();
     }
 
-    final sourceBytes = source.getBytes(order: img.ChannelOrder.rgba);
+    final normalizedSource =
+        source.format == img.Format.uint8 && !source.hasPalette
+        ? source
+        : source.convert(format: img.Format.uint8, numChannels: 4);
+    final sourceBytes = normalizedSource.getBytes(order: img.ChannelOrder.rgba);
     final resizedBytes = resizeRgba(
       sourceBytes,
       sourceWidth: source.width,
@@ -102,6 +106,27 @@ class PicaLanczosResizer {
 
     return current.bytes;
   }
+
+  /// 对整张 RGBA 图执行 Pica 的单遍 Lanczos3 卷积。
+  static Uint8List resizeBuffer(
+    Uint8List source, {
+    required int sourceWidth,
+    required int sourceHeight,
+    required int targetWidth,
+    required int targetHeight,
+  }) => _resizeBuffer(
+    source,
+    sourceWidth: sourceWidth,
+    sourceHeight: sourceHeight,
+    targetWidth: targetWidth,
+    targetHeight: targetHeight,
+    scaleX: targetWidth / sourceWidth,
+    scaleY: targetHeight / sourceHeight,
+    offsetX: 0,
+    offsetY: 0,
+    filter: _PicaFilter.lanczos3,
+    scratch: _PicaResizeScratch(),
+  );
 
   static _PicaImageBuffer _resizeStage(
     _PicaImageBuffer source, {

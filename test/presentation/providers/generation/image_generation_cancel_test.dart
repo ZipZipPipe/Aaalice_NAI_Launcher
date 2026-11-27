@@ -1,17 +1,14 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/misc.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hive_flutter/hive_flutter.dart';
 import 'package:image/image.dart' as img;
 import 'package:mocktail/mocktail.dart';
 import 'package:nai_launcher/core/constants/api_constants.dart';
-import 'package:nai_launcher/core/constants/storage_keys.dart';
 import 'package:nai_launcher/core/network/dio_client.dart';
-import 'package:nai_launcher/data/datasources/remote/nai_generation_transport.dart';
 import 'package:nai_launcher/data/datasources/remote/nai_image_generation_api_service.dart';
 import 'package:nai_launcher/data/models/character/character_prompt.dart'
     as ui_character;
@@ -19,27 +16,21 @@ import 'package:nai_launcher/data/models/gallery/nai_image_metadata.dart';
 import 'package:nai_launcher/data/models/image/image_params.dart';
 import 'package:nai_launcher/data/models/image/image_stream_chunk.dart';
 import 'package:nai_launcher/data/models/user/user_subscription.dart';
-import 'package:nai_launcher/presentation/providers/auth_provider.dart';
+import 'package:nai_launcher/data/services/auth_provider.dart';
 import 'package:nai_launcher/presentation/providers/character_prompt_provider.dart';
 import 'package:nai_launcher/presentation/providers/image_generation_provider.dart';
 import 'package:nai_launcher/presentation/providers/image_save_settings_provider.dart';
 import 'package:nai_launcher/presentation/providers/notification_settings_provider.dart';
 import 'package:nai_launcher/presentation/providers/subscription_provider.dart';
 
-class MockNAIImageGenerationApiService extends Mock
-    implements NAIImageGenerationApiService {}
-
-class _AuthenticatedAuthNotifier extends AuthNotifier {
-  @override
-  AuthState build() => const AuthState(status: AuthStatus.authenticated);
-}
+import '../../../helpers/image_generation_test_environment.dart';
 
 ProviderContainer _createAuthenticatedContainer({
   List<Override> overrides = const [],
 }) {
   return ProviderContainer(
     overrides: [
-      authNotifierProvider.overrideWith(_AuthenticatedAuthNotifier.new),
+      authNotifierProvider.overrideWith(AuthenticatedAuthNotifier.new),
       ...overrides,
     ],
   );
@@ -64,9 +55,8 @@ class TestSubscriptionNotifier extends SubscriptionNotifier {
   }) async => true;
 }
 
-/// 记录请求与取消状态的假 HTTP 适配器。
-///
-/// 响应永不返回，模拟仍在服务器上运行的 NAI 生成请求。
+/// Never answers, like a NAI generation still running on the server, and
+/// records whether each request was cancelled.
 class _RecordingHttpAdapter implements HttpClientAdapter {
   final List<bool> cancelled = [];
 
@@ -88,41 +78,8 @@ class _RecordingHttpAdapter implements HttpClientAdapter {
   void close({bool force = false}) {}
 }
 
-Future<void> _pumpUntil(bool Function() condition, {String? reason}) async {
-  for (var i = 0; i < 400; i++) {
-    if (condition()) return;
-    await Future<void>.delayed(const Duration(milliseconds: 5));
-  }
-  fail(reason ?? 'Condition not met within timeout');
-}
-
 void main() {
-  late Directory hiveTempDir;
-
-  TestWidgetsFlutterBinding.ensureInitialized();
-
-  setUpAll(() async {
-    registerFallbackValue(const ImageParams());
-    registerFallbackValue(NaiGenerationCancellationLease());
-    hiveTempDir = await Directory.systemTemp.createTemp('nai_launcher_hive_');
-    Hive.init(hiveTempDir.path);
-    await Hive.openBox(StorageKeys.settingsBox);
-    await Hive.openBox(StorageKeys.historyBox);
-    await Hive.openBox(StorageKeys.statisticsCacheBox);
-  });
-
-  setUp(() async {
-    await Hive.box(
-      StorageKeys.settingsBox,
-    ).put(StorageKeys.imagesPerRequest, 1);
-  });
-
-  tearDownAll(() async {
-    await Hive.close();
-    if (await hiveTempDir.exists()) {
-      await hiveTempDir.delete(recursive: true);
-    }
-  });
+  setUpImageGenerationTestEnvironment();
 
   test(
     'cancelled generation must ignore late stream images after restart',
@@ -203,6 +160,37 @@ void main() {
       expect(state.history.single.bytes, orderedEquals(freshImage));
     },
   );
+
+  // 队列靠这段同步窗口判定生成归属，generate() 必须在第一个 await 之前就置忙
+  test('generate is busy before its first await returns', () async {
+    final container = _createAuthenticatedContainer(
+      overrides: [
+        naiImageGenerationApiServiceProvider.overrideWithValue(
+          MockNAIImageGenerationApiService(),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    final notifier = container.read(imageGenerationNotifierProvider.notifier);
+    final params = container
+        .read(generationParamsNotifierProvider)
+        .copyWith(prompt: '1girl', width: 512, height: 768);
+    expect(container.read(imageGenerationNotifierProvider).isBusy, isFalse);
+    final busyChanges = <bool>[];
+    final subscription = container.listen<bool>(
+      imageGenerationNotifierProvider.select((state) => state.isBusy),
+      (_, busy) => busyChanges.add(busy),
+    );
+    addTearDown(subscription.close);
+
+    final generation = notifier.generate(params);
+    expect(container.read(imageGenerationNotifierProvider).isBusy, isTrue);
+    expect(busyChanges, [true]);
+
+    notifier.cancel();
+    await generation;
+    expect(container.read(imageGenerationNotifierProvider).isBusy, isFalse);
+  });
 
   test(
     'immediate cancel before stream starts must not poison next generation',
@@ -340,7 +328,7 @@ void main() {
           previewImage: preview,
         ),
       );
-      await _pumpUntil(
+      await pollUntil(
         () => container.read(imageGenerationNotifierProvider).hasStreamPreview,
         reason: 'stream preview was not published before cancellation',
       );
@@ -438,7 +426,7 @@ void main() {
           );
 
       final generation = notifier.generate(params);
-      await _pumpUntil(
+      await pollUntil(
         () => requestSampleCounts.isNotEmpty,
         reason: 'stream request was not started',
       );
@@ -461,7 +449,7 @@ void main() {
           previewImage: secondPreview,
         ),
       );
-      await _pumpUntil(() {
+      await pollUntil(() {
         final slots = container
             .read(imageGenerationNotifierProvider)
             .streamPreviewSlots;
@@ -555,7 +543,7 @@ void main() {
         );
 
     final generation = notifier.generate(params);
-    await _pumpUntil(
+    await pollUntil(
       () => requestSampleCounts.length == 1,
       reason: 'first stream request was not started',
     );
@@ -569,7 +557,7 @@ void main() {
         previewImage: failedPreview,
       ),
     );
-    await _pumpUntil(
+    await pollUntil(
       () => container
           .read(imageGenerationNotifierProvider)
           .streamPreviewSlots
@@ -654,7 +642,7 @@ void main() {
         );
 
     final generation = notifier.generate(params);
-    await _pumpUntil(
+    await pollUntil(
       () => requestSampleCounts.length == 1,
       reason: 'first stream request was not started',
     );
@@ -668,7 +656,7 @@ void main() {
         previewImage: failedPreview,
       ),
     );
-    await _pumpUntil(
+    await pollUntil(
       () => container
           .read(imageGenerationNotifierProvider)
           .streamPreviewSlots
@@ -761,7 +749,7 @@ void main() {
           previewImage: preview,
         ),
       );
-      await _pumpUntil(
+      await pollUntil(
         () => container.read(imageGenerationNotifierProvider).hasStreamPreview,
         reason: 'stream preview was not published before cancellation',
       );
@@ -990,9 +978,12 @@ void main() {
           );
 
       await notifier.generate(params);
+      // Inpaint snapshots are composed in the background before landing.
+      await notifier.flushGenerationHistory();
 
       final state = container.read(imageGenerationNotifierProvider);
       expect(state.status, GenerationStatus.error);
+      expect(state.errorMessage, contains('focused stream failed'));
       expect(state.history, hasLength(1));
       final snapshot = img.decodeImage(state.history.single.bytes)!;
       expect((snapshot.width, snapshot.height), (256, 256));
@@ -1292,12 +1283,12 @@ void main() {
   );
 
   test('cancel must abort the in-flight HTTP request', () async {
-    // 不替换 naiImageGenerationApiServiceProvider：走真实服务链路，
-    // 复现 generate() 与 cancel() 分别 ref.read 服务实例的生产行为。
+    // Keep the real naiImageGenerationApiServiceProvider: production reads the
+    // service separately in generate() and cancel().
     final adapter = _RecordingHttpAdapter();
     final container = _createAuthenticatedContainer(
       overrides: [
-        imageGenerationDioClientProvider.overrideWithValue(
+        dioClientProvider.overrideWithValue(
           Dio()..httpClientAdapter = adapter,
         ),
       ],
@@ -1313,13 +1304,13 @@ void main() {
         .copyWith(prompt: '1girl', nSamples: 1);
 
     final firstGeneration = notifier.generate(params);
-    await _pumpUntil(
+    await pollUntil(
       () => adapter.requestCount >= 1,
       reason: 'first generation never reached the HTTP layer',
     );
 
     notifier.cancel();
-    await _pumpUntil(
+    await pollUntil(
       () => adapter.cancelled.first,
       reason:
           'cancel() must cancel the CancelToken of the in-flight request; '
@@ -1329,14 +1320,14 @@ void main() {
     await firstGeneration;
 
     final secondGeneration = notifier.generate(params);
-    await _pumpUntil(
+    await pollUntil(
       () => adapter.requestCount >= 2,
       reason: 'generation after cancel never reached the HTTP layer',
     );
     expect(adapter.cancelled[1], isFalse);
 
     notifier.cancel();
-    await _pumpUntil(() => adapter.cancelled[1]);
+    await pollUntil(() => adapter.cancelled[1]);
     await secondGeneration;
   });
 
@@ -1364,7 +1355,7 @@ void main() {
     ).thenAnswer((_) {
       streamCall += 1;
       if (streamCall == 1) {
-        // 模拟孤儿任务仍占用 NAI 并发额度
+        // An orphaned task still holds the NAI concurrency slot.
         return Stream.value(
           ImageStreamChunk.error(
             'API_ERROR_429|A previous request is still being processed',
@@ -1445,9 +1436,9 @@ void main() {
         .copyWith(prompt: '1girl', nSamples: 1);
 
     final generation = notifier.generate(params);
-    await _pumpUntil(() => streamCall >= 1);
+    await pollUntil(() => streamCall >= 1);
 
-    // 此刻位于 429 等待期内，取消必须终止自动重试
+    // Cancelling during the 429 wait must stop the automatic retry.
     notifier.cancel();
     await generation;
 

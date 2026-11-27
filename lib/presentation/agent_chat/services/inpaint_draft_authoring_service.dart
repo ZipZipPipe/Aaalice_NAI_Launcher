@@ -1,15 +1,17 @@
 import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import '../../../core/agent/agent_types.dart';
 import '../../../core/agent/harness/tools/image.dart';
+import '../../../core/agent/resources/agent_chat_resource_reference.dart';
 import '../../../core/agent/resources/agent_chat_resource_reference_codec.dart';
 import '../../../core/utils/app_logger.dart';
+import '../../../core/utils/decoded_image_size.dart';
 import '../../../core/utils/inpaint_mask/inpaint_mask_geometry.dart';
 import '../../../core/utils/inpaint_mask/inpaint_mask_operations.dart';
 import '../../../core/utils/inpaint_mask/inpaint_mask_preview.dart';
 import '../../../core/utils/inpaint_outpaint_utils.dart';
-import '../../../core/utils/nai_resolution_adapter.dart';
 import '../../../data/models/image/image_params.dart';
 import '../../../data/models/inpaint/inpaint_draft.dart';
 import '../../../data/models/inpaint/inpaint_draft_status.dart';
@@ -20,8 +22,12 @@ import 'defined_agent_tool.dart';
 import 'inpaint_mask_authoring.dart';
 import 'manual_inpaint_toolbox_serialization.dart';
 
-/// [filePath] 只用于观察台账比对，不进入模型可见输出。
-typedef InpaintResolvedSource = ({Uint8List bytes, String? filePath});
+/// [filePath] 与 [reference] 只用于观察台账比对，不进入模型可见输出。
+typedef InpaintResolvedSource = ({
+  Uint8List bytes,
+  String? filePath,
+  AgentChatResourceReference? reference,
+});
 
 class InpaintSourceResolution {
   const InpaintSourceResolution.ok(this.resource) : error = null;
@@ -42,7 +48,7 @@ abstract interface class InpaintDraftAuthoringHost {
     Map<String, dynamic> args,
   );
 
-  int estimateInfillAnlas(
+  Future<int> estimateInfillAnlas(
     ImageParams params, {
     required int batchSize,
     required Uint8List? maskImage,
@@ -64,13 +70,16 @@ class InpaintDraftAuthoringService {
   final InpaintDraftAuthoringHost _host;
   AgentImageObservationLedger? _observationLedger;
   String Function()? _observationSessionId;
+  String _observationGuidance = '';
 
   void configureObservationLedger(
     AgentImageObservationLedger ledger, {
     required String Function() activeSessionId,
+    required String observationGuidance,
   }) {
     _observationLedger = ledger;
     _observationSessionId = activeSessionId;
+    _observationGuidance = observationGuidance;
   }
 
   Future<AgentToolResult> createFromGeometry(Map<String, dynamic> args) async {
@@ -89,10 +98,9 @@ class InpaintDraftAuthoringService {
     final resolutionError = resolution.error;
     if (resolutionError != null) return resolutionError;
     final resource = resolution.resource!;
-    final notObserved = _requireObservedSource(resource.filePath);
-    if (notObserved != null) return notObserved;
 
-    final size = NaiResolutionAdapter.readImageSize(resource.bytes);
+    // 草稿仓库按解码后的像素校验蒙版与源图尺寸一致
+    final size = await DecodedImageSize.tryRead(resource.bytes);
     if (size == null) {
       return agentToolError(
         'invalid_source',
@@ -101,9 +109,16 @@ class InpaintDraftAuthoringService {
     }
     final (width, height) = size;
 
-    final Uint8List maskBinary;
+    final notObserved = _requireObservedSource(
+      filePath: resource.filePath,
+      reference: resource.reference,
+      sourceLongSide: math.max(width, height),
+    );
+    if (notObserved != null) return notObserved;
+
+    final ({Uint8List mask, int maskedPixels}) rasterized;
     try {
-      maskBinary = InpaintMaskGeometry.rasterizeBinary(
+      rasterized = await InpaintMaskGeometry.rasterizeBinaryAsync(
         regions: request.regions,
         width: width,
         height: height,
@@ -113,7 +128,7 @@ class InpaintDraftAuthoringService {
       return agentToolError('invalid_regions', error.message);
     }
 
-    final maskedPixels = maskBinary.fold<int>(0, (total, v) => total + v);
+    final maskedPixels = rasterized.maskedPixels;
     if (maskedPixels == 0) {
       return agentToolError(
         'empty_mask',
@@ -129,7 +144,8 @@ class InpaintDraftAuthoringService {
 
     return _commit(
       source: resource.bytes,
-      maskBinary: maskBinary,
+      maskBinary: rasterized.mask,
+      maskedPixels: maskedPixels,
       width: width,
       height: height,
       prompt: prompt,
@@ -200,7 +216,10 @@ class InpaintDraftAuthoringService {
       return agentToolError('expand_failed', '$error');
     }
 
-    final decodedMask = InpaintMaskUtils.decodeBinaryMask(expanded.maskImage);
+    final decodedMask =
+        await InpaintMaskUtils.decodeBinaryMaskWithCoverageAsync(
+          expanded.maskImage,
+        );
     if (decodedMask == null) {
       return agentToolError(
         'expand_failed',
@@ -211,6 +230,7 @@ class InpaintDraftAuthoringService {
     return _commit(
       source: expanded.sourceImage,
       maskBinary: decodedMask.mask,
+      maskedPixels: decodedMask.maskedPixels,
       width: decodedMask.width,
       height: decodedMask.height,
       prompt: prompt,
@@ -236,6 +256,7 @@ class InpaintDraftAuthoringService {
   Future<AgentToolResult> _commit({
     required Uint8List source,
     required Uint8List maskBinary,
+    required int maskedPixels,
     required int width,
     required int height,
     required String prompt,
@@ -252,7 +273,7 @@ class InpaintDraftAuthoringService {
     bool isCurrentSession() => _host.currentSessionId == sessionId;
     String? createdDraftId;
     try {
-      final maskPng = InpaintMaskUtils.encodeBinaryMask(
+      final maskPng = await InpaintMaskUtils.encodeBinaryMaskAsync(
         maskBinary,
         width,
         height,
@@ -278,7 +299,7 @@ class InpaintDraftAuthoringService {
       snapshot['_agentSourceIsOutpaint'] = sourceIsOutpaint;
       final batchSize = _host.requestBatchSize;
       snapshot['_agentBatchSize'] = batchSize;
-      final estimatedAnlas = _host.estimateInfillAnlas(
+      final estimatedAnlas = await _host.estimateInfillAnlas(
         ImageParams.fromJson(snapshot),
         batchSize: batchSize,
         maskImage: maskPng,
@@ -312,8 +333,7 @@ class InpaintDraftAuthoringService {
         'ok': true,
         'draft': manualInpaintDraftJson(ready),
         'maskCoverage': double.parse(
-          (maskBinary.fold<int>(0, (total, v) => total + v) / (width * height))
-              .toStringAsFixed(4),
+          (maskedPixels / (width * height)).toStringAsFixed(4),
         ),
         'focusedInpaint': focusedEnabled,
         ...extraDetails,
@@ -379,20 +399,30 @@ class InpaintDraftAuthoringService {
     }
   }
 
-  /// 没有台账记录说明模型没真正看过这张图，坐标只能是猜的，不能放行到扣费环节。
-  AgentToolResult? _requireObservedSource(String? filePath) {
+  /// 没看过、或只看过缩略图，坐标就只能是猜的，不能放行到扣费环节。
+  AgentToolResult? _requireObservedSource({
+    required String? filePath,
+    required AgentChatResourceReference? reference,
+    required int sourceLongSide,
+  }) {
     final ledger = _observationLedger;
     final sessionId = _observationSessionId?.call();
     if (ledger == null || sessionId == null) return null;
-    if (filePath != null && ledger.hasObserved(sessionId, filePath)) {
-      return null;
-    }
+    final observed = ledger.hasObserved(
+      sessionId,
+      paths: [if (filePath != null) filePath],
+      references: [if (reference != null) reference],
+      sourceLongSide: sourceLongSide,
+    );
+    if (observed) return null;
     return agentToolError(
       'image_not_observed',
-      'Read the source image with the read tool before authoring a mask for '
-          'it, so the coordinates come from the image instead of a guess. '
-          'Generated images expose a workspace path only when they are saved '
-          'to disk.',
+      [
+        'The source image has not been viewed in this session at a usable '
+            'resolution, so the mask coordinates would be a guess.',
+        if (_observationGuidance.isNotEmpty) _observationGuidance,
+        'Display thumbnails and reported sizes do not count.',
+      ].join(' '),
     );
   }
 }

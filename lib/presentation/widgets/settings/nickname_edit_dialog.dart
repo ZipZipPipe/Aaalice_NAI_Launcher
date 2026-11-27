@@ -76,7 +76,6 @@ class _NicknameEditDialogState extends State<NicknameEditDialog> {
     super.initState();
     _controller = TextEditingController(text: widget.account.nickname);
     _focusNode = FocusNode();
-    _validateNickname(widget.account.nickname);
   }
 
   @override
@@ -128,7 +127,7 @@ class _NicknameEditDialogState extends State<NicknameEditDialog> {
 
   @override
   Widget build(BuildContext context) {
-    final error = _hasInteracted ? _errorText : null;
+    final error = _hasInteracted && _errorText.isNotEmpty ? _errorText : null;
 
     return LayoutBuilder(
       builder: (context, constraints) {

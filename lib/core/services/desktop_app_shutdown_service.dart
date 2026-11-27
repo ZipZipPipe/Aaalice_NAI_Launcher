@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:hive_flutter/hive_flutter.dart';
+import 'package:hive_ce_flutter/hive_ce_flutter.dart';
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -21,6 +21,14 @@ class DesktopAppShutdownService {
 
   static void setWindowStateFlushHandler(Future<void> Function() handler) {
     _windowStateFlushHandler = handler;
+  }
+
+  static final List<Future<void> Function()> _cleanupHandlers = [];
+
+  /// 托盘退出直接 `exit`，ProviderContainer 不会被释放，需要在这里注销外部资源。
+  static void Function() addCleanupHandler(Future<void> Function() handler) {
+    _cleanupHandlers.add(handler);
+    return () => _cleanupHandlers.remove(handler);
   }
 
   static Future<void> shutdownAndExit(int code) {
@@ -59,6 +67,14 @@ class DesktopAppShutdownService {
         stackTrace,
         'AppShutdown',
       );
+    }
+
+    for (final handler in List.of(_cleanupHandlers)) {
+      try {
+        await handler();
+      } catch (error) {
+        AppLogger.w('Shutdown cleanup failed: $error', 'AppShutdown');
+      }
     }
 
     try {

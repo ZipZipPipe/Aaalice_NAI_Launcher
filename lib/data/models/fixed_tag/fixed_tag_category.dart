@@ -1,6 +1,8 @@
 import 'package:freezed_annotation/freezed_annotation.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../../core/extensions/list_sort_extensions.dart';
+
 part 'fixed_tag_category.freezed.dart';
 part 'fixed_tag_category.g.dart';
 
@@ -8,7 +10,7 @@ part 'fixed_tag_category.g.dart';
 ///
 /// 用于组织固定词条目，支持无限层级嵌套
 @freezed
-class FixedTagCategory with _$FixedTagCategory {
+abstract class FixedTagCategory with _$FixedTagCategory {
   const FixedTagCategory._();
 
   const factory FixedTagCategory({
@@ -82,9 +84,7 @@ extension FixedTagCategoryListExtension on List<FixedTagCategory> {
 
   /// 按名称排序
   List<FixedTagCategory> sortedByName() {
-    final sorted = [...this];
-    sorted.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
-    return sorted;
+    return [...this]..sortByKey((category) => category.name.toLowerCase());
   }
 
   /// 构建分类树

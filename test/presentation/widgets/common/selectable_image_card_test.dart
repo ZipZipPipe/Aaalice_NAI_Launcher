@@ -5,7 +5,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hive_flutter/hive_flutter.dart';
+import 'package:hive_ce_flutter/hive_ce_flutter.dart';
 import 'package:image/image.dart' as img;
 import 'package:nai_launcher/core/constants/storage_keys.dart';
 import 'package:nai_launcher/core/utils/image_share_sanitizer.dart';
@@ -20,6 +20,7 @@ import 'package:nai_launcher/presentation/screens/generation/widgets/history_pan
 import 'package:nai_launcher/presentation/screens/generation/widgets/image_preview.dart';
 import 'package:nai_launcher/presentation/widgets/common/draggable_memory_image.dart';
 import 'package:nai_launcher/presentation/widgets/common/image_card_actions.dart';
+import 'package:nai_launcher/presentation/widgets/common/image_card_generating.dart';
 import 'package:nai_launcher/presentation/widgets/common/image_card_hover_motion.dart';
 import 'package:nai_launcher/presentation/widgets/common/image_card_stream_preview.dart';
 import 'package:nai_launcher/presentation/widgets/common/pro_context_menu.dart';
@@ -36,7 +37,8 @@ void main() {
       'nai_launcher_selectable_card_hive_',
     );
     Hive.init(hiveTempDir.path);
-    await Hive.openBox(StorageKeys.settingsBox);
+    // 内存后端：落盘写一旦从 widget test 的 FakeAsync 时钟发起就不会完成，会锁死 box
+    await Hive.openBox(StorageKeys.settingsBox, bytes: Uint8List(0));
   });
 
   setUp(() {
@@ -50,7 +52,8 @@ void main() {
   });
 
   tearDownAll(() async {
-    await Hive.close();
+    // 有界等待：box 被锁死时快速失败，不把整个测试分片拖到看门狗超时
+    await Hive.close().timeout(const Duration(seconds: 10));
     if (await hiveTempDir.exists()) {
       await hiveTempDir.delete(recursive: true);
     }
@@ -120,31 +123,7 @@ void main() {
   testWidgets('stream preview progress stays legible over image content', (
     tester,
   ) async {
-    final preview = Uint8List.fromList(
-      img.encodePng(img.Image(width: 32, height: 32)),
-    );
-    await tester.pumpWidget(
-      ProviderScope(
-        child: MaterialApp(
-          theme: ThemeData.dark(),
-          home: Scaffold(
-            body: SizedBox.square(
-              dimension: 160,
-              child: SelectableImageCard(
-                isGenerating: true,
-                progress: 0.42,
-                currentImage: 1,
-                totalImages: 1,
-                streamPreview: preview,
-                imageWidth: 32,
-                imageHeight: 32,
-                enableSelection: false,
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
+    await tester.pumpWidget(_buildStreamingCardApp());
     await tester.pump();
 
     final indicator = tester.widget<CircularProgressIndicator>(
@@ -161,6 +140,189 @@ void main() {
     expect(count.style?.color, Colors.white);
     expect(percent.style?.color, Colors.white);
     expect(percent.style?.shadows, isNotEmpty);
+  });
+
+  testWidgets('generating card glow draws frames only at alpha steps', (
+    tester,
+  ) async {
+    await tester.pumpWidget(_buildCardApp(isGenerating: true, progress: 0.42));
+    expect(_generatingGlowAlpha(tester), 14 / 255);
+    await tester.pump();
+    expect(tester.binding.hasScheduledFrame, isFalse);
+
+    var drewFrame = false;
+    void markFrame(Duration _) {
+      drewFrame = true;
+    }
+
+    tester.binding.addPostFrameCallback(markFrame);
+    var frames = 0;
+    var steps = 0;
+    var alpha = _generatingGlowAlpha(tester);
+    for (var ms = 0; ms < 4000; ms++) {
+      await tester.pump(const Duration(milliseconds: 1));
+      if (!drewFrame) continue;
+      drewFrame = false;
+      tester.binding.addPostFrameCallback(markFrame);
+      frames++;
+
+      final next = _generatingGlowAlpha(tester);
+      if (next == alpha) continue;
+      expect((next - alpha).abs() * 255, closeTo(1, 1e-9));
+      alpha = next;
+      steps++;
+    }
+    expect(steps, 30);
+    expect(frames, steps);
+  });
+
+  testWidgets('reduced motion holds the generating glow still', (tester) async {
+    await tester.pumpWidget(_buildStreamingCardApp(disableAnimations: true));
+    await tester.pump();
+    final clock = tester
+        .widget<ImageCardGenerating>(find.byType(ImageCardGenerating))
+        .controller
+        .glowAlpha!
+        .clock;
+    final initialAlpha = Tween<double>(
+      begin: 0.04,
+      end: 0.1,
+    ).transform(Curves.easeInOut.transform(1 / 3));
+    expect(_generatingGlowAlpha(tester), initialAlpha);
+    expect(clock.hasPendingWake, isFalse);
+
+    await tester.pump(const Duration(milliseconds: 700));
+    expect(_generatingGlowAlpha(tester), initialAlpha);
+    expect(clock.hasPendingWake, isFalse);
+    expect(tester.binding.hasScheduledFrame, isFalse);
+  });
+
+  testWidgets('late streaming cards share the published alpha and next step', (
+    tester,
+  ) async {
+    const joinAt = Duration(milliseconds: 700);
+    const oneMicrosecond = Duration(microseconds: 1);
+    await tester.pumpWidget(_buildStreamingCardApp());
+    await tester.pump();
+    final schedule = tester
+        .widget<ImageCardGenerating>(find.byType(ImageCardGenerating))
+        .controller
+        .glowAlpha!
+        .clock
+        .schedule;
+    await tester.pump(joinAt);
+    final publishedAlpha = _generatingGlowAlpha(tester);
+    expect(publishedAlpha, isNot(schedule.alphaAt(Duration.zero)));
+
+    await tester.pumpWidget(_buildStreamingCardApp(showSecond: true));
+    expect(_generatingGlowAlpha(tester, index: 1), publishedAlpha);
+    expect(_generatingGlowAlpha(tester), publishedAlpha);
+
+    final nextStep = schedule.nextChangeAfter(joinAt)!;
+    await tester.pump(nextStep - joinAt - oneMicrosecond);
+    expect(_generatingGlowAlpha(tester), publishedAlpha);
+    expect(_generatingGlowAlpha(tester, index: 1), publishedAlpha);
+
+    await tester.pump(oneMicrosecond);
+    final nextAlpha = _generatingGlowAlpha(tester);
+    expect(nextAlpha, isNot(publishedAlpha));
+    expect(_generatingGlowAlpha(tester, index: 1), nextAlpha);
+  });
+
+  testWidgets('muted streaming cards do not notify or add wake frames', (
+    tester,
+  ) async {
+    await tester.pumpWidget(_buildStreamingCardApp(showSecond: true));
+    await tester.pump();
+    final cards = tester
+        .widgetList<ImageCardGenerating>(find.byType(ImageCardGenerating))
+        .toList();
+    final first = cards[0].controller.glowAlpha!;
+    final second = cards[1].controller.glowAlpha!;
+    final clock = first.clock;
+    await tester.pumpWidget(
+      _buildStreamingCardApp(showSecond: true, secondEnabled: false),
+    );
+    var mutedNotifications = 0;
+    second.addListener(() => mutedNotifications++);
+    final mutedAlpha = _generatingGlowAlpha(tester, index: 1);
+    var alpha = _generatingGlowAlpha(tester);
+    var changes = 0;
+    for (var ms = 1; ms <= 4000; ms++) {
+      await tester.pump(const Duration(milliseconds: 1));
+      expect(tester.binding.hasScheduledFrame, isFalse);
+      final next = _generatingGlowAlpha(tester);
+      expect(_generatingGlowAlpha(tester, index: 1), mutedAlpha);
+      if (next != alpha) changes++;
+      alpha = next;
+    }
+    expect(changes, 30);
+    expect(mutedNotifications, 0);
+
+    await tester.pump(const Duration(milliseconds: 700));
+    await tester.pumpWidget(_buildStreamingCardApp(showSecond: true));
+    await tester.pump();
+    expect(
+      _generatingGlowAlpha(tester, index: 1),
+      _generatingGlowAlpha(tester),
+    );
+    expect(mutedNotifications, 1);
+    expect(tester.binding.hasScheduledFrame, isFalse);
+
+    await tester.pumpWidget(
+      _buildStreamingCardApp(
+        showSecond: true,
+        firstEnabled: false,
+        secondEnabled: false,
+      ),
+    );
+    var allMutedNotifications = 0;
+    first.addListener(() => allMutedNotifications++);
+    second.addListener(() => allMutedNotifications++);
+    const elapsed = Duration(milliseconds: 4700);
+    await tester.pump(clock.schedule.nextChangeAfter(elapsed)! - elapsed);
+    expect(clock.hasPendingWake, isFalse);
+    for (var ms = 0; ms < 4000; ms++) {
+      await tester.pump(const Duration(milliseconds: 1));
+      expect(tester.binding.hasScheduledFrame, isFalse);
+      expect(tester.binding.transientCallbackCount, 0);
+      expect(clock.hasPendingWake, isFalse);
+    }
+    expect(allMutedNotifications, 0);
+  });
+
+  testWidgets('unmounting all streaming cards clears the clock before reuse', (
+    tester,
+  ) async {
+    await tester.pumpWidget(_buildStreamingCardApp(showSecond: true));
+    await tester.pump();
+    final clock = tester
+        .widget<ImageCardGenerating>(find.byType(ImageCardGenerating).first)
+        .controller
+        .glowAlpha!
+        .clock;
+    final initialAlpha = clock.schedule.alphaAt(Duration.zero);
+    await tester.pump(const Duration(milliseconds: 700));
+    expect(_generatingGlowAlpha(tester), isNot(initialAlpha));
+    expect(clock.hasPendingWake, isTrue);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(clock.hasPendingWake, isFalse);
+    expect(tester.binding.transientCallbackCount, 0);
+    await tester.pump(const Duration(milliseconds: 4000));
+    expect(tester.binding.hasScheduledFrame, isFalse);
+
+    await tester.pumpWidget(_buildStreamingCardApp(showSecond: true));
+    expect(_generatingGlowAlpha(tester), initialAlpha);
+    expect(_generatingGlowAlpha(tester, index: 1), initialAlpha);
+    await tester.pump();
+    expect(_generatingGlowAlpha(tester), initialAlpha);
+    expect(_generatingGlowAlpha(tester, index: 1), initialAlpha);
+    expect(clock.hasPendingWake, isTrue);
+    expect(tester.binding.hasScheduledFrame, isFalse);
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(clock.hasPendingWake, isFalse);
+    expect(tester.binding.transientCallbackCount, 0);
   });
 
   testWidgets('completed image cards use the shared hover scale', (
@@ -208,6 +370,44 @@ void main() {
 
     expect(find.text('局部重绘'), findsOneWidget);
     expect(find.text('放大'), findsOneWidget);
+  });
+
+  testWidgets('context menu offers save-as right after save', (tester) async {
+    await tester.pumpWidget(_buildCardApp());
+
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.byType(SelectableImageCard)),
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryMouseButton,
+    );
+    addTearDown(gesture.removePointer);
+    await tester.pumpAndSettle();
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(find.text('另存为…'), findsOneWidget);
+    final menu = tester.widget<ProContextMenu>(find.byType(ProContextMenu));
+    final itemIds = menu.items
+        .where((item) => !item.isDivider)
+        .map((item) => item.id)
+        .toList();
+    expect(
+      itemIds.indexOf(ImageCardActionId.saveAs.name),
+      itemIds.indexOf(ImageCardActionId.save.name) + 1,
+    );
+  });
+
+  testWidgets('save-as stays out of the hover action bar', (tester) async {
+    await tester.pumpWidget(_buildCardApp());
+
+    final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    addTearDown(gesture.removePointer);
+    await gesture.addPointer();
+    await gesture.moveTo(tester.getCenter(find.byType(SelectableImageCard)));
+    await tester.pumpAndSettle();
+
+    expect(find.byTooltip('保存'), findsOneWidget);
+    expect(find.byTooltip('另存为…'), findsNothing);
   });
 
   testWidgets('context menu closes before invoking route launching actions', (
@@ -784,12 +984,54 @@ void main() {
     expect(toggled, isTrue);
   });
 
+  testWidgets('save action delegates to the owner-supplied onSave', (
+    tester,
+  ) async {
+    var saveCount = 0;
+    await tester.pumpWidget(_buildCardApp(onSave: () => saveCount++));
+
+    final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    addTearDown(gesture.removePointer);
+    await gesture.addPointer();
+    await gesture.moveTo(tester.getCenter(find.byType(SelectableImageCard)));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('保存'));
+    await tester.pumpAndSettle();
+
+    expect(saveCount, 1);
+  });
+
+  testWidgets('save-as menu item delegates to the owner-supplied onSaveAs', (
+    tester,
+  ) async {
+    var saveAsCount = 0;
+    await tester.pumpWidget(_buildCardApp(onSaveAs: () => saveAsCount++));
+
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.byType(SelectableImageCard)),
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryMouseButton,
+    );
+    addTearDown(gesture.removePointer);
+    await tester.pumpAndSettle();
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('另存为…'));
+    await tester.pumpAndSettle();
+
+    expect(saveAsCount, 1);
+    expect(find.byType(ProContextMenu), findsNothing);
+  });
+
   testWidgets('read-only card hides save and copy actions but keeps badge', (
     tester,
   ) async {
     await tester.pumpWidget(
       _buildCardApp(
-        enableSaveAction: false,
+        onSave: null,
+        onSaveAs: null,
         enableCopyAction: false,
         statusBadgeLabel: '失败快照',
         onInpaint: null,
@@ -820,11 +1062,74 @@ void main() {
 
     expect(find.text('保存图片'), findsNothing);
     expect(find.text('复制图片'), findsNothing);
+    expect(find.text('另存为…'), findsNothing);
     expect(find.byType(ProContextMenu), findsNothing);
   });
 }
 
 void _noop() {}
+
+Widget _buildStreamingCardApp({
+  bool disableAnimations = false,
+  bool showSecond = false,
+  bool firstEnabled = true,
+  bool secondEnabled = true,
+}) {
+  final preview = Uint8List.fromList(
+    img.encodePng(img.Image(width: 32, height: 32)),
+  );
+  return ProviderScope(
+    child: MaterialApp(
+      theme: ThemeData.dark(),
+      home: MediaQuery(
+        data: MediaQueryData(disableAnimations: disableAnimations),
+        child: Scaffold(
+          body: Row(
+            children: [
+              TickerMode(enabled: firstEnabled, child: _streamingCard(preview)),
+              if (showSecond)
+                TickerMode(
+                  enabled: secondEnabled,
+                  child: _streamingCard(preview),
+                ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+Widget _streamingCard(Uint8List preview) => SizedBox.square(
+  dimension: 160,
+  child: SelectableImageCard(
+    isGenerating: true,
+    progress: 0.42,
+    currentImage: 1,
+    totalImages: 1,
+    streamPreview: preview,
+    imageWidth: 32,
+    imageHeight: 32,
+    enableSelection: false,
+  ),
+);
+
+double _generatingGlowAlpha(WidgetTester tester, {int index = 0}) {
+  final glow = tester.widget<Container>(
+    find
+        .descendant(
+          of: find.byType(ImageCardGenerating).at(index),
+          matching: find.byWidgetPredicate(
+            (widget) =>
+                widget is Container &&
+                widget.decoration is BoxDecoration &&
+                (widget.decoration! as BoxDecoration).boxShadow != null,
+          ),
+        )
+        .first,
+  );
+  return (glow.decoration! as BoxDecoration).boxShadow!.single.color.a;
+}
 
 Widget _buildStreamPreviewApp(Uint8List previewBytes) {
   return MaterialApp(
@@ -976,7 +1281,9 @@ Widget _buildCardApp({
   bool isFavorite = false,
   bool isGenerating = false,
   bool disableAnimations = false,
-  bool enableSaveAction = true,
+  double? progress,
+  VoidCallback? onSave = _noop,
+  VoidCallback? onSaveAs = _noop,
   bool enableCopyAction = true,
   String? statusBadgeLabel,
   VoidCallback? onFavoriteToggle,
@@ -996,13 +1303,15 @@ Widget _buildCardApp({
   final card = SelectableImageCard(
     imageBytes: bytes,
     isGenerating: isGenerating,
+    progress: progress,
     currentImage: isGenerating ? 1 : null,
     totalImages: isGenerating ? 2 : null,
     imageWidth: 32,
     imageHeight: 32,
     enableSelection: false,
     hoverEffectsEnabled: hoverEffectsEnabled,
-    enableSaveAction: enableSaveAction,
+    onSave: onSave,
+    onSaveAs: onSaveAs,
     enableCopyAction: enableCopyAction,
     statusBadgeLabel: statusBadgeLabel,
     isFavorite: isFavorite,

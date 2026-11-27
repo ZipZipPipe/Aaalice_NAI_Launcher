@@ -59,7 +59,7 @@ class VibeLibraryCloudSyncAdapter extends ValidatingCloudSyncDataAdapter
 
   @override
   Stream<PortableSyncRecord> exportRecords() async* {
-    for (final category in await _storage.getAllCategories()) {
+    for (final category in await _storage.readStoredCategories()) {
       yield PortableSyncRecord(
         adapterId: id,
         id: 'category:${category.id}',
@@ -73,7 +73,7 @@ class VibeLibraryCloudSyncAdapter extends ValidatingCloudSyncDataAdapter
         },
       );
     }
-    for (final entry in await _storage.getAllEntries()) {
+    await for (final entry in _storage.streamStoredEntries()) {
       final path = entry.filePath;
       if (path == null || path.isEmpty) continue;
       final length = await _storage.portableFileLength(path);

@@ -4,6 +4,7 @@ import 'package:nai_launcher/presentation/themes/core/input_surface_style.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 
+import '../../../widgets/common/decoded_memory_image.dart';
 import '../../../widgets/common/image_viewport_surface.dart';
 import '../../../../core/utils/app_logger.dart';
 import '../../../../core/utils/localization_extension.dart';
@@ -298,9 +299,12 @@ class _VibeImageEncodeDialogState extends State<VibeImageEncodeDialog> {
         ),
         clipBehavior: Clip.antiAlias,
         child: widget.thumbnail != null
-            ? Image.memory(
-                widget.thumbnail!,
+            ? DecodedMemoryImage(
+                bytes: widget.thumbnail!,
                 fit: BoxFit.contain,
+                filterQuality: FilterQuality.medium,
+                maxLogicalWidth: extent,
+                maxLogicalHeight: extent,
                 errorBuilder: (context, error, stackTrace) {
                   AppLogger.w('缩略图加载失败: $error', 'VibeImageEncodeDialog');
                   return _buildErrorPlaceholder(theme);
@@ -400,6 +404,7 @@ class _VibeImageEncodeDialogState extends State<VibeImageEncodeDialog> {
             ),
             EditableDoubleField(
               value: _strength,
+              semanticLabel: context.l10n.vibe_strength,
               onChanged: (value) {
                 setState(() => _strength = value);
               },
@@ -412,6 +417,8 @@ class _VibeImageEncodeDialogState extends State<VibeImageEncodeDialog> {
         ),
         const SizedBox(height: 8),
         ThemedSlider(
+          label: context.l10n.vibe_strength,
+          valueText: EditableDoubleField.format,
           value: sliderValue,
           onChanged: (value) {
             setState(() => _strength = value);
@@ -447,6 +454,7 @@ class _VibeImageEncodeDialogState extends State<VibeImageEncodeDialog> {
             ),
             EditableDoubleField(
               value: _infoExtracted,
+              semanticLabel: context.l10n.vibe_infoExtracted,
               min: VibeReference.minInfoExtracted,
               max: 1.0,
               onChanged: (value) {
@@ -461,6 +469,8 @@ class _VibeImageEncodeDialogState extends State<VibeImageEncodeDialog> {
         ),
         const SizedBox(height: 8),
         ThemedSlider(
+          label: context.l10n.vibe_infoExtracted,
+          valueText: EditableDoubleField.format,
           value: _infoExtracted,
           onChanged: (value) {
             setState(() => _infoExtracted = value);
@@ -632,6 +642,7 @@ class VibeImageEncodeErrorDialog extends StatelessWidget {
         ],
       ),
       dialogWidth: 440,
+      headerScrollsWithContent: true,
       builder: (panelContext, scrollController) => VibeImageEncodeErrorDialog(
         fileName: fileName,
         errorMessage: errorMessage,

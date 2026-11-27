@@ -1,7 +1,7 @@
 import 'dart:typed_data';
 
 import '../../../core/agent/agent_types.dart';
-import 'prompt_assistant_models.dart';
+import '../../../data/models/prompt_assistant/prompt_assistant_models.dart';
 
 /// Agent 线协议类型（应用层适配）。
 ///
@@ -38,14 +38,17 @@ class AgentReasoningRequest {
     required this.enabled,
     this.effort,
     this.budgetTokens,
-    this.sendWhenDisabled = true,
+    bool sendWhenDisabled = true,
     this.preserveReasoningContent = false,
     this.allowEmptySignature = false,
     this.alwaysIncludeEncryptedReasoning = false,
-  });
+    this.requestReasoningReplay = true,
+  }) : sendWhenDisabled = enabled != null && sendWhenDisabled;
 
   final AgentReasoningApi api;
-  final bool enabled;
+
+  /// Null leaves level control to the model while retaining its wire protocol.
+  final bool? enabled;
   final String? effort;
   final int? budgetTokens;
 
@@ -55,6 +58,7 @@ class AgentReasoningRequest {
   final bool preserveReasoningContent;
   final bool allowEmptySignature;
   final bool alwaysIncludeEncryptedReasoning;
+  final bool requestReasoningReplay;
 }
 
 /// Agent 请求：完整消息历史 + 工具集 + 系统提示词。
@@ -97,8 +101,7 @@ class AgentChatRequest {
     return requested < modelLimit ? requested : modelLimit;
   }
 
-  /// Selected UI reasoning level. Null is retained for backwards-compatible
-  /// callers and represents Off before model-specific request resolution.
+  /// Legacy effort for adapters called without a resolved request.
   final String? reasoning;
 
   /// Provider-native request resolved from Pi's model registry contract.
@@ -169,12 +172,15 @@ class AgentWireFinish extends AgentWireEvent {
 }
 
 class AgentWireError extends AgentWireEvent {
-  const AgentWireError(this.message, {this.transient = false});
+  const AgentWireError(
+    this.message, {
+    this.retryMessage,
+    this.rejectedReasoningField,
+  });
 
   final String message;
-
-  /// 瞬时错误（429/5xx/超时/overloaded），可重试。
-  final bool transient;
+  final String? retryMessage;
+  final String? rejectedReasoningField;
 }
 
 /// 适配层丢弃了不可用的首次回复（例如思考预填续跑返回空正文且无工具

@@ -1,6 +1,8 @@
 import 'package:freezed_annotation/freezed_annotation.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../../core/extensions/list_sort_extensions.dart';
+
 part 'gallery_category.freezed.dart';
 part 'gallery_category.g.dart';
 
@@ -9,7 +11,7 @@ part 'gallery_category.g.dart';
 /// 用于组织画廊图片，支持无限层级嵌套
 /// 与文件夹系统同步
 @freezed
-class GalleryCategory with _$GalleryCategory {
+abstract class GalleryCategory with _$GalleryCategory {
   const GalleryCategory._();
 
   const factory GalleryCategory({
@@ -120,9 +122,7 @@ extension GalleryCategoryListExtension on List<GalleryCategory> {
 
   /// 按名称排序
   List<GalleryCategory> sortedByName() {
-    final sorted = [...this];
-    sorted.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
-    return sorted;
+    return [...this]..sortByKey((category) => category.name.toLowerCase());
   }
 
   /// 构建分类树

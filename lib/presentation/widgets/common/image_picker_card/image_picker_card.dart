@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:nai_launcher/core/utils/localization_extension.dart';
@@ -10,6 +8,7 @@ import '_internal/loading_overlay.dart';
 import '_internal/picker_handler.dart';
 import '_internal/preview_thumbnail.dart';
 import '../../../utils/card_drop_reader.dart';
+import '../../../utils/native_drop_callback.dart';
 import '../app_toast.dart';
 import 'image_picker_result.dart';
 import 'image_picker_type.dart';
@@ -431,9 +430,12 @@ class _ImagePickerCardState extends State<ImagePickerCard> {
           setState(() => _isDragOver = false);
         }
       },
-      onPerformDrop: (event) async {
+      onPerformDrop: (event) {
         setState(() => _isDragOver = false);
-        await _handleDrop(event);
+        return releaseNativeDropCallback(
+          () => _handleDrop(event),
+          library: 'ImagePickerCard',
+        );
       },
       child: child,
     );
@@ -442,32 +444,12 @@ class _ImagePickerCardState extends State<ImagePickerCard> {
   /// 处理拖拽放置
   Future<void> _handleDrop(PerformDropEvent event) async {
     final l10n = context.l10n;
+    final List<CardDroppedResource> resources;
     try {
-      final resources = await readCardDrop(
+      resources = await readCardDrop(
         context,
         event.session.items,
         policy: CardDropPolicy(allowMultiple: widget.allowMultiple),
-      );
-      final files = resources.map((resource) => resource.image).toList();
-      // Release the native read session before a selection callback opens UI.
-      unawaited(
-        Future<void>(() {
-          if (!mounted) return;
-          if (widget.allowMultiple && widget.onMultipleSelected != null) {
-            widget.onMultipleSelected!([
-              for (final file in files)
-                ImagePickerResult(
-                  bytes: file.bytes,
-                  fileName: file.fileName,
-                  path: file.sourcePath,
-                ),
-            ]);
-          } else {
-            for (final file in files) {
-              _handleFileResult(file.bytes, file.fileName, file.sourcePath);
-            }
-          }
-        }),
       );
     } catch (error) {
       if (!mounted) return;
@@ -476,6 +458,23 @@ class _ImagePickerCardState extends State<ImagePickerCard> {
         widget.onError!(message);
       } else {
         AppToast.error(context, message);
+      }
+      return;
+    }
+    if (!mounted) return;
+    final files = resources.map((resource) => resource.image).toList();
+    if (widget.allowMultiple && widget.onMultipleSelected != null) {
+      widget.onMultipleSelected!([
+        for (final file in files)
+          ImagePickerResult(
+            bytes: file.bytes,
+            fileName: file.fileName,
+            path: file.sourcePath,
+          ),
+      ]);
+    } else {
+      for (final file in files) {
+        _handleFileResult(file.bytes, file.fileName, file.sourcePath);
       }
     }
   }

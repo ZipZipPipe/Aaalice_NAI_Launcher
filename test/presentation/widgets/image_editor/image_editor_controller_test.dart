@@ -2,12 +2,10 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:nai_launcher/presentation/widgets/image_editor/controllers/magic_wand_controller.dart';
 import 'package:nai_launcher/presentation/widgets/image_editor/core/history_manager.dart';
 import 'package:nai_launcher/presentation/widgets/image_editor/effects/image_editor_effects_controller.dart';
 import 'package:nai_launcher/presentation/widgets/image_editor/image_editor_controller.dart';
 import 'package:nai_launcher/presentation/widgets/image_editor/image_editor_types.dart';
-import 'package:nai_launcher/presentation/widgets/image_editor/layers/layer.dart';
 
 void main() {
   test('session config defensively owns image inputs', () {
@@ -49,112 +47,6 @@ void main() {
     second.locked = true;
     expect(effects.activeLayerForApply, isNull);
     session.dispose();
-  });
-
-  group('MagicWandController mask target', () {
-    test(
-      'reuses the first unlocked non-source layer when source is active',
-      () {
-        final session = ImageEditorController();
-        final manager = session.editorState.layerManager;
-        final reusable = manager.addLayer(name: 'reusable');
-        final source = manager.addLayer(name: 'source');
-        session.sourceLayerId = source.id;
-        var addCount = 0;
-        final magicWand = MagicWandController(
-          session: session,
-          editorState: session.editorState,
-          config: const ImageEditorSessionConfig.empty(),
-          addMaskLayer: (name) {
-            addCount++;
-            return manager.addLayer(name: name);
-          },
-        );
-
-        expect(magicWand.resolveMagicWandMaskTarget('mask'), same(reusable));
-        expect(addCount, 0);
-
-        magicWand.dispose();
-        session.dispose();
-      },
-    );
-
-    test('reuses the first unlocked layer when the active layer is locked', () {
-      final session = ImageEditorController();
-      final manager = session.editorState.layerManager;
-      final reusable = manager.addLayer(name: 'reusable');
-      final locked = manager.addLayer(name: 'locked')..locked = true;
-      var addCount = 0;
-      final magicWand = MagicWandController(
-        session: session,
-        editorState: session.editorState,
-        config: const ImageEditorSessionConfig.empty(),
-        addMaskLayer: (name) {
-          addCount++;
-          return manager.addLayer(name: name);
-        },
-      );
-
-      expect(manager.activeLayer, same(locked));
-      expect(magicWand.resolveMagicWandMaskTarget('mask'), same(reusable));
-      expect(addCount, 0);
-
-      magicWand.dispose();
-      session.dispose();
-    });
-
-    test('reuses the first unlocked layer when there is no active layer', () {
-      final session = ImageEditorController();
-      final manager = session.editorState.layerManager;
-      final detached = Layer(name: 'reusable');
-      manager.insertLayerFromData(detached.toData(), 0);
-      detached.dispose();
-      final reusable = manager.layers.single;
-      var addCount = 0;
-      final magicWand = MagicWandController(
-        session: session,
-        editorState: session.editorState,
-        config: const ImageEditorSessionConfig.empty(),
-        addMaskLayer: (name) {
-          addCount++;
-          return manager.addLayer(name: name);
-        },
-      );
-
-      expect(manager.activeLayer, isNull);
-      expect(magicWand.resolveMagicWandMaskTarget('mask'), same(reusable));
-      expect(addCount, 0);
-
-      magicWand.dispose();
-      session.dispose();
-    });
-
-    test('adds one mask layer only when no reusable candidate exists', () {
-      final session = ImageEditorController();
-      final manager = session.editorState.layerManager;
-      final source = manager.addLayer(name: 'source');
-      manager.addLayer(name: 'locked').locked = true;
-      session.sourceLayerId = source.id;
-      var addCount = 0;
-      final magicWand = MagicWandController(
-        session: session,
-        editorState: session.editorState,
-        config: const ImageEditorSessionConfig.empty(),
-        addMaskLayer: (name) {
-          addCount++;
-          return manager.addLayer(name: name);
-        },
-      );
-
-      final created = magicWand.resolveMagicWandMaskTarget('mask');
-      expect(addCount, 1);
-      expect(created.name, 'mask');
-      expect(magicWand.resolveMagicWandMaskTarget('mask'), same(created));
-      expect(addCount, 1);
-
-      magicWand.dispose();
-      session.dispose();
-    });
   });
 
   group('ImageEditorController lifecycle', () {

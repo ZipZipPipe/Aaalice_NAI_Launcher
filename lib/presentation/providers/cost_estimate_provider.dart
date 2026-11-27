@@ -1,100 +1,153 @@
+import 'dart:async';
+import 'dart:typed_data';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
-import '../../core/constants/api_constants.dart';
 import '../../core/services/anlas_calculator.dart';
 import '../../core/utils/focused_inpaint_utils.dart';
 import '../../data/models/image/image_params.dart';
 import 'image_generation_provider.dart';
 import 'generation/image_workflow_controller.dart';
+import 'subscription_billing.dart';
 import 'subscription_provider.dart';
 
 part 'cost_estimate_provider.g.dart';
 
-class _GenerationCostInput {
-  const _GenerationCostInput({
-    required this.width,
-    required this.height,
-    required this.strength,
-  });
+typedef GenerationPageRequest = (ImageParams, ImageWorkflowState, int);
+typedef GenerationCostEstimate = ({int knownCost, int confirmationCost});
 
-  final int width;
-  final int height;
-  final double strength;
+GenerationPageRequest readGenerationPageRequest(ProviderContainer container) =>
+    (
+      container.read(generationParamsNotifierProvider).copyWith(),
+      container.read(imageWorkflowControllerProvider),
+      container.read(imagesPerRequestProvider),
+    );
+
+/// 估价用的请求几何；[size] 为 null 时按参数本身的尺寸计费。
+class _RequestGeometry {
+  const _RequestGeometry(this.size);
+
+  static const unfocused = _RequestGeometry(null);
+
+  final ({int width, int height})? size;
 }
 
-/// Resolves the dimensions used by both Anlas and Opus quota calculations.
-({int width, int height}) resolveGenerationBillingSize({
-  required int width,
-  required int height,
-  required bool maxEnhance,
-}) {
-  if (!maxEnhance) {
-    return (width: width, height: height);
-  }
-  return E2eUpscale.resolveMaxEnhanceTargetSize(width, height);
-}
-
-_GenerationCostInput _resolveGenerationCostInput(
+/// 蒙版外接矩形首次在后台计算、还没有可沿用的结果时返回 null。
+_RequestGeometry? _resolveRequestGeometry(
   ImageParams params,
   ImageWorkflowState workflow,
-  FocusedInpaintGeometry? focusedMaskGeometry,
+  AsyncValue<FocusedInpaintGeometry?> Function() readFocusedMaskGeometry,
 ) {
-  if (workflow.focusedInpaintEnabled && params.isInpainting) {
-    final focusedSelectionRect = workflow.focusedSelectionRect;
-    final focusedGeometry = focusedSelectionRect == null
-        ? focusedMaskGeometry
-        : FocusedInpaintUtils.resolveGeometryForSelection(
-            sourceWidth:
-                workflow.sourceImageWidth ??
-                workflow.sourceWidth ??
-                params.width,
-            sourceHeight:
-                workflow.sourceImageHeight ??
-                workflow.sourceHeight ??
-                params.height,
-            selectionRect: focusedSelectionRect,
-            minContextMegaPixels: workflow.minimumContextMegaPixels,
-          );
-    if (focusedGeometry != null) {
-      return _GenerationCostInput(
-        width: focusedGeometry.requestWidth,
-        height: focusedGeometry.requestHeight,
-        strength: params.inpaintStrength,
-      );
+  if (!workflow.focusedInpaintEnabled || !params.isInpainting) {
+    return _RequestGeometry.unfocused;
+  }
+  final sourceWidth =
+      workflow.sourceImageWidth ?? workflow.sourceWidth ?? params.width;
+  final sourceHeight =
+      workflow.sourceImageHeight ?? workflow.sourceHeight ?? params.height;
+  final contextCrop = workflow.focusedContextCrop;
+  final focusedSelectionRect = workflow.focusedSelectionRect;
+  final FocusedInpaintGeometry? focusedGeometry;
+  if (contextCrop != null) {
+    focusedGeometry = FocusedInpaintUtils.resolveGeometryForCrop(
+      sourceWidth: sourceWidth,
+      sourceHeight: sourceHeight,
+      crop: contextCrop,
+    );
+  } else if (focusedSelectionRect != null) {
+    focusedGeometry = FocusedInpaintUtils.resolveGeometryForSelection(
+      sourceWidth: sourceWidth,
+      sourceHeight: sourceHeight,
+      selectionRect: focusedSelectionRect,
+      minContextMegaPixels: workflow.minimumContextMegaPixels,
+    );
+  } else {
+    final maskGeometry = readFocusedMaskGeometry();
+    if (maskGeometry.hasError) {
+      focusedGeometry = maskGeometry.requireValue;
+    } else if (maskGeometry.isLoading) {
+      focusedGeometry = maskGeometry.value;
+      if (focusedGeometry == null) return null;
+    } else {
+      focusedGeometry = maskGeometry.requireValue;
     }
   }
+  if (focusedGeometry == null) return _RequestGeometry.unfocused;
+  return _RequestGeometry((
+    width: focusedGeometry.requestWidth,
+    height: focusedGeometry.requestHeight,
+  ));
+}
 
-  // 增强 max 档：请求携带原图尺寸，但服务端按放大到 3.14MP 的面积计费。
-  final billingSize = resolveGenerationBillingSize(
-    width: params.width,
-    height: params.height,
-    maxEnhance: params.effectiveUpscaledEnhance,
+/// 界面实时估价与确认前的落定估价共用这一份计算，只差订阅视图从哪里来。
+int? _estimateCost({
+  required ImageParams params,
+  required ImageWorkflowState workflow,
+  required AsyncValue<FocusedInpaintGeometry?> Function()
+  readFocusedMaskGeometry,
+  required int batchSize,
+  required SubscriptionBillingView billing,
+}) {
+  if (workflow.isUpscale) {
+    if (workflow.upscale.backend != UpscaleBackend.novelai) {
+      return 0;
+    }
+    return AnlasCalculator.calculateNovelAiUpscaleCost(
+      inputWidth: workflow.sourceWidth ?? params.width,
+      inputHeight: workflow.sourceHeight ?? params.height,
+      scale: 2,
+      isOpus: billing.isOpus,
+    );
+  }
+
+  if (params.nSamples <= 0 || batchSize <= 0) {
+    return 0;
+  }
+  final geometry = _resolveRequestGeometry(
+    params,
+    workflow,
+    readFocusedMaskGeometry,
   );
-
-  return _GenerationCostInput(
-    width: billingSize.width,
-    height: billingSize.height,
-    strength: switch (params.action) {
-      ImageGenerationAction.img2img => params.strength,
-      ImageGenerationAction.infill => params.inpaintStrength,
-      ImageGenerationAction.generate => 1.0,
-    },
+  if (geometry == null) {
+    return null;
+  }
+  return AnlasCalculator.calculate(
+    params,
+    requestSize: geometry.size,
+    batchSize: batchSize,
+    isOpus: billing.isOpus,
+    opusQuotaExhausted: billing.opusQuotaExhausted,
   );
 }
 
-/// 聚焦重绘"仅蒙版"场景下的请求尺寸（轻量路径）。
-///
-/// 只解码蒙版求外接矩形，不做完整 prepareRequest 的裁剪/缩放/PNG 编码。
-/// 依赖项用 select 收窄：蒙版引用与上下文参数不变时（例如只调整
-/// steps/prompt），Riverpod 直接复用缓存结果，不会重复解码蒙版。
+final focusedMaskExtentByImageProvider = FutureProvider.autoDispose.family(
+  (_, Uint8List mask) => FocusedInpaintUtils.resolveMaskExtentAsync(mask),
+);
+
+/// 当前蒙版的外接矩形，在后台 isolate 解码计算，只随蒙版字节变化重算；
+/// 费用预估与图生图预览的聚焦框共用这一次计算。
 @riverpod
-FocusedInpaintGeometry? focusedInpaintMaskRequestSize(Ref ref) {
+FutureOr<FocusedInpaintMaskExtent?> focusedInpaintMaskExtent(Ref ref) {
+  final maskImage = ref.watch(
+    generationParamsNotifierProvider.select((params) => params.maskImage),
+  );
+  if (maskImage == null) {
+    return null;
+  }
+  return ref.watch(focusedMaskExtentByImageProvider(maskImage)).requireValue;
+}
+
+/// 聚焦重绘"仅蒙版"场景下的请求几何（轻量路径）。
+///
+/// 只求蒙版外接矩形，不做完整 prepareRequest 的裁剪/缩放/PNG 编码；
+/// 调整上下文参数只重算几何，不重新解码蒙版。外接矩形重算期间返回
+/// 带上一次几何的 [AsyncLoading]，首次计算尚无结果时不带值。
+@riverpod
+FutureOr<FocusedInpaintGeometry?> focusedInpaintMaskRequestSize(Ref ref) {
   final needsMaskSize = ref.watch(
     imageWorkflowControllerProvider.select(
-      (workflow) =>
-          workflow.focusedInpaintEnabled &&
-          workflow.focusedSelectionRect == null,
+      (workflow) => workflow.focusesOnMaskExtent,
     ),
   );
   final isInpainting = ref.watch(
@@ -104,10 +157,12 @@ FocusedInpaintGeometry? focusedInpaintMaskRequestSize(Ref ref) {
     return null;
   }
 
-  final maskImage = ref.watch(
-    generationParamsNotifierProvider.select((params) => params.maskImage),
+  final hasMask = ref.watch(
+    generationParamsNotifierProvider.select(
+      (params) => params.maskImage != null,
+    ),
   );
-  if (maskImage == null) {
+  if (!hasMask) {
     return null;
   }
 
@@ -116,78 +171,73 @@ FocusedInpaintGeometry? focusedInpaintMaskRequestSize(Ref ref) {
       (workflow) => workflow.minimumContextMegaPixels,
     ),
   );
-  return FocusedInpaintUtils.resolveGeometryForMask(
-    maskImage: maskImage,
-    minContextMegaPixels: minContextMegaPixels,
+  final extent = ref
+      .watch(focusedInpaintMaskExtentProvider)
+      .unwrapPrevious()
+      .requireValue;
+  return _geometryForExtent(extent, minContextMegaPixels);
+}
+
+FocusedInpaintGeometry? _geometryForExtent(
+  FocusedInpaintMaskExtent? extent,
+  double padding,
+) => extent == null
+    ? null
+    : FocusedInpaintUtils.resolveGeometryForMaskExtent(
+        extent,
+        minContextMegaPixels: padding,
+      );
+
+/// 生成页确认按点击时的请求估价，只等待这张蒙版的外接矩形。
+/// 已知订阅不足以确认免费额度时，同时计算本次确认使用的费用上限。
+Future<GenerationCostEstimate> readSettledEstimatedCost(
+  ProviderContainer container,
+  GenerationPageRequest request,
+) async {
+  final billing = container
+      .read(subscriptionNotifierProvider.notifier)
+      .generationPageBilling;
+  final (params, workflow, batchSize) = request;
+  final extent = workflow.focusesOnMaskExtent && params.isInpainting
+      ? await container.read(
+          focusedMaskExtentByImageProvider(params.maskImage!).future,
+        )
+      : null;
+  late final maskGeometry = AsyncData(
+    _geometryForExtent(extent, workflow.minimumContextMegaPixels),
+  );
+  int estimate(SubscriptionBillingView view) => _estimateCost(
+    params: params,
+    workflow: workflow,
+    readFocusedMaskGeometry: () => maskGeometry,
+    batchSize: batchSize,
+    billing: view,
+  )!;
+  final knownCost = estimate(billing.known);
+  final worstCase = billing.worstCase;
+  return (
+    knownCost: knownCost,
+    confirmationCost: worstCase == null ? knownCost : estimate(worstCase),
   );
 }
 
 /// 预估消耗 Provider
 ///
-/// 根据当前参数实时计算预估的 Anlas 消耗
+/// 根据当前参数实时计算预估的 Anlas 消耗；聚焦重绘的蒙版外接矩形首次
+/// 在后台计算、还没有可沿用的结果时为 null（计算中）
 ///
 /// 计费逻辑：
 /// - nSamples（批次数量）：应用内循环，每次是独立请求，每次都可享受 Opus 免费
 /// - imagesPerRequest（批次大小）：单次请求生成多张，只有第一张免费
 @riverpod
-int estimatedCost(Ref ref) {
-  final params = ref.watch(generationParamsNotifierProvider);
-  final workflow = ref.watch(imageWorkflowControllerProvider);
-  final imagesPerRequest = ref.watch(imagesPerRequestProvider);
-  final subscription = ref.watch(
-    subscriptionNotifierProvider.select((state) => state.subscription),
-  );
-  final subscriptionTier = subscription?.isOpus == true
-      ? AnlasCalculator.opusTier
-      : 0;
-  // V5 的 Opus 免费额度是随时间回充的配额池，透支后按正常价扣 Anlas。
-  final opusQuotaExhausted = subscription?.usage?.isNegative ?? false;
-
-  if (workflow.isUpscale) {
-    if (workflow.upscale.backend != UpscaleBackend.novelai) {
-      return 0;
-    }
-
-    final inputWidth = workflow.sourceWidth ?? params.width;
-    final inputHeight = workflow.sourceHeight ?? params.height;
-    return AnlasCalculator.calculateNovelAiUpscaleCost(
-      inputWidth: inputWidth,
-      inputHeight: inputHeight,
-      scale: 2,
-      subscriptionTier: subscriptionTier,
-    );
-  }
-
-  final batchCount = params.nSamples;
-  final batchSize = imagesPerRequest;
-  if (batchCount <= 0 || batchSize <= 0) {
-    return 0;
-  }
-
-  final requestInput = _resolveGenerationCostInput(
-    params,
-    workflow,
-    ref.watch(focusedInpaintMaskRequestSizeProvider),
-  );
-  return AnlasCalculator.calculateRequestCost(
-    width: requestInput.width,
-    height: requestInput.height,
-    steps: params.steps,
-    batchCount: batchCount,
-    batchSize: batchSize,
-    smea: params.effectiveSmea,
-    smeaDyn: params.effectiveSmeaDyn,
-    model: params.model,
-    subscriptionTier: subscriptionTier,
-    opusQuotaExhausted: opusQuotaExhausted,
-    strength: requestInput.strength,
-    extraPerSampleCost: AnlasCalculator.resolvePreciseReferenceExtraCost(
-      params,
-    ),
-    extraPerRequestCost: AnlasCalculator.resolveVibeReferenceExtraCost(params),
-    oneTimeCost: AnlasCalculator.resolveVibeEncodingCost(params),
-  );
-}
+int? estimatedCost(Ref ref) => _estimateCost(
+  params: ref.watch(generationParamsNotifierProvider),
+  workflow: ref.watch(imageWorkflowControllerProvider),
+  readFocusedMaskGeometry: () =>
+      ref.watch(focusedInpaintMaskRequestSizeProvider),
+  batchSize: ref.watch(imagesPerRequestProvider),
+  billing: ref.watch(subscriptionBillingViewProvider),
+);
 
 /// 是否免费生成 Provider
 ///
@@ -204,6 +254,7 @@ bool isBalanceInsufficient(Ref ref) {
   final balance = ref.watch(anlasBalanceProvider);
   final cost = ref.watch(estimatedCostProvider);
 
-  if (balance == null) return false; // 未加载时不显示警告
+  // 余额未加载或消耗仍在计算时不显示警告
+  if (balance == null || cost == null) return false;
   return balance < cost;
 }

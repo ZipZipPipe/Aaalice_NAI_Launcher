@@ -2,10 +2,13 @@ import 'dart:convert';
 
 import '../../../core/constants/api_constants.dart';
 import '../../../core/constants/model_capabilities.dart';
+import '../../../core/constants/nai_model_source_fingerprints.dart';
 import '../../../core/enums/precise_ref_type.dart';
 import '../../../core/utils/nai_prompt_parser.dart';
 import '../../../core/utils/novelai_auto_text.dart';
+import '../../../core/utils/novelai_dataset_prefix.dart';
 import '../../../core/utils/portable_logger.dart';
+import '../../services/metadata/metadata_error_summary.dart';
 import '../vibe/vibe_reference.dart';
 
 class NaiImageMetadataRawDecoder {
@@ -29,7 +32,7 @@ class NaiImageMetadataRawDecoder {
       source = extracted.$3;
     } catch (e) {
       PortableLogger.w(
-        'Failed to extract comment data: $e',
+        'Failed to extract comment data: ${metadataErrorSummary(e)}',
         'NaiImageMetadata',
       );
       // 使用原始 JSON 作为备选
@@ -55,7 +58,10 @@ class NaiImageMetadataRawDecoder {
     try {
       parts = _extractFixedTags(commentData);
     } catch (e) {
-      PortableLogger.w('Failed to extract fixed tags: $e', 'NaiImageMetadata');
+      PortableLogger.w(
+        'Failed to extract fixed tags: ${metadataErrorSummary(e)}',
+        'NaiImageMetadata',
+      );
     }
 
     try {
@@ -67,7 +73,7 @@ class NaiImageMetadataRawDecoder {
       characterUseCoords = _extractCharacterUseCoords(commentData);
     } catch (e) {
       PortableLogger.w(
-        'Failed to extract character prompts: $e',
+        'Failed to extract character prompts: ${metadataErrorSummary(e)}',
         'NaiImageMetadata',
       );
     }
@@ -77,7 +83,7 @@ class NaiImageMetadataRawDecoder {
       vibeReferences = _extractVibeReferences(commentData);
     } catch (e) {
       PortableLogger.w(
-        'Failed to extract vibe references: $e',
+        'Failed to extract vibe references: ${metadataErrorSummary(e)}',
         'NaiImageMetadata',
       );
     }
@@ -86,7 +92,7 @@ class NaiImageMetadataRawDecoder {
       preciseReferenceMetadata = _extractPreciseReferenceMetadata(commentData);
     } catch (e) {
       PortableLogger.w(
-        'Failed to extract precise references: $e',
+        'Failed to extract precise references: ${metadataErrorSummary(e)}',
         'NaiImageMetadata',
       );
     }
@@ -96,7 +102,10 @@ class NaiImageMetadataRawDecoder {
     try {
       rawPrompt = commentData['prompt'] as String? ?? '';
     } catch (e) {
-      PortableLogger.d('Failed to parse prompt field: $e', 'NaiImageMetadata');
+      PortableLogger.d(
+        'Failed to parse prompt field: ${metadataErrorSummary(e)}',
+        'NaiImageMetadata',
+      );
     }
 
     String negativePrompt = '';
@@ -104,15 +113,18 @@ class NaiImageMetadataRawDecoder {
       negativePrompt = commentData['uc'] as String? ?? '';
     } catch (e) {
       PortableLogger.d(
-        'Failed to parse negative prompt field: $e',
+        'Failed to parse negative prompt field: ${metadataErrorSummary(e)}',
         'NaiImageMetadata',
       );
     }
 
-    final sourceModel = modelIdFromSource(source);
-    final prompt =
-        sourceModel != null &&
-            ModelCapabilityRegistry.of(sourceModel).supportsAutoText
+    final resolvedModel =
+        modelIdFromSource(source) ??
+        modelIdFromComment(commentData['model']) ??
+        defaultModelIdFromSource(source);
+    final promptWithoutAutoText =
+        resolvedModel != null &&
+            ModelCapabilityRegistry.of(resolvedModel).supportsAutoText
         ? NovelAiAutoText.stripGeneratedBlock(
             rawPrompt,
             characters: List<NovelAiAutoTextCharacter>.generate(
@@ -132,7 +144,14 @@ class NaiImageMetadataRawDecoder {
             useCoords: characterUseCoords == true,
           )
         : rawPrompt;
-    final importedUcPreset = _toInt(commentData['uc_preset']);
+    final prompt = resolvedModel == null
+        ? promptWithoutAutoText
+        : NovelAiDatasetPrefix.strip(
+            promptWithoutAutoText,
+            capabilities: ModelCapabilityRegistry.of(resolvedModel),
+          ).prompt;
+    final importedUcPreset =
+        _toInt(commentData['uc_preset']) ?? _ucPresetFromTagHint(commentData);
     final importedQualityToggle =
         _safeGetBool(commentData, 'quality_toggle') ??
         _qualityToggleFromTagHint(commentData);
@@ -148,7 +167,7 @@ class NaiImageMetadataRawDecoder {
       // 关键词推断认不出 "no text" 这类不含质量语义的词。
       parts['qualityTags'] = _extractRegisteredQualitySuffix(
         prompt,
-        sourceModel,
+        resolvedModel,
       );
     }
 
@@ -163,7 +182,7 @@ class NaiImageMetadataRawDecoder {
         scale: _extractScale(commentData),
         width: _toInt(commentData['width']),
         height: _toInt(commentData['height']),
-        model: sourceModel,
+        model: resolvedModel,
         smea: _safeGetBool(commentData, 'sm'),
         smeaDyn: _safeGetBool(commentData, 'sm_dyn'),
         varietyPlus: _extractVarietyPlus(commentData),
@@ -204,7 +223,7 @@ class NaiImageMetadataRawDecoder {
     } catch (e, stack) {
       PortableLogger.e(
         'fromNaiComment failed, returning partial metadata',
-        e,
+        metadataErrorSummary(e),
         stack,
         'NaiImageMetadata',
       );
@@ -334,6 +353,12 @@ class NaiImageMetadataRawDecoder {
     if (value is bool) return value;
     if (value is num) return value != 0;
     return null;
+  }
+
+  /// 服务端回写的 comment 只有 `tag_hint_uc_preset`，没有旧字段 `uc_preset`。
+  static int? _ucPresetFromTagHint(Map<String, dynamic> data) {
+    final hint = _toInt(data['tag_hint_uc_preset']);
+    return hint == null ? null : UcPresets.fromTagHint(hint);
   }
 
   /// 从官网的数字提示恢复具体质量档位。
@@ -793,7 +818,16 @@ class NaiImageMetadataRawDecoder {
       if (image is! String || image.isEmpty) continue;
 
       images.add(image);
-      types.add(_extractPreciseType(descriptions, i).toApiString());
+      final settings = parsePreciseReferenceDescription(
+        _extractPreciseDescription(descriptions, i),
+      );
+      types.add(
+        preciseReferenceDescription(
+          settings.type,
+          preferSameOutfit: settings.preferSameOutfit,
+          outfitSupported: true,
+        ),
+      );
       referenceStrengths.add(i < strengths.length ? strengths[i] : 1.0);
       final secondary = i < secondaryStrengths.length
           ? secondaryStrengths[i]
@@ -809,32 +843,18 @@ class NaiImageMetadataRawDecoder {
     );
   }
 
-  static PreciseRefType _extractPreciseType(dynamic descriptions, int index) {
+  static String? _extractPreciseDescription(dynamic descriptions, int index) {
     if (descriptions is! List || index >= descriptions.length) {
-      return PreciseRefType.character;
+      return null;
     }
     final description = descriptions[index];
     if (description is Map<String, dynamic>) {
       final caption = description['caption'];
       if (caption is Map<String, dynamic>) {
-        return _parsePreciseRefType(caption['base_caption'] as String?);
+        return caption['base_caption'] as String?;
       }
     }
-    return PreciseRefType.character;
-  }
-
-  static PreciseRefType _parsePreciseRefType(String? value) {
-    switch (value?.trim().toLowerCase()) {
-      case 'style':
-        return PreciseRefType.style;
-      case 'character&style':
-      case 'character_and_style':
-      case 'character and style':
-        return PreciseRefType.characterAndStyle;
-      case 'character':
-      default:
-        return PreciseRefType.character;
-    }
+    return null;
   }
 
   static dynamic _firstPresent(Map<String, dynamic> data, List<String> keys) {
@@ -922,30 +942,43 @@ class NaiImageMetadataRawDecoder {
     return null;
   }
 
+  /// Source 能确定的模型：官网指纹，或启动器旧版本写入的文字名。
   static String? modelIdFromSource(String? source) {
     final value = source?.trim();
-    if (value == null || value.isEmpty) {
-      return null;
+    if (value == null || value.isEmpty) return null;
+    return NaiModelSourceFingerprints.modelOf(value) ??
+        _modelIdFromSourceText(value.toLowerCase());
+  }
+
+  /// 官网对认不出指纹的 Source 按家族归类，只在没有更确切的模型来源时使用。
+  static String? defaultModelIdFromSource(String? source) {
+    final value = source?.trim();
+    if (value == null || value.isEmpty) return null;
+    return NaiModelSourceFingerprints.familyDefaultOf(value);
+  }
+
+  /// 第三方客户端写在 Comment 里的 model：只认已登记的模型 ID，重绘权重归到底模。
+  static String? modelIdFromComment(Object? value) {
+    if (value is! String || value.trim().isEmpty) return null;
+    final model = ImageModels.resolveBaseModel(
+      ImageModels.migrateLegacyModel(value.trim()),
+    );
+    return ModelCapabilityRegistry.tryOf(model) == null ? null : model;
+  }
+
+  // 启动器旧版本写入的 `NovelAI Diffusion V4.5 Full` 等文字名，以及测试站的 `DiffusionModelMetaName.NAIv5 <hash>`
+  static String? _modelIdFromSourceText(String normalized) {
+    if (normalized.contains('naiv5')) {
+      return ImageModels.animeDiffusionV5Curated;
     }
-
-    final normalized = value.toLowerCase();
-
-    // Official PNG Source fingerprints are exact model identifiers. Do not
-    // fall back to prompt/UC inference when the Source text is ambiguous.
-    // Production writes `NovelAI Diffusion V5 <hash>`; the known Full hashes
-    // come from the web client (657484A5 / 0ADF9AB7), everything else in the
-    // V5 family resolves to Curated, mirroring the official parser. Staging
-    // used the enum name form (`DiffusionModelMetaName.NAIv5 DE206BDA`).
-    if (normalized.contains('naiv5') || normalized.contains('diffusion v5')) {
-      return normalized.contains('657484a5') ||
-              normalized.contains('0adf9ab7') ||
-              normalized.contains('full')
-          ? ImageModels.animeDiffusionV5Full
-          : ImageModels.animeDiffusionV5Curated;
+    if (normalized.contains('diffusion v5')) {
+      if (!normalized.contains('full')) return null;
+      return normalized.contains('medium')
+          ? ImageModels.animeDiffusionV5FullMedium
+          : ImageModels.animeDiffusionV5Full;
     }
-
     if (normalized.contains('v4.5')) {
-      if (normalized.contains('4bde2a90') || normalized.contains('v4.5 full')) {
+      if (normalized.contains('v4.5 full')) {
         return ImageModels.animeDiffusionV45Full;
       }
       if (normalized.contains('v4.5 curated')) {
@@ -953,7 +986,6 @@ class NaiImageMetadataRawDecoder {
       }
       return null;
     }
-
     if (normalized.contains('v4')) {
       if (normalized.contains('v4 full')) {
         return ImageModels.animeDiffusionV4Full;
@@ -963,17 +995,18 @@ class NaiImageMetadataRawDecoder {
       }
       return null;
     }
-
     if (normalized.contains('furry') && normalized.contains('v3')) {
       return ImageModels.furryDiffusionV3;
     }
     if (normalized.contains('v3')) {
       return ImageModels.animeDiffusionV3;
     }
+    if (normalized.contains('diffusion v2')) {
+      return ImageModels.animeV2;
+    }
     if (normalized.contains('furry')) {
       return ImageModels.furryDiffusion;
     }
-
     return null;
   }
 }

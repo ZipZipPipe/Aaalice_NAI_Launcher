@@ -8,9 +8,11 @@ import 'package:nai_launcher/core/utils/localization_extension.dart';
 import '../../../data/models/queue/replication_task.dart';
 import '../../adaptive/interaction_policy.dart';
 import '../../../data/models/queue/replication_task_status.dart';
+import '../../providers/generation/image_generation_selectors.dart';
 import '../../providers/image_generation_provider.dart';
 import '../../providers/queue_execution_provider.dart';
 import '../../providers/replication_queue_provider.dart';
+import '../../utils/generation_error_l10n.dart';
 import '../common/translated_tag_text.dart';
 import 'queue_task_thumbnail.dart';
 
@@ -97,11 +99,14 @@ class _TaskListItemState extends ConsumerState<TaskListItem>
     final isRunning = widget.task.status == ReplicationTaskStatus.running;
     final interactionPolicy = context.interactionPolicy;
 
-    // 获取当前执行任务ID和生成进度
-    final (currentTaskId, generationProgress) = _getExecutionProgress();
+    // 获取当前任务的生成进度
+    final (_, generationProgress) = _getExecutionProgress();
 
-    // currentTaskId 从 ready 阶段起即锁定任务，避免生成提交前的短暂窗口仍可编辑或删除。
-    final isExecutionLocked = currentTaskId == widget.task.id;
+    final isExecutionLocked = ref.watch(
+      replicationQueueNotifierProvider.select(
+        (queue) => queue.isExecutionLocked(widget.task),
+      ),
+    );
     final isCurrentRunningTask = isRunning && isExecutionLocked;
     final canSelect =
         widget.task.status == ReplicationTaskStatus.pending &&
@@ -168,102 +173,92 @@ class _TaskListItemState extends ConsumerState<TaskListItem>
                       ? null
                       : _enterSelectionModeForTask,
                   borderRadius: BorderRadius.circular(12),
-                  child: AnimatedBuilder(
-                    animation: _shimmerController,
-                    builder: (context, child) {
-                      return Container(
-                        padding: const EdgeInsets.all(10),
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(12),
-                          border: widget.isSelected
-                              ? Border.all(color: theme.colorScheme.primary)
-                              : null,
-                          // 如果是当前正在执行的任务，显示实心进度条；否则显示普通背景
-                          color: widget.isSelected
-                              ? theme.colorScheme.primaryContainer.withValues(
-                                  alpha: 0.4,
-                                )
-                              : Color.alphaBlend(
-                                  theme.colorScheme.onSurface.withValues(
-                                    alpha: _isHovered ? 0.1 : 0.055,
-                                  ),
-                                  theme.colorScheme.surface,
-                                ),
-                        ),
-                        child: Stack(
-                          children: [
-                            // 进度条背景（动态条纹 + 垂直切割末端）
-                            if (isCurrentRunningTask)
-                              Positioned.fill(
-                                child: ClipRRect(
-                                  borderRadius: BorderRadius.circular(11),
-                                  child: FractionallySizedBox(
-                                    alignment: Alignment.centerLeft,
-                                    widthFactor: generationProgress.clamp(
-                                      0.0,
-                                      1.0,
-                                    ),
-                                    child: _AnimatedStripeProgress(
-                                      color: theme.colorScheme.primary,
-                                    ),
-                                  ),
+                  child: Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(12),
+                      border: widget.isSelected
+                          ? Border.all(color: theme.colorScheme.primary)
+                          : null,
+                      // 如果是当前正在执行的任务，显示实心进度条；否则显示普通背景
+                      color: widget.isSelected
+                          ? theme.colorScheme.primaryContainer.withValues(
+                              alpha: 0.4,
+                            )
+                          : Color.alphaBlend(
+                              theme.colorScheme.onSurface.withValues(
+                                alpha: _isHovered ? 0.1 : 0.055,
+                              ),
+                              theme.colorScheme.surface,
+                            ),
+                    ),
+                    child: Stack(
+                      children: [
+                        // 进度条背景（动态条纹 + 垂直切割末端）
+                        if (isCurrentRunningTask)
+                          Positioned.fill(
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(11),
+                              child: FractionallySizedBox(
+                                alignment: Alignment.centerLeft,
+                                widthFactor: generationProgress.clamp(0.0, 1.0),
+                                child: _AnimatedStripeProgress(
+                                  color: theme.colorScheme.primary,
                                 ),
                               ),
-                            // 内容
-                            child!,
+                            ),
+                          ),
+                        // 内容
+                        Row(
+                          children: [
+                            // 选择框/缩略图
+                            if (widget.isSelectionMode && canSelect)
+                              _buildCheckbox(theme, ref)
+                            else
+                              _buildThumbnail(context),
+
+                            const SizedBox(width: 10),
+
+                            // 任务信息
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  // 状态行
+                                  _buildStatusRow(theme, l10n),
+                                  const SizedBox(height: 4),
+                                  // 提示词
+                                  TranslatedPromptText(
+                                    widget.task.prompt,
+                                    selectable: false,
+                                    maxLines: 2,
+                                    style: theme.textTheme.bodySmall?.copyWith(
+                                      height: 1.35,
+                                      color: theme.colorScheme.onSurface
+                                          .withValues(alpha: 0.85),
+                                    ),
+                                  ),
+                                  // 错误信息
+                                  if (widget.task.errorMessage != null) ...[
+                                    const SizedBox(height: 4),
+                                    _buildErrorMessage(theme),
+                                  ],
+                                ],
+                              ),
+                            ),
+
+                            // 操作按钮
+                            if (!widget.isSelectionMode)
+                              _buildActionButtons(
+                                theme,
+                                l10n,
+                                canSelect: canSelect,
+                                canEdit: canEdit,
+                                canDelete: canDelete,
+                              ),
                           ],
                         ),
-                      );
-                    },
-                    child: Row(
-                      children: [
-                        // 选择框/缩略图
-                        if (widget.isSelectionMode && canSelect)
-                          _buildCheckbox(theme, ref)
-                        else
-                          _buildThumbnail(context),
-
-                        const SizedBox(width: 10),
-
-                        // 任务信息
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              // 状态行
-                              _buildStatusRow(theme, l10n),
-                              const SizedBox(height: 4),
-                              // 提示词
-                              TranslatedPromptText(
-                                widget.task.prompt,
-                                selectable: false,
-                                maxLines: 2,
-                                style: theme.textTheme.bodySmall?.copyWith(
-                                  height: 1.35,
-                                  color: theme.colorScheme.onSurface.withValues(
-                                    alpha: 0.85,
-                                  ),
-                                ),
-                              ),
-                              // 错误信息
-                              if (widget.task.errorMessage != null) ...[
-                                const SizedBox(height: 4),
-                                _buildErrorMessage(theme),
-                              ],
-                            ],
-                          ),
-                        ),
-
-                        // 操作按钮
-                        if (!widget.isSelectionMode)
-                          _buildActionButtons(
-                            theme,
-                            l10n,
-                            canSelect: canSelect,
-                            canEdit: canEdit,
-                            canDelete: canDelete,
-                          ),
                       ],
                     ),
                   ),
@@ -381,15 +376,17 @@ class _TaskListItemState extends ConsumerState<TaskListItem>
 
   /// 构建旋转图标
   Widget _buildRotatingIcon(IconData icon, Color color) {
-    return AnimatedBuilder(
-      animation: _shimmerController,
-      builder: (context, child) {
-        return Transform.rotate(
-          angle: _shimmerController.value * 2 * 3.14159,
-          child: child,
-        );
-      },
-      child: Icon(icon, size: 12, color: color),
+    return RepaintBoundary(
+      child: AnimatedBuilder(
+        animation: _shimmerController,
+        builder: (context, child) {
+          return Transform.rotate(
+            angle: _shimmerController.value * 2 * 3.14159,
+            child: child,
+          );
+        },
+        child: Icon(icon, size: 12, color: color),
+      ),
     );
   }
 
@@ -424,7 +421,7 @@ class _TaskListItemState extends ConsumerState<TaskListItem>
           const SizedBox(width: 4),
           Flexible(
             child: Text(
-              widget.task.errorMessage!,
+              summarizeGenerationError(context, widget.task.errorMessage!),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(fontSize: 10, color: Colors.red),
@@ -592,8 +589,12 @@ class _TaskListItemState extends ConsumerState<TaskListItem>
       final executionState = ref.watch(queueExecutionNotifierProvider);
       final currentTaskId = executionState.currentTaskId;
       if (currentTaskId == widget.task.id && executionState.isRunning) {
-        final genState = ref.watch(imageGenerationNotifierProvider);
-        return (currentTaskId, genState.progress);
+        return (
+          currentTaskId,
+          ref.watch(
+            imageGenerationNotifierProvider.select(selectGenerationProgress),
+          ),
+        );
       }
       return (currentTaskId, 0.0);
     } catch (e) {
@@ -908,7 +909,7 @@ class QueueTaskDetailView extends StatelessWidget {
               const SizedBox(height: 18),
               _QueuePromptSection(
                 title: l10n.common_error,
-                text: task.errorMessage!.trim(),
+                text: detailGenerationError(context, task.errorMessage!.trim()),
                 color: theme.colorScheme.error,
               ),
             ],
@@ -1108,7 +1109,7 @@ class FailedTaskListItem extends ConsumerWidget {
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          task.errorMessage!,
+                          summarizeGenerationError(context, task.errorMessage!),
                           style: theme.textTheme.bodySmall?.copyWith(
                             color: Colors.red,
                             fontSize: 11,
@@ -1247,17 +1248,19 @@ class _AnimatedStripeProgressState extends State<_AnimatedStripeProgress>
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _controller,
-      builder: (context, child) {
-        return CustomPaint(
-          painter: _StripeProgressPainter(
-            color: widget.color,
-            animationValue: _controller.value,
-          ),
-          child: const SizedBox.expand(),
-        );
-      },
+    return RepaintBoundary(
+      child: AnimatedBuilder(
+        animation: _controller,
+        builder: (context, child) {
+          return CustomPaint(
+            painter: _StripeProgressPainter(
+              color: widget.color,
+              animationValue: _controller.value,
+            ),
+            child: const SizedBox.expand(),
+          );
+        },
+      ),
     );
   }
 }

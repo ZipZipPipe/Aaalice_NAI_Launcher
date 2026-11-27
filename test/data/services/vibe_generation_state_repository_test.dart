@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -24,7 +25,7 @@ void main() {
         },
       );
 
-      await repository.saveJson('{"unknown":{"kept":true}}');
+      await repository.saveUtf8Json(utf8.encode('{"unknown":{"kept":true}}'));
 
       expect(await repository.loadJson(), '{"unknown":{"kept":true}}');
       await repository.clear();
@@ -37,7 +38,7 @@ void main() {
     final repository = VibeGenerationStateRepository(
       fileResolver: ({required createDirectory}) async => null,
     );
-    await repository.saveJson('{broken json');
+    await repository.saveUtf8Json(utf8.encode('{broken json'));
     final storage = VibeLibraryStorageService(
       generationStateRepository: repository,
     );
@@ -55,7 +56,28 @@ void main() {
             throw const FileSystemException('unavailable'),
       );
 
-      await repository.saveJson('{"vibeReferences":[]}');
+      await repository.saveUtf8Json(utf8.encode('{"vibeReferences":[]}'));
+
+      expect(await repository.loadJson(), '{"vibeReferences":[]}');
+    },
+  );
+
+  test(
+    'generation state falls back to legacy preference when the file is unreadable',
+    () async {
+      SharedPreferences.setMockInitialValues({
+        VibeGenerationStateRepository.generationStateKey:
+            '{"vibeReferences":[]}',
+      });
+      final directory = await Directory.systemTemp.createTemp(
+        'vibe_state_test_',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final file = File('${directory.path}/generation_state.json');
+      await file.writeAsBytes(const [0xFF, 0xFE, 0xFD]);
+      final repository = VibeGenerationStateRepository(
+        fileResolver: ({required createDirectory}) async => file,
+      );
 
       expect(await repository.loadJson(), '{"vibeReferences":[]}');
     },

@@ -6,11 +6,13 @@ part 'metadata_import_options.freezed.dart';
 
 enum UnknownFixedTagPolicy { disableCurrent, keepCurrent }
 
+enum CharacterImportMode { replace, append }
+
 /// 元数据导入选项模型
 ///
 /// 用于选择性地套用图片元数据中的参数
 @freezed
-class MetadataImportOptions with _$MetadataImportOptions {
+abstract class MetadataImportOptions with _$MetadataImportOptions {
   const factory MetadataImportOptions({
     // ========== 提示词相关 ==========
     @Default(true) bool importPrompt,
@@ -31,6 +33,8 @@ class MetadataImportOptions with _$MetadataImportOptions {
 
     // 角色提示词
     @Default(true) bool importCharacterPrompts,
+    @Default(CharacterImportMode.replace)
+    CharacterImportMode characterImportMode,
     @Default([]) List<int> selectedCharacterIndices,
 
     // Vibe 数据

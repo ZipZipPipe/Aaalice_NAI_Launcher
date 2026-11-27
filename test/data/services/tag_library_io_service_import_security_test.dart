@@ -12,6 +12,8 @@ import 'package:nai_launcher/data/services/tag_library_io_service.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 
+import '../../helpers/shared_compute_gate.dart';
+
 const _entryId = '11111111-1111-4111-8111-111111111111';
 const _otherEntryId = '33333333-3333-4333-8333-333333333333';
 const _categoryId = '22222222-2222-4222-8222-222222222222';
@@ -170,6 +172,35 @@ void main() {
       }
       expect(thumbnailNames(), isEmpty);
     });
+
+    test('接受记录了目录项的词库包', () async {
+      final entry = _entry(id: _entryId, thumbnail: '/exported/thumb.png');
+      final package = _writePackage(workspace, [
+        _manifest(),
+        _directory('entries/'),
+        _json('entries/$_entryId.json', entry.toJson()),
+        _directory('thumbnails/'),
+        _binary('thumbnails/$_entryId.png', _pngBytes),
+      ]);
+
+      final preview = await service.parseImportFile(package);
+
+      expect(preview.entries.single.id, _entryId);
+      expect(preview.hasThumbnails, isTrue);
+    });
+
+    test('空预览图目录不算携带预览图', () async {
+      final entry = _entry(id: _entryId, thumbnail: '/exported/thumb.png');
+      final package = _writePackage(workspace, [
+        _manifest(),
+        _json('entries/$_entryId.json', entry.toJson()),
+        _directory('thumbnails/'),
+      ]);
+
+      final preview = await service.parseImportFile(package);
+
+      expect(preview.hasThumbnails, isFalse);
+    });
   });
 
   group('标识符校验', () {
@@ -283,6 +314,39 @@ void main() {
       expect(documentEntryNames(), ['tag_library_thumbnails']);
     });
 
+    test('预览图字节在共享闸门后台解压，内容与包内一致', () async {
+      final bytes = List<int>.generate(4096, (index) => index % 251);
+      final entry = _entry(id: _entryId, thumbnail: 'thumb.png');
+      final package = _writePackage(workspace, [
+        _manifest(),
+        _json('entries/$_entryId.json', entry.toJson()),
+        _binary('thumbnails/$_entryId.png', bytes),
+      ]);
+      final preview = await service.parseImportFile(package);
+
+      final result = await expectQueuedBehindSharedComputeGate(
+        () => runImport(package, preview),
+      );
+
+      final imported = result.updatedEntries[_entryId]!.thumbnail!;
+      expect(File(imported).readAsBytesSync(), bytes);
+    });
+
+    test('不带预览图的词库包不等待计算闸门', () async {
+      final entry = _entry(id: _entryId, thumbnail: null);
+      final package = _writePackage(workspace, [
+        _manifest(),
+        _json('entries/$_entryId.json', entry.toJson()),
+      ]);
+      final preview = await service.parseImportFile(package);
+
+      final result = await expectRunsWithoutSharedComputeGate(
+        () => runImport(package, preview),
+      );
+
+      expect(result.success, isTrue);
+    });
+
     test('包内未携带预览图时丢弃导出机器的外部路径', () async {
       final foreign = _entry(
         id: _entryId,
@@ -350,6 +414,9 @@ ArchiveFile _json(String name, Object? value) =>
 
 ArchiveFile _binary(String name, List<int> bytes) =>
     ArchiveFile(name, bytes.length, bytes);
+
+ArchiveFile _directory(String name) =>
+    ArchiveFile(name, 0, <int>[])..isFile = false;
 
 File _writePackage(
   Directory directory,

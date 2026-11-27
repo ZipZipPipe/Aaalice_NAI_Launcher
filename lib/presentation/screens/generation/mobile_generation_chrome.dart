@@ -4,7 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/utils/localization_extension.dart';
 import '../../adaptive/window_size_class.dart';
 import '../../agent_chat/widgets/agent_chat_entry_button.dart';
-import '../../providers/image_generation_provider.dart';
+import '../../providers/generation/image_generation_selectors.dart';
 import '../../themes/design_tokens.dart';
 import '../../widgets/anlas/anlas_balance_chip.dart';
 import '../../widgets/anlas/opus_usage_chip.dart';
@@ -12,6 +12,7 @@ import '../../widgets/common/anlas_cost_badge.dart';
 import '../../widgets/common/owned_scroll_controller.dart';
 import '../../widgets/common/themed_button.dart';
 import '../../widgets/common/themed_scaffold.dart';
+import '../../widgets/raster_cache/raster_cache_boundary.dart';
 import 'mobile_generation_controller.dart';
 import 'mobile_generation_gestures.dart';
 import 'mobile_generation_view_data.dart';
@@ -158,75 +159,77 @@ class MobileGenerationChrome extends ConsumerWidget {
     final theme = Theme.of(context);
     return SafeArea(
       top: false,
-      child: Container(
-        key: const ValueKey('generation-mobile-bottom-bar'),
-        padding: const EdgeInsets.fromLTRB(12, 2, 12, 7),
-        decoration: BoxDecoration(
-          color: theme.colorScheme.surface,
-          border: Border(top: BorderSide(color: theme.dividerColor)),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Wrap(
-              key: const ValueKey('generation-mobile-status-row'),
-              alignment: WrapAlignment.spaceBetween,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              spacing: 6,
-              runSpacing: 6,
-              children: [
-                const Wrap(
-                  key: ValueKey('generation-mobile-balance-group'),
-                  spacing: 6,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: [
-                    OpusUsageChip(compact: true),
-                    AnlasBalanceChip(compact: true),
-                  ],
-                ),
-                Row(
-                  key: const ValueKey('generation-mobile-queue-actions'),
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (data.showRandomTools)
-                      SizedBox.square(
-                        dimension: 44,
-                        child: RandomModeToggle(
-                          enabled: data.randomModeEnabled,
-                          compact: true,
+      child: RasterCacheBoundary(
+        child: Container(
+          key: const ValueKey('generation-mobile-bottom-bar'),
+          padding: const EdgeInsets.fromLTRB(12, 2, 12, 7),
+          decoration: BoxDecoration(
+            color: theme.colorScheme.surface,
+            border: Border(top: BorderSide(color: theme.dividerColor)),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Wrap(
+                key: const ValueKey('generation-mobile-status-row'),
+                alignment: WrapAlignment.spaceBetween,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                spacing: 6,
+                runSpacing: 6,
+                children: [
+                  const Wrap(
+                    key: ValueKey('generation-mobile-balance-group'),
+                    spacing: 6,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      OpusUsageChip(compact: true),
+                      AnlasBalanceChip(compact: true),
+                    ],
+                  ),
+                  Row(
+                    key: const ValueKey('generation-mobile-queue-actions'),
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (data.showRandomTools)
+                        SizedBox.square(
+                          dimension: 44,
+                          child: RandomModeToggle(
+                            enabled: data.randomModeEnabled,
+                            compact: true,
+                          ),
                         ),
+                      IconButton(
+                        key: const ValueKey('generation-add-current-to-queue'),
+                        style: IconButton.styleFrom(
+                          minimumSize: const Size.square(44),
+                          padding: EdgeInsets.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          visualDensity: VisualDensity.standard,
+                        ),
+                        onPressed: () =>
+                            controller.addCurrentPromptToQueue(context),
+                        icon: const Icon(Icons.playlist_add_rounded),
+                        tooltip: context.l10n.queue_addCurrentTask,
                       ),
-                    IconButton(
-                      key: const ValueKey('generation-add-current-to-queue'),
-                      style: IconButton.styleFrom(
-                        minimumSize: const Size.square(44),
-                        padding: EdgeInsets.zero,
-                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        visualDensity: VisualDensity.standard,
-                      ),
-                      onPressed: () =>
-                          controller.addCurrentPromptToQueue(context),
-                      icon: const Icon(Icons.playlist_add_rounded),
-                      tooltip: context.l10n.queue_addCurrentTask,
-                    ),
-                  ],
-                ),
-              ],
-            ),
-            const SizedBox(height: 2),
-            _MobileGenerateButton(
-              isGenerating: data.isGenerating,
-              showCancel: data.isLauncherGenerating,
-              generationState: data.generationState,
-              cooldownRemainingSeconds: data.cooldownRemainingSeconds,
-              onGenerate: () => controller.generate(context),
-              onCancel: controller.cancelGeneration,
-              onSkipCurrent: controller.skipCurrentRequest,
-              showCost: !data.isUpscaleMode,
-              requiresLogin: data.requiresLogin,
-            ),
-          ],
+                    ],
+                  ),
+                ],
+              ),
+              const SizedBox(height: 2),
+              _MobileGenerateButton(
+                isGenerating: data.isGenerating,
+                showCancel: data.isLauncherGenerating,
+                batchStatus: data.batchStatus,
+                cooldownRemainingSeconds: data.cooldownRemainingSeconds,
+                onGenerate: () => controller.generate(context),
+                onCancel: controller.cancelGeneration,
+                onSkipCurrent: controller.skipCurrentRequest,
+                showCost: !data.isUpscaleMode,
+                requiresLogin: data.requiresLogin,
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -277,7 +280,7 @@ class _MobileGenerateButton extends StatelessWidget {
   const _MobileGenerateButton({
     required this.isGenerating,
     required this.showCancel,
-    required this.generationState,
+    required this.batchStatus,
     required this.cooldownRemainingSeconds,
     required this.onGenerate,
     required this.onCancel,
@@ -288,7 +291,7 @@ class _MobileGenerateButton extends StatelessWidget {
 
   final bool isGenerating;
   final bool showCancel;
-  final ImageGenerationState generationState;
+  final GenerationButtonViewData batchStatus;
   final int cooldownRemainingSeconds;
   final VoidCallback onGenerate;
   final VoidCallback onCancel;
@@ -298,11 +301,11 @@ class _MobileGenerateButton extends StatelessWidget {
 
   bool get _canSkipCurrentBatch =>
       showCancel &&
-      generationState.currentImage > 0 &&
-      generationState.totalImages > generationState.currentImage;
+      batchStatus.currentImage > 0 &&
+      batchStatus.totalImages > batchStatus.currentImage;
 
   /// 已提交但还没开跑，此时按钮必须立刻反馈，否则点击会被静默吞掉。
-  bool get _isPreparing => generationState.isPreparing;
+  bool get _isPreparing => batchStatus.isPreparing;
 
   bool get _showCancelAction => showCancel || _isPreparing;
 
@@ -393,8 +396,7 @@ class _MobileGenerateButton extends StatelessWidget {
       ),
     );
     if (!_canSkipCurrentBatch) return primaryButton;
-    final progress =
-        '${generationState.currentImage}/${generationState.totalImages}';
+    final progress = '${batchStatus.currentImage}/${batchStatus.totalImages}';
     final skipButton = ThemedButton(
       onPressed: onSkipCurrent,
       icon: const Icon(Icons.skip_next),

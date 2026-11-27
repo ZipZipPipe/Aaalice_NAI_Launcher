@@ -5,6 +5,7 @@ import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 
 import '../../adaptive/interaction_policy.dart';
 import '../../themes/core/layered_surface_style.dart';
+import '../../widgets/app_branch_visibility.dart';
 import '../../widgets/statistics/export_dialog.dart';
 import 'statistics_state.dart';
 import 'widgets/widgets.dart';
@@ -18,13 +19,31 @@ class StatisticsScreen extends ConsumerStatefulWidget {
 }
 
 class _StatisticsScreenState extends ConsumerState<StatisticsScreen> {
+  late final StatisticsNotifier _statistics;
+  bool? _branchVisible;
+
   @override
   void initState() {
     super.initState();
+    _statistics = ref.read(statisticsNotifierProvider.notifier);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final visible = AppBranchVisibility.of(context);
+    if (_branchVisible == visible) return;
+    _branchVisible = visible;
+    // Showing may start a load, and provider state cannot change mid-build.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      ref.read(statisticsNotifierProvider.notifier).whenLoaded();
+      if (mounted) _statistics.setVisible(visible);
     });
+  }
+
+  @override
+  void dispose() {
+    _statistics.setVisible(false);
+    super.dispose();
   }
 
   @override
@@ -82,8 +101,6 @@ class _StatisticsScreenState extends ConsumerState<StatisticsScreen> {
               Expanded(
                 child: Text(
                   l10n.statistics_title,
-                  maxLines: stackActions ? 2 : 1,
-                  overflow: TextOverflow.ellipsis,
                   style: theme.textTheme.titleLarge?.copyWith(
                     fontWeight: FontWeight.w600,
                   ),
@@ -107,7 +124,7 @@ class _StatisticsScreenState extends ConsumerState<StatisticsScreen> {
                   tooltip: l10n.common_export,
                   icon: const Icon(Icons.download_outlined),
                 ),
-              const AnimatedRefreshButton(),
+              AnimatedRefreshButton(iconOnly: stackActions),
             ],
           );
           if (stackActions) {
@@ -176,7 +193,7 @@ class _StatisticsScreenState extends ConsumerState<StatisticsScreen> {
           ),
           StaggeredGridTile.fit(
             crossAxisCellCount: 1,
-            child: SamplerDistributionCard(stats: stats),
+            child: ParameterDistributionCard(stats: stats),
           ),
           StaggeredGridTile.fit(
             crossAxisCellCount: 1,

@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/utils/app_logger.dart';
 import '../../../core/utils/isolate_pool.dart';
@@ -31,8 +32,26 @@ class DroppedImageInspection {
   final List<VibeReference> detectedVibes;
 }
 
+final droppedImageInspectorProvider = Provider<DroppedImageInspector>((ref) {
+  return DroppedImageInspector(
+    imageMetadataService: ref.watch(imageMetadataServiceProvider),
+    vibeMetadataService: ref.watch(vibeMetadataServiceProvider),
+  );
+});
+
 class DroppedImageInspector {
-  const DroppedImageInspector();
+  const DroppedImageInspector({
+    ImageMetadataService? imageMetadataService,
+    VibeMetadataService? vibeMetadataService,
+  }) : _imageMetadataService = imageMetadataService,
+       _vibeMetadataService =
+           vibeMetadataService ?? VibeMetadataService.instance;
+
+  final ImageMetadataService? _imageMetadataService;
+  final VibeMetadataService _vibeMetadataService;
+
+  ImageMetadataService get _effectiveImageMetadataService =>
+      _imageMetadataService ?? ImageMetadataService.instance;
 
   Future<DroppedImageInspection> inspect(DroppedFileData fileData) async {
     final fileName = fileData.fileName;
@@ -44,21 +63,23 @@ class DroppedImageInspector {
       fileName,
       bytes,
       metadataBytes: fileData.metadataBytes,
-      inspectNonPngStealth: isDiscordAttachment,
+      inspectOtherContainerStealth: isDiscordAttachment,
+      metadataService: _effectiveImageMetadataService,
     );
     if (metadataDetection.metadata == null &&
         fileData.metadataBytes == null &&
         isDiscordAttachment) {
-      final metadataBytes =
-          await DroppedFileReader.downloadRemoteMetadataPrefix(
+      final metadataSource =
+          await DroppedFileReader.downloadRemoteMetadataSource(
             fileData.sourceUri!,
             logTag: 'DropHandler',
           );
-      if (metadataBytes != null) {
+      if (metadataSource != null) {
         final remoteDetection = await detectDroppedImageMetadata(
           fileName,
           bytes,
-          metadataBytes: metadataBytes,
+          metadataBytes: metadataSource.bytes,
+          metadataService: _effectiveImageMetadataService,
         );
         metadataDetection = DroppedImageMetadataDetection(
           metadata: remoteDetection.metadata,
@@ -84,6 +105,7 @@ class DroppedImageInspector {
 
   Future<Uint8List?> resolveOriginalBytes(DroppedFileData fileData) async {
     if (!fileData.imageBytesArePreview) return fileData.bytes;
+    if (fileData.metadataBytesAreOriginal) return fileData.metadataBytes;
     final sourceUri = fileData.sourceUri;
     if (sourceUri == null) return null;
     final originalImage = await DroppedFileReader.downloadRemoteImage(
@@ -99,7 +121,7 @@ class DroppedImageInspector {
   ) async {
     if (!fileName.toLowerCase().endsWith('.png')) return null;
     try {
-      final vibe = await VibeMetadataService().extractVibeFromImage(bytes);
+      final vibe = await _vibeMetadataService.extractVibeFromImage(bytes);
       if (vibe != null) {
         AppLogger.i(
           'Detected pre-encoded Vibe in dropped image: ${vibe.displayName}',
@@ -119,7 +141,7 @@ class DroppedImageInspector {
   ) async {
     if (!fileName.toLowerCase().endsWith('.png')) return const [];
     try {
-      final vibes = await VibeMetadataService().extractAllVibesFromImage(bytes);
+      final vibes = await _vibeMetadataService.extractAllVibesFromImage(bytes);
       if (vibes.isNotEmpty) {
         AppLogger.i(
           'Detected ${vibes.length} Vibes in dropped image: '
@@ -139,8 +161,11 @@ Future<DroppedImageMetadataDetection> detectDroppedImageMetadata(
   String fileName,
   Uint8List bytes, {
   Uint8List? metadataBytes,
-  bool inspectNonPngStealth = false,
+  bool inspectOtherContainerStealth = false,
+  ImageMetadataService? metadataService,
 }) async {
+  final effectiveMetadataService =
+      metadataService ?? ImageMetadataService.instance;
   try {
     String? parseError;
     NaiImageMetadata? metadata;
@@ -152,10 +177,9 @@ Future<DroppedImageMetadataDetection> detectDroppedImageMetadata(
       }
     }
 
-    if (metadataBytes != null &&
-        UnifiedMetadataParser.isPngHeader(metadataBytes)) {
-      final textData = UnifiedMetadataParser.extractPngTextData(metadataBytes);
-      final result = UnifiedMetadataParser.parseFromTextData(textData);
+    if (metadataBytes != null) {
+      final result = await effectiveMetadataService
+          .getMetadataParseResultFromBytes(metadataBytes);
       metadata = result.success ? result.metadata : null;
       if (metadata == null || !metadata.hasData) {
         recordParseFailure(result, metadataBytes);
@@ -163,7 +187,7 @@ Future<DroppedImageMetadataDetection> detectDroppedImageMetadata(
     }
 
     if (metadata == null || !metadata.hasData) {
-      final result = await ImageMetadataService()
+      final result = await effectiveMetadataService
           .getMetadataParseResultFromBytes(bytes);
       metadata = result.success ? result.metadata : null;
       if (metadata == null || !metadata.hasData) {
@@ -171,7 +195,9 @@ Future<DroppedImageMetadataDetection> detectDroppedImageMetadata(
       }
     }
 
-    if ((metadata == null || !metadata.hasData) && inspectNonPngStealth) {
+    if ((metadata == null || !metadata.hasData) &&
+        inspectOtherContainerStealth &&
+        !UnifiedMetadataParser.readsStealthPayload(bytes)) {
       metadata = await ComputeGate().runCompute(
         _parseStealthMetadataFromImageBytes,
         bytes,
@@ -196,13 +222,15 @@ Future<NaiImageMetadata?> detectImportableDroppedImageMetadata(
   String fileName,
   Uint8List bytes, {
   Uint8List? metadataBytes,
-  bool inspectNonPngStealth = false,
+  bool inspectOtherContainerStealth = false,
+  ImageMetadataService? metadataService,
 }) async {
   return (await detectDroppedImageMetadata(
     fileName,
     bytes,
     metadataBytes: metadataBytes,
-    inspectNonPngStealth: inspectNonPngStealth,
+    inspectOtherContainerStealth: inspectOtherContainerStealth,
+    metadataService: metadataService,
   )).metadata;
 }
 

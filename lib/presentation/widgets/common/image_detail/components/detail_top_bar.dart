@@ -10,6 +10,8 @@ import '../../../../providers/local_gallery_provider.dart';
 import '../../../../providers/mosaic_settings_provider.dart';
 import '../../../../providers/watermark_settings_provider.dart';
 import '../../animated_favorite_button.dart';
+import '../../card_action_buttons.dart';
+import '../../menu_action_label.dart';
 import '../image_detail_data.dart';
 
 /// 顶部控制栏
@@ -20,16 +22,23 @@ class DetailTopBar extends StatelessWidget {
   final int totalImages;
   final ImageDetailData currentImage;
   final VoidCallback onClose;
+  final VoidCallback? onDelete;
   final VoidCallback? onShowMetadata;
   final VoidCallback? onReuseMetadata;
   final VoidCallback? onFavoriteToggle;
   final VoidCallback? onSave;
+  final VoidCallback? onSaveAs;
   final VoidCallback? onCopyImage;
   final VoidCallback? onShare;
   final VoidCallback? onWatermark;
   final VoidCallback? onMosaic;
   final VoidCallback? onSendToImg2Img;
   final VoidCallback? onSendToReversePrompt;
+  final VoidCallback? onAddToAlbum;
+
+  /// 缩放是否已锁定；为 null 的回调表示不提供锁定缩放
+  final bool zoomLocked;
+  final VoidCallback? onToggleZoomLock;
 
   const DetailTopBar({
     super.key,
@@ -37,16 +46,21 @@ class DetailTopBar extends StatelessWidget {
     required this.totalImages,
     required this.currentImage,
     required this.onClose,
+    this.onDelete,
     this.onShowMetadata,
     this.onReuseMetadata,
     this.onFavoriteToggle,
     this.onSave,
+    this.onSaveAs,
     this.onCopyImage,
     this.onShare,
     this.onWatermark,
     this.onMosaic,
     this.onSendToImg2Img,
     this.onSendToReversePrompt,
+    this.onAddToAlbum,
+    this.zoomLocked = false,
+    this.onToggleZoomLock,
   });
 
   @override
@@ -113,16 +127,21 @@ class DetailTopBar extends StatelessWidget {
               child: _DetailTopBarActions(
                 currentImage: currentImage,
                 hasMetadata: metadata != null,
+                onDelete: onDelete,
                 onShowMetadata: onShowMetadata,
                 onReuseMetadata: onReuseMetadata,
                 onFavoriteToggle: onFavoriteToggle,
                 onSave: onSave,
+                onSaveAs: onSaveAs,
                 onCopyImage: onCopyImage,
                 onShare: onShare,
                 onWatermark: onWatermark,
                 onMosaic: onMosaic,
                 onSendToImg2Img: onSendToImg2Img,
                 onSendToReversePrompt: onSendToReversePrompt,
+                onAddToAlbum: onAddToAlbum,
+                zoomLocked: zoomLocked,
+                onToggleZoomLock: onToggleZoomLock,
               ),
             ),
           ],
@@ -134,6 +153,7 @@ class DetailTopBar extends StatelessWidget {
 
 enum _DetailOverflowAction {
   save,
+  saveAs,
   share,
   favorite,
   reuse,
@@ -142,36 +162,48 @@ enum _DetailOverflowAction {
   copy,
   watermark,
   mosaic,
+  addToAlbum,
+  toggleZoomLock,
 }
 
 class _DetailTopBarActions extends ConsumerWidget {
   const _DetailTopBarActions({
     required this.currentImage,
     required this.hasMetadata,
+    this.onDelete,
     this.onShowMetadata,
     this.onReuseMetadata,
     this.onFavoriteToggle,
     this.onSave,
+    this.onSaveAs,
     this.onCopyImage,
     this.onShare,
     this.onWatermark,
     this.onMosaic,
     this.onSendToImg2Img,
     this.onSendToReversePrompt,
+    this.onAddToAlbum,
+    this.zoomLocked = false,
+    this.onToggleZoomLock,
   });
 
   final ImageDetailData currentImage;
   final bool hasMetadata;
+  final VoidCallback? onDelete;
   final VoidCallback? onShowMetadata;
   final VoidCallback? onReuseMetadata;
   final VoidCallback? onFavoriteToggle;
   final VoidCallback? onSave;
+  final VoidCallback? onSaveAs;
   final VoidCallback? onCopyImage;
   final VoidCallback? onShare;
   final VoidCallback? onWatermark;
   final VoidCallback? onMosaic;
   final VoidCallback? onSendToImg2Img;
   final VoidCallback? onSendToReversePrompt;
+  final VoidCallback? onAddToAlbum;
+  final bool zoomLocked;
+  final VoidCallback? onToggleZoomLock;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -198,6 +230,7 @@ class _DetailTopBarActions extends ConsumerWidget {
       watermarkSettingsProvider.select((state) => state.configuration.enabled),
     );
     final isWatermarkDerivative =
+        watermarkEnabled &&
         currentImage is LocalImageDetailData &&
         WatermarkDerivativeRegistry(
           ref.read(localStorageServiceProvider),
@@ -209,6 +242,7 @@ class _DetailTopBarActions extends ConsumerWidget {
       mosaicSettingsProvider.select((state) => state.configuration.enabled),
     );
     final isMosaicDerivative =
+        mosaicEnabled &&
         currentImage is LocalImageDetailData &&
         MosaicDerivativeRegistry(
           ref.read(localStorageServiceProvider),
@@ -219,6 +253,7 @@ class _DetailTopBarActions extends ConsumerWidget {
     final favorite = currentImage.showFavoriteButton && onFavoriteToggle != null
         ? _buildFavorite(ref)
         : null;
+    final canSaveAs = currentImage.showSaveAsButton && onSaveAs != null;
 
     if (compact) {
       final overflowActions = <PopupMenuEntry<_DetailOverflowAction>>[
@@ -228,6 +263,14 @@ class _DetailTopBarActions extends ConsumerWidget {
             child: ListTile(
               leading: const Icon(Icons.save_alt),
               title: Text(l10n.common_save),
+            ),
+          ),
+        if (canSaveAs)
+          PopupMenuItem(
+            value: _DetailOverflowAction.saveAs,
+            child: ListTile(
+              leading: const Icon(Icons.save_as),
+              title: Text(l10n.image_saveAs),
             ),
           ),
         if (veryCompact && onShare != null)
@@ -286,6 +329,24 @@ class _DetailTopBarActions extends ConsumerWidget {
               title: Text(l10n.shortcut_action_copy_image),
             ),
           ),
+        if (onToggleZoomLock != null)
+          PopupMenuItem(
+            value: _DetailOverflowAction.toggleZoomLock,
+            child: ListTile(
+              leading: Icon(zoomLocked ? Icons.lock : Icons.lock_open),
+              title: Text(
+                zoomLocked ? l10n.detail_unlockZoom : l10n.detail_lockZoom,
+              ),
+            ),
+          ),
+        if (onAddToAlbum != null)
+          PopupMenuItem(
+            value: _DetailOverflowAction.addToAlbum,
+            child: ListTile(
+              leading: const Icon(Icons.photo_album_outlined),
+              title: Text(l10n.localGallery_addToAlbum),
+            ),
+          ),
         if (watermarkEnabled && onWatermark != null)
           PopupMenuItem(
             value: _DetailOverflowAction.watermark,
@@ -303,6 +364,20 @@ class _DetailTopBarActions extends ConsumerWidget {
             ),
           ),
       ];
+      if (onDelete != null) {
+        overflowActions.addAll([
+          if (overflowActions.isNotEmpty) const PopupMenuDivider(),
+          PopupMenuItem(
+            onTap: onDelete,
+            child: MenuActionLabel(
+              leading: const Icon(Icons.delete_outline),
+              label: l10n.common_delete,
+              iconSize: 24,
+              destructive: true,
+            ),
+          ),
+        ]);
+      }
       return Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -335,6 +410,9 @@ class _DetailTopBarActions extends ConsumerWidget {
                   case _DetailOverflowAction.save:
                     onSave?.call();
                     break;
+                  case _DetailOverflowAction.saveAs:
+                    onSaveAs?.call();
+                    break;
                   case _DetailOverflowAction.share:
                     onShare?.call();
                     break;
@@ -359,6 +437,12 @@ class _DetailTopBarActions extends ConsumerWidget {
                   case _DetailOverflowAction.mosaic:
                     onMosaic?.call();
                     break;
+                  case _DetailOverflowAction.addToAlbum:
+                    onAddToAlbum?.call();
+                    break;
+                  case _DetailOverflowAction.toggleZoomLock:
+                    onToggleZoomLock?.call();
+                    break;
                 }
               },
             ),
@@ -369,11 +453,28 @@ class _DetailTopBarActions extends ConsumerWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
+        if (onToggleZoomLock != null)
+          IconButton(
+            icon: Icon(
+              zoomLocked ? Icons.lock : Icons.lock_open,
+              color: zoomLocked
+                  ? Theme.of(context).colorScheme.primary
+                  : Colors.white,
+            ),
+            onPressed: onToggleZoomLock,
+            tooltip: zoomLocked ? l10n.detail_unlockZoom : l10n.detail_lockZoom,
+          ),
         if (currentImage.showSaveButton && onSave != null)
           IconButton(
             icon: const Icon(Icons.save_alt, color: Colors.white),
             onPressed: onSave,
             tooltip: l10n.common_save,
+          ),
+        if (canSaveAs)
+          IconButton(
+            icon: const Icon(Icons.save_as, color: Colors.white),
+            onPressed: onSaveAs,
+            tooltip: l10n.image_saveAs,
           ),
         if (onShare != null)
           IconButton(
@@ -420,7 +521,25 @@ class _DetailTopBarActions extends ConsumerWidget {
             onPressed: onCopyImage,
             tooltip: l10n.shortcut_action_copy_image,
           ),
+        if (onAddToAlbum != null)
+          IconButton(
+            icon: const Icon(Icons.photo_album_outlined, color: Colors.white),
+            onPressed: onAddToAlbum,
+            tooltip: l10n.localGallery_addToAlbum,
+          ),
         if (favorite != null) favorite,
+        if (onDelete != null)
+          IconButton(
+            constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+            icon: Icon(
+              Icons.delete_outline,
+              color: ImageOverlayControlStyle.errorForeground(
+                Theme.of(context).colorScheme,
+              ),
+            ),
+            onPressed: onDelete,
+            tooltip: l10n.common_delete,
+          ),
       ],
     );
   }

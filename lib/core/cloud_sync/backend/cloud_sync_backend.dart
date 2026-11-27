@@ -40,6 +40,10 @@ class CloudObjectRead {
   const CloudObjectRead({required this.bytes, required this.revision});
 
   final Uint8List bytes;
+
+  /// Must change whenever the stored bytes change and should stay stable across
+  /// metadata-only updates: callers compare it across reads to detect other
+  /// writers, so a coarser fallback tag costs a spurious conflict, not data.
   final String revision;
 }
 
@@ -157,6 +161,10 @@ abstract interface class CloudObjectInventoryBackend {
     OperationToken? token,
     CloudObjectInventoryProgressCallback? onProgress,
   });
+
+  /// Proofs for [objectIds] this instance wrote, byte-verified, or confirmed
+  /// through [findExistingObjects], in the form it accepts as trusted revisions.
+  Map<String, String> verifiedObjectProofs(Iterable<String> objectIds);
 }
 
 /// Optional lightweight validation used while saving or restoring a WebDAV

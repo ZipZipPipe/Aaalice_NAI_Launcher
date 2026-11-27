@@ -2,7 +2,11 @@ import '../../../providers/generation/image_card_selection_provider.dart';
 import '../../../selection/card_selection_scope.dart';
 import '../../../widgets/common/image_card_batch_scope.dart';
 import '../../../widgets/bulk_action_bar.dart';
+import '../services/generated_image_file_link.dart';
 import '../services/generation_image_batch_actions.dart';
+import '../services/generation_image_deletion.dart';
+import '../services/generation_detail_data.dart';
+import '../services/generation_save_service.dart';
 import 'package:nai_launcher/data/models/image/image_postprocess_phase.dart';
 import 'dart:async';
 import 'dart:io';
@@ -15,30 +19,19 @@ import 'package:path/path.dart' as p;
 
 import '../../../../core/enums/precise_ref_type.dart';
 import '../../../../core/platform/platform_capabilities.dart';
-import '../../../../core/services/android_media_store_service.dart';
-import '../../../../core/services/character_conversion_service.dart';
 import '../../../../core/shortcuts/default_shortcuts.dart';
-import '../../../../core/shortcuts/shortcut_config.dart';
 import '../../../../core/shortcuts/shortcut_manager.dart';
 import '../../../../core/utils/app_logger.dart';
-import '../../../../core/utils/character_prompt_block_parser.dart';
 import '../../../../core/utils/file_explorer_utils.dart';
-import '../../../../core/utils/image_save_utils.dart';
 import '../../../../core/utils/localization_extension.dart';
-import '../../../../core/utils/nai_resolution_adapter.dart';
-import '../../../../core/utils/prompt_preset_resolution.dart';
 import '../../../../core/utils/vibe_file_parser.dart';
 import '../../../../data/models/gallery/nai_image_metadata.dart';
-import '../../../../data/models/fixed_tag/fixed_tag_entry.dart';
-import '../../../../data/models/fixed_tag/fixed_tag_prompt_type.dart';
-import '../../../../data/models/fixed_tag/fixed_tag_usage_snapshot.dart';
 import '../../../../data/models/image/image_stream_chunk.dart';
-import '../../../../data/repositories/gallery_folder_repository.dart';
-import '../../../../data/services/alias_resolver_service.dart';
+import '../../../providers/alias_resolver_service.dart';
 import '../../../../data/services/image_metadata_service.dart';
 import '../../../adaptive/window_size_class.dart';
-import '../../../providers/generation/generation_error_classifier.dart';
 import '../../../providers/generation/generation_params_selectors.dart';
+import '../../../providers/generation/image_generation_selectors.dart';
 import '../../../providers/generation/generation_view_state_provider.dart';
 import '../../../providers/generation/preview_selection_provider.dart';
 import '../../../providers/history_click_behavior_provider.dart';
@@ -46,30 +39,27 @@ import '../../../providers/character_position_canvas_provider.dart';
 import '../../../providers/character_prompt_provider.dart';
 import '../../../providers/fixed_tags_provider.dart';
 import '../../../providers/image_generation_provider.dart';
-import '../../../providers/local_gallery_provider.dart';
-import '../../../providers/quality_preset_provider.dart';
 import '../../../providers/preview_transparency_provider.dart';
-import '../../../providers/prompt_config_provider.dart';
 import '../../../providers/reverse_prompt_provider.dart';
 import '../../../providers/tag_library_page_provider.dart';
 import '../../../providers/shortcuts_provider.dart';
-import '../../../providers/uc_preset_provider.dart';
 import '../../../services/image_workflow_launcher.dart';
 import '../../../widgets/character/character_position_canvas.dart';
 import '../../../widgets/common/app_toast.dart';
 import '../../../widgets/common/draggable_memory_image.dart';
-import '../../../widgets/common/image_detail/file_image_detail_data.dart';
-import '../../../widgets/common/image_detail/image_detail_data.dart';
 import '../../../widgets/common/image_detail/image_detail_viewer.dart';
 import '../../../widgets/common/selectable_image_card.dart';
 import '../../../widgets/common/transparency_background.dart';
 import '../../../widgets/discord_share/discord_share_dialog.dart';
 import '../../../widgets/image_editor/image_editor_screen.dart';
 import '../../../utils/fixed_tag_metadata_matcher.dart';
+import '../../../utils/generation_error_l10n.dart';
 import '../../../utils/image_detail_opener.dart';
 import '../../../utils/krita_send_helper.dart';
 import '../../../utils/precise_ref_library_import_helper.dart';
 import '../../tag_library_page/widgets/entry_add_dialog.dart';
+import '../../../widgets/common/image_card_size.dart';
+import '../../../widgets/common/image_comparison_toolbar.dart';
 import '../../../widgets/common/image_comparison_view.dart';
 import 'preview_info_bar.dart';
 
@@ -82,17 +72,20 @@ class PreviewNavShortcuts extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final focusNode = ref.watch(generationPreviewFocusNodeProvider);
     final behavior = ref.watch(historyClickBehaviorNotifierProvider);
-    if (behavior != HistoryClickBehavior.selectPreview) {
-      return Focus(focusNode: focusNode, child: child);
-    }
 
-    final config = ref
-        .watch(shortcutConfigNotifierProvider)
-        .when(
-          data: (value) => value,
-          loading: ShortcutConfig.createDefault,
-          error: (_, _) => ShortcutConfig.createDefault(),
-        );
+    // 无绑定时也保留 CallbackShortcuts，结构切换会让预览子树重挂并丢失焦点
+    return CallbackShortcuts(
+      bindings: behavior == HistoryClickBehavior.selectPreview
+          ? _resolveBindings(ref)
+          : const {},
+      child: Focus(focusNode: focusNode, child: child),
+    );
+  }
+
+  Map<ShortcutActivator, VoidCallback> _resolveBindings(WidgetRef ref) {
+    final config = resolveDispatchShortcutConfig(
+      ref.watch(shortcutConfigNotifierProvider),
+    );
     final bindings = <ShortcutActivator, VoidCallback>{};
     if (config.enableShortcuts) {
       void register(String id, VoidCallback callback) {
@@ -117,16 +110,31 @@ class PreviewNavShortcuts extends ConsumerWidget {
         ref.read(generationPreviewSelectionProvider.notifier).selectNext,
       );
     }
-
-    final focusedChild = Focus(focusNode: focusNode, child: child);
-    if (bindings.isEmpty) return focusedChild;
-    return CallbackShortcuts(bindings: bindings, child: focusedChild);
+    return bindings;
   }
 }
 
 /// 图像预览组件
 class ImagePreviewWidget extends ConsumerStatefulWidget {
   const ImagePreviewWidget({super.key});
+
+  static EdgeInsets _paddingFor(double width) => EdgeInsets.fromLTRB(
+    16,
+    16,
+    16,
+    WindowSizeClass.fromWidth(width).isCompact ? 4 : 16,
+  );
+
+  static double _infoBarGap(double width) =>
+      WindowSizeClass.fromWidth(width).isCompact ? 4 : 8;
+
+  static double minimumHeightFor(BuildContext context, double width) {
+    final padding = _paddingFor(width);
+    return 2 * kMinInteractiveDimension +
+        padding.vertical +
+        _infoBarGap(width - padding.horizontal) +
+        PreviewInfoBar.heightFor(context);
+  }
 
   /// Resolves a grid that never squeezes preview cards below their usable size.
   @visibleForTesting
@@ -154,17 +162,20 @@ class ImagePreviewWidget extends ConsumerStatefulWidget {
 class _ImagePreviewWidgetState extends ConsumerState<ImagePreviewWidget> {
   @override
   Widget build(BuildContext context) {
-    final state = ref.watch(imageGenerationNotifierProvider);
+    // 外壳只随图像集合变化重建；流式预览帧由内层 Consumer 单独承担。
+    final panelImages = ref.watch(
+      imageGenerationNotifierProvider.select(selectGenerationPanelImages),
+    );
     final theme = Theme.of(context);
     final selection = ref.watch(generationImageCardSelectionProvider);
     final selectionNotifier = ref.read(
       generationImageCardSelectionProvider.notifier,
     );
-    final presented = state.displayImages
+    final presented = panelImages.displayImages
         .where((image) => image.canBulkSelect)
         .map((image) => image.id)
         .toList();
-    final selectedImages = state.selectableMergedImages
+    final selectedImages = panelImages.selectableMergedImages
         .where((image) => selection.isSelected(image.id))
         .toList();
 
@@ -175,8 +186,12 @@ class _ImagePreviewWidgetState extends ConsumerState<ImagePreviewWidget> {
       actions: GenerationImageBatchActions(
         context: context,
         images: selectedImages,
-        gallery: ref.read(localGalleryNotifierProvider.notifier),
         selection: selectionNotifier,
+        deletion: GenerationImageDeletion(context: context, ref: ref),
+        saveImages: (images) =>
+            GenerationSaveService.saveImages(context, ref, images),
+        saveImagesToFolder: (images) =>
+            GenerationSaveService.saveImagesAsToFolder(context, ref, images),
       ).build(),
       child: CardSelectionScope(
         selection: selection,
@@ -199,18 +214,19 @@ class _ImagePreviewWidgetState extends ConsumerState<ImagePreviewWidget> {
                     },
                     child: LayoutBuilder(
                       builder: (context, constraints) {
-                        final compact = WindowSizeClass.fromWidth(
-                          constraints.maxWidth,
-                        ).isCompact;
                         return Padding(
-                          padding: EdgeInsets.fromLTRB(
-                            16,
-                            16,
-                            16,
-                            compact ? 4 : 16,
+                          padding: ImagePreviewWidget._paddingFor(
+                            constraints.maxWidth,
                           ),
                           child: Center(
-                            child: _buildContent(context, ref, state, theme),
+                            child: Consumer(
+                              builder: (context, ref, _) => _buildContent(
+                                context,
+                                ref,
+                                ref.watch(imageGenerationNotifierProvider),
+                                theme,
+                              ),
+                            ),
                           ),
                         );
                       },
@@ -529,122 +545,39 @@ class _ImagePreviewWidgetState extends ConsumerState<ImagePreviewWidget> {
     BuildContext context,
   ) {
     // 解析错误代码和详情
-    final (errorTitle, errorHint) = _parseApiError(message, context);
+    final (errorTitle, errorHint) = describeGenerationError(context, message);
 
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        Icon(Icons.error_outline, size: 64, color: theme.colorScheme.error),
-        const SizedBox(height: 16),
-        Text(
-          errorTitle,
-          style: theme.textTheme.titleMedium?.copyWith(
-            color: theme.colorScheme.error,
-          ),
-        ),
-        if (errorHint != null) ...[
-          const SizedBox(height: 8),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 32),
-            child: Text(
-              errorHint,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
-              ),
-              textAlign: TextAlign.center,
+    return SingleChildScrollView(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.error_outline, size: 64, color: theme.colorScheme.error),
+          const SizedBox(height: 16),
+          Text(
+            errorTitle,
+            style: theme.textTheme.titleMedium?.copyWith(
+              color: theme.colorScheme.error,
             ),
+            textAlign: TextAlign.center,
           ),
-        ],
-      ],
-    );
-  }
-
-  /// 解析 API 错误代码，返回 (标题, 提示)
-  (String, String?) _parseApiError(String? message, BuildContext context) {
-    if (message == null || message.isEmpty) {
-      return (context.l10n.generation_generationFailed, null);
-    }
-
-    if (isStreamingGenerationUnsupportedError(message)) {
-      return (
-        context.l10n.generation_streamingUnsupported,
-        context.l10n.generation_streamingUnsupportedHint,
-      );
-    }
-
-    // 取消操作
-    if (message == 'Cancelled') {
-      return (context.l10n.generation_cancelGeneration, null);
-    }
-
-    // 解析错误代码格式: "ERROR_CODE|详情"
-    final parts = message.split('|');
-    final errorCode = parts[0];
-    final details = parts.length > 1 ? parts[1] : null;
-
-    switch (errorCode) {
-      case 'AUTH_REQUIRED':
-        return (
-          context.l10n.settings_notLoggedIn,
-          context.l10n.settings_goToLoginPage,
-        );
-      case UnsupportedRandomPromptModelException.errorCode:
-        return (
-          context.l10n.randomPrompt_unsupportedModel,
-          context.l10n.randomPrompt_unsupportedModelHint,
-        );
-      case 'GENERATION_ERROR_INVALID_RESOLUTION':
-        if (parts.length >= 5) {
-          final width = int.tryParse(parts[1]);
-          final height = int.tryParse(parts[2]);
-          final suggestedWidth = int.tryParse(parts[3]);
-          final suggestedHeight = int.tryParse(parts[4]);
-          if (width != null &&
-              height != null &&
-              suggestedWidth != null &&
-              suggestedHeight != null) {
-            return (
-              context.l10n.generation_invalidResolution,
-              context.l10n.generation_invalidResolutionHint(
-                width,
-                height,
-                suggestedWidth,
-                suggestedHeight,
+          if (errorHint != null) ...[
+            const SizedBox(height: 8),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 32),
+              child: Text(
+                errorHint,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                ),
+                textAlign: TextAlign.center,
               ),
-            );
-          }
-        }
-        return (context.l10n.generation_invalidResolution, message);
-      case 'API_ERROR_429':
-        return (context.l10n.api_error_429, context.l10n.api_error_429_hint);
-      case 'API_ERROR_401':
-        return (context.l10n.api_error_401, context.l10n.api_error_401_hint);
-      case 'API_ERROR_402':
-        return (context.l10n.api_error_402, context.l10n.api_error_402_hint);
-      case 'API_ERROR_400':
-        return ('${context.l10n.common_error} (400)', details);
-      case 'API_ERROR_500':
-        return (context.l10n.api_error_500, context.l10n.api_error_500_hint);
-      case 'API_ERROR_503':
-        return (context.l10n.api_error_503, context.l10n.api_error_503_hint);
-      case 'API_ERROR_TIMEOUT':
-        return (
-          context.l10n.api_error_timeout,
-          context.l10n.api_error_timeout_hint,
-        );
-      case 'API_ERROR_NETWORK':
-        return (
-          context.l10n.api_error_network,
-          context.l10n.api_error_network_hint,
-        );
-      default:
-        // 未知错误或其他 HTTP 错误
-        if (errorCode.startsWith('API_ERROR_HTTP_')) {
-          final code = errorCode.replaceFirst('API_ERROR_HTTP_', '');
-          return ('${context.l10n.common_error} (HTTP $code)', details);
-        }
-        return (context.l10n.generation_generationFailed, message);
-    }
+            ),
+          ],
+        ],
+      ),
+    );
   }
 
   Widget _buildImageView(
@@ -654,29 +587,43 @@ class _ImagePreviewWidgetState extends ConsumerState<ImagePreviewWidget> {
     ThemeData theme,
   ) {
     final comparisonAvailable = image.canCompareWithSource;
+    // 对比会遮住选中态，批量选择期间暂停对比，避免操作看不见的已选图
+    final selectionActive = ref.watch(
+      generationImageCardSelectionProvider.select(
+        (selection) => selection.isActive,
+      ),
+    );
     final comparisonEnabled =
-        comparisonAvailable && ref.watch(generationComparisonEnabledProvider);
+        comparisonAvailable &&
+        !selectionActive &&
+        ref.watch(generationComparisonEnabledProvider);
 
     // 信息条紧贴图片下沿并与图片左对齐（官网 bottom.start 口径），
     // 因此先扣掉信息条高度再按比例算卡片尺寸，避免二者互相挤压。
     return LayoutBuilder(
       builder: (context, constraints) {
-        final gap = WindowSizeClass.fromWidth(constraints.maxWidth).isCompact
-            ? 4.0
-            : 8.0;
+        final gap = ImagePreviewWidget._infoBarGap(constraints.maxWidth);
         final availableHeight = constraints.maxHeight.isFinite
             ? max(
                 0.0,
                 constraints.maxHeight - PreviewInfoBar.heightFor(context) - gap,
               )
             : constraints.maxHeight;
-        final cardSize = _fitAspectRatio(
+        final comparisonFooterHeight = comparisonEnabled
+            ? ImageComparisonToolbar.singleRowHeight(context)
+            : 0.0;
+        final cardSize = fitImageCardSize(
           aspectRatio: image.aspectRatio,
           maxSize: Size(constraints.maxWidth, availableHeight),
+          footerHeight: comparisonFooterHeight,
+          minWidth: comparisonEnabled
+              ? ImageComparisonToolbar.singleRowWidth(context)
+              : 0,
         );
 
         return Column(
           mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             SizedBox(
               width: cardSize.width,
@@ -687,33 +634,29 @@ class _ImagePreviewWidgetState extends ConsumerState<ImagePreviewWidget> {
                 image: image,
                 showIndex: false,
                 comparisonEnabled: comparisonEnabled,
+                comparisonFooterHeight: comparisonFooterHeight,
               ),
             ),
             SizedBox(height: gap),
-            SizedBox(
-              width: cardSize.width,
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: PreviewInfoBar(
-                  image: image,
-                  comparisonEnabled: comparisonEnabled,
-                  onComparisonChanged: comparisonAvailable
-                      ? (enabled) =>
-                            ref
-                                    .read(
-                                      generationComparisonEnabledProvider
-                                          .notifier,
-                                    )
-                                    .state =
-                                enabled
-                      : null,
-                ),
-              ),
+            PreviewInfoBar(
+              image: image,
+              cardWidth: cardSize.width,
+              comparisonEnabled: comparisonEnabled,
+              onComparisonChanged: comparisonAvailable
+                  ? (enabled) => _setComparisonEnabled(ref, enabled)
+                  : null,
             ),
           ],
         );
       },
     );
+  }
+
+  void _setComparisonEnabled(WidgetRef ref, bool enabled) {
+    if (enabled && ref.read(generationImageCardSelectionProvider).isActive) {
+      ref.read(generationImageCardSelectionProvider.notifier).exit();
+    }
+    ref.read(generationComparisonEnabledProvider.notifier).setEnabled(enabled);
   }
 
   Widget _buildGeneratedImageCard({
@@ -723,10 +666,14 @@ class _ImagePreviewWidgetState extends ConsumerState<ImagePreviewWidget> {
     required bool showIndex,
     int? index,
     bool comparisonEnabled = false,
+    double comparisonFooterHeight = 0,
   }) {
     final imageBytes = image.bytes;
     final canUseAsInput = image.canUseAsGenerationInput;
     final isFailedSnapshot = image.isFailedStreamSnapshot;
+    final transparencyStyle = ref.watch(previewTransparencyNotifierProvider);
+    final cardSelection = ref.watch(generationImageCardSelectionProvider);
+    final canSelect = image.canBulkSelect && !comparisonEnabled;
 
     final card = SelectableImageCard(
       imageBytes: imageBytes,
@@ -735,9 +682,7 @@ class _ImagePreviewWidgetState extends ConsumerState<ImagePreviewWidget> {
       index: index,
       showIndex: showIndex,
       // 透明像素透出所选底色（棋盘格/纯色），与官网结果区一致
-      underlay: TransparencyBackgroundLayer(
-        style: ref.watch(previewTransparencyNotifierProvider),
-      ),
+      underlay: TransparencyBackgroundLayer(style: transparencyStyle),
       completionPreview: ref.watch(
         imageGenerationNotifierProvider.select(
           (state) => state.completionPreviews[image.id],
@@ -748,16 +693,19 @@ class _ImagePreviewWidgetState extends ConsumerState<ImagePreviewWidget> {
               key: ValueKey('generation-image-comparison-${image.id}'),
               sourceImageBytes: image.comparisonSource!.bytes,
               generatedImageBytes: imageBytes,
+              fit: BoxFit.contain,
+              imageBackdrop: TransparencyBackgroundLayer(
+                style: transparencyStyle,
+              ),
             )
           : null,
+      imageContentFooterHeight: comparisonFooterHeight,
       hoverEffectsEnabled: !comparisonEnabled,
       enableHoverScale: !comparisonEnabled,
-      enableSelection: image.canBulkSelect && !comparisonEnabled,
+      enableSelection: canSelect,
       showSelectionOnHover: false,
-      selectionMode: ref.watch(generationImageCardSelectionProvider).isActive,
-      isSelected: ref
-          .watch(generationImageCardSelectionProvider)
-          .isSelected(image.id),
+      selectionMode: cardSelection.isActive,
+      isSelected: cardSelection.isSelected(image.id),
       allowRepeatedModifierTaps: true,
       onSelectionChanged: image.canBulkSelect
           ? (selected) {
@@ -769,12 +717,17 @@ class _ImagePreviewWidgetState extends ConsumerState<ImagePreviewWidget> {
                   : selection.deselect(image.id);
             }
           : null,
-      onLongPress: image.canBulkSelect
+      onLongPress: canSelect
           ? () => ref
                 .read(generationImageCardSelectionProvider.notifier)
                 .enterAndSelect(image.id)
           : null,
-      enableSaveAction: image.canSave,
+      onSave: image.canSave
+          ? () => GenerationSaveService.saveImages(context, ref, [image])
+          : null,
+      onSaveAs: image.canSave
+          ? () => GenerationSaveService.saveImageAs(context, ref, image)
+          : null,
       enableCopyAction: image.canSave,
       statusBadgeLabel: isFailedSnapshot
           ? context.l10n.generation_failedStreamSnapshot
@@ -835,7 +788,9 @@ class _ImagePreviewWidgetState extends ConsumerState<ImagePreviewWidget> {
       onUpscale: canUseAsInput
           ? () => ImageWorkflowLauncher.openUpscale(ref, imageBytes)
           : null,
-      onSendToKrita: canUseAsInput
+      // Krita 桥接只在桌面可用，移动端菜单里出现这一项点了只会提示未连接
+      onSendToKrita:
+          canUseAsInput && PlatformCapabilities.current.supportsKritaBridge
           ? () => KritaSendHelper.sendImageBytes(
               context,
               ref,
@@ -868,6 +823,7 @@ class _ImagePreviewWidgetState extends ConsumerState<ImagePreviewWidget> {
       fileName: _previewImageFileName(image),
       sourceFilePath: image.filePath,
       enabled: !comparisonEnabled,
+      preheatHistoryShareFile: true,
       child: card,
     );
   }
@@ -885,8 +841,9 @@ class _ImagePreviewWidgetState extends ConsumerState<ImagePreviewWidget> {
     GeneratedImage image,
   ) async {
     NaiImageMetadata? metadata = image.metadata;
+    final metadataService = ref.read(imageMetadataServiceProvider);
+    final fixedTags = ref.read(fixedTagsNotifierProvider);
     try {
-      final metadataService = ImageMetadataService();
       final filePath = image.filePath;
       if (metadata == null &&
           filePath != null &&
@@ -895,7 +852,6 @@ class _ImagePreviewWidgetState extends ConsumerState<ImagePreviewWidget> {
       }
       metadata ??= await metadataService.getMetadataFromBytes(image.bytes);
       if (metadata != null) {
-        final fixedTags = ref.read(fixedTagsNotifierProvider);
         metadata = matchMetadataFixedTags(
           metadata: metadata,
           positiveEntries: fixedTags.positiveEntries,
@@ -1016,32 +972,14 @@ class _ImagePreviewWidgetState extends ConsumerState<ImagePreviewWidget> {
     GeneratedImage image,
   ) async {
     try {
-      final existingPath = image.filePath;
-      if (existingPath != null &&
-          existingPath.isNotEmpty &&
-          await File(existingPath).exists()) {
-        await FileExplorerUtils.revealFile(existingPath);
-        return;
-      }
-
-      final saveDirPath = await GalleryFolderRepository.instance.getRootPath();
-      if (saveDirPath == null) return;
-
-      // 原子保存：日期分类路径 + 独占防冲突 + 失败清理，全部在工具内完成
-      final filePath = await ImageSaveUtils.saveBytesToDatedPath(
-        rootPath: saveDirPath,
-        bytes: image.bytes,
-        seed: await ImageSaveUtils.resolveSeed(
-          metadata: image.metadata,
-          bytes: image.bytes,
-        ),
+      final linked = await GeneratedImageFileLink.ensureSaved(
+        ref,
+        image,
+        context.l10n,
       );
-
-      ref.read(localGalleryNotifierProvider.notifier).refresh();
-      await FileExplorerUtils.revealFile(filePath);
-
+      await FileExplorerUtils.revealFile(linked.path);
       if (context.mounted) {
-        AppToast.success(context, context.l10n.image_imageSaved(saveDirPath));
+        GenerationSaveService.showNewlySavedFeedback(context, linked);
       }
     } catch (e) {
       if (context.mounted) {
@@ -1056,7 +994,7 @@ class _ImagePreviewWidgetState extends ConsumerState<ImagePreviewWidget> {
   }) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final cardSize = _fitAspectRatio(
+        final cardSize = fitImageCardSize(
           aspectRatio: aspectRatio,
           maxSize: Size(constraints.maxWidth, constraints.maxHeight),
         );
@@ -1069,28 +1007,6 @@ class _ImagePreviewWidgetState extends ConsumerState<ImagePreviewWidget> {
           ),
         );
       },
-    );
-  }
-
-  Size _fitAspectRatio({required double aspectRatio, required Size maxSize}) {
-    final safeAspectRatio = aspectRatio.isFinite && aspectRatio > 0
-        ? aspectRatio
-        : 1.0;
-    final maxWidth = maxSize.width.isFinite ? max(0.0, maxSize.width) : 500.0;
-    final maxHeight = maxSize.height.isFinite
-        ? max(0.0, maxSize.height)
-        : 650.0;
-
-    var width = maxWidth;
-    var height = width / safeAspectRatio;
-    if (height > maxHeight) {
-      height = maxHeight;
-      width = height * safeAspectRatio;
-    }
-
-    return Size(
-      width.clamp(0.0, maxWidth).toDouble(),
-      height.clamp(0.0, maxHeight).toDouble(),
     );
   }
 
@@ -1153,36 +1069,15 @@ class _ImagePreviewWidgetState extends ConsumerState<ImagePreviewWidget> {
     );
     final initialIndex = selectedIndex < 0 ? 0 : selectedIndex;
 
-    // 简化逻辑：统一使用 FileImageDetailData 从 PNG 文件解析
-    // - 已保存的图像直接使用 filePath
-    // - 未保存的图像使用 GeneratedImageDetailData 作为 fallback
-    final allImages = sequence.map((img) {
-      if (img.filePath != null && img.filePath!.isNotEmpty) {
-        // 加入预加载队列（如果尚未解析）
-        ImageMetadataService().enqueuePreload(
-          taskId: img.id,
-          filePath: img.filePath,
-        );
-        return FileImageDetailData(
-          filePath: img.filePath!,
-          cachedBytes: img.bytes,
-          id: img.id,
-          initialMetadata: img.metadata,
-          showCopyButton: img.canSave,
-        );
-      }
-
-      // 未保存的图像：使用 GeneratedImageDetailData 作为 fallback
-      return GeneratedImageDetailData(
-        imageBytes: img.bytes,
-        metadata: img.metadata,
-        id: img.id,
-        showSaveButton: img.canSave,
-        showCopyButton: img.canSave,
-        preserveOriginalBytesOnSave: img.preserveOriginalBytesOnSave,
-        fixedTagUsageSnapshot: img.fixedTagUsageSnapshot,
-      );
-    }).toList();
+    final metadataService = ref.read(imageMetadataServiceProvider);
+    final allImages = sequence
+        .map(
+          (image) => GenerationDetailData.forImage(
+            image,
+            metadataService: metadataService,
+          ),
+        )
+        .toList();
 
     // 使用 ImageDetailOpener 打开详情页
     ImageDetailOpener.showMultipleImmediate(
@@ -1194,237 +1089,12 @@ class _ImagePreviewWidgetState extends ConsumerState<ImagePreviewWidget> {
       callbacks: ImageDetailCallbacks(
         onSave: (image) async {
           if (!image.showSaveButton) return;
-          await _saveImage(context, image);
+          await GenerationSaveService.saveImageFromDetail(context, ref, image);
         },
+        onSaveAs: (image) =>
+            GenerationSaveService.saveImageAsFromDetail(context, ref, image),
       ),
     );
-  }
-
-  /// 获取保存目录
-  Future<Directory?> _getSaveDirectory() async {
-    final dirPath = await GalleryFolderRepository.instance.getRootPath();
-    if (dirPath == null) return null;
-    final dir = Directory(dirPath);
-    if (!await dir.exists()) {
-      await dir.create(recursive: true);
-    }
-    return dir;
-  }
-
-  /// 保存图像
-  Future<void> _saveImage(BuildContext context, ImageDetailData image) async {
-    try {
-      final imageBytes = await image.getImageBytes();
-      final saveDir = await _getSaveDirectory();
-      if (saveDir == null) return;
-
-      // 统一解析真实 seed：文件名与元数据嵌入共用同一结果
-      final resolvedSeed = await ImageSaveUtils.resolveSeed(
-        metadata: image.metadata,
-        bytes: imageBytes,
-      );
-      final params = ref.read(generationParamsNotifierProvider);
-      // 最终 seed：解析结果优先，回退当前参数，仍未知则随机。
-      // 在生成文件名前确定，保证文件名与嵌入元数据完全一致。
-      final finalSeed = resolvedSeed ?? params.seed;
-      final actualSeed = finalSeed < 0
-          ? Random().nextInt(4294967295)
-          : finalSeed;
-      final capturedFixedTags = image is GeneratedImageDetailData
-          ? image.fixedTagUsageSnapshot
-          : null;
-
-      // 构建最终字节：外部结果可要求保留原始字节；其他图像缺少 NAI
-      // 元数据时仍按当前参数重建。
-      final Uint8List finalBytes;
-      if (image.preserveOriginalBytesOnSave) {
-        finalBytes = imageBytes;
-      } else if (ImageSaveUtils.hasEmbeddedNovelAiMetadata(imageBytes)) {
-        finalBytes = capturedFixedTags == null
-            ? imageBytes
-            : await ImageSaveUtils.mergeFixedTagUsageMetadata(
-                imageBytes: imageBytes,
-                snapshot: capturedFixedTags,
-              );
-      } else {
-        final characterConfig = ref.read(characterPromptNotifierProvider);
-        final fixedTagsState = ref.read(fixedTagsNotifierProvider);
-        final fixedTagUsageSnapshot =
-            capturedFixedTags ??
-            FixedTagUsageSnapshot.capture(fixedTagsState.entries);
-
-        // 解析别名
-        final aliasResolver = ref.read(aliasResolverServiceProvider.notifier);
-        final resolvedPrompt = aliasResolver.resolveAliases(params.prompt);
-        final resolvedNegative = aliasResolver.resolveAliases(
-          params.negativePrompt,
-        );
-        final promptWithFixedTags = fixedTagsState.applyToPrompt(
-          CharacterPromptBlockParser.parse(resolvedPrompt).positivePrompt,
-        );
-        final negativePromptWithFixedTags = fixedTagsState
-            .applyToNegativePrompt(resolvedNegative);
-        final qualityState = ref.read(qualityPresetNotifierProvider);
-        final qualityContent = ref
-            .read(qualityPresetNotifierProvider.notifier)
-            .getEffectiveContent(params.model);
-        final ucState = ref.read(ucPresetNotifierProvider);
-        final ucPresetContent = ref
-            .read(ucPresetNotifierProvider.notifier)
-            .getEffectiveContent(params.model);
-        final presetResolution = resolvePromptPresetSettings(
-          prompt: promptWithFixedTags,
-          negativePrompt: negativePromptWithFixedTags,
-          qualityMode: qualityState.mode,
-          qualityContent: qualityContent,
-          ucPresetType: ucState.presetType,
-          ucPresetContent: ucPresetContent,
-          useCustomUcPreset: ucState.isCustom,
-        );
-
-        // 构建 V4 多角色提示词结构（解析别名）
-        final charCaptions = <Map<String, dynamic>>[];
-        final charNegCaptions = <Map<String, dynamic>>[];
-
-        final convertedCharacters = CharacterConversionService(
-          aliasResolver: aliasResolver.resolveAliases,
-        ).convert(characterConfig);
-        for (final char in convertedCharacters.characters) {
-          charCaptions.add({
-            'char_caption': char.prompt,
-            'centers': [
-              {'x': 0.5, 'y': 0.5},
-            ],
-          });
-          charNegCaptions.add({
-            'char_caption': char.negativePrompt,
-            'centers': [
-              {'x': 0.5, 'y': 0.5},
-            ],
-          });
-        }
-
-        final encodedSize = NaiResolutionAdapter.readImageSize(imageBytes);
-        final paramsForSave = params.copyWith(
-          prompt: presetResolution.prompt,
-          negativePrompt: presetResolution.negativePrompt,
-          qualityToggle: presetResolution.qualityToggle,
-          ucPreset: presetResolution.ucPreset,
-          omitQualityTagHint: presetResolution.omitQualityTagHint,
-          omitUcPresetTagHint: presetResolution.omitUcPresetTagHint,
-          width: encodedSize?.$1 ?? params.width,
-          height: encodedSize?.$2 ?? params.height,
-        );
-        finalBytes = await ImageSaveUtils.rebuildImageBytesWithMetadata(
-          imageBytes: imageBytes,
-          params: paramsForSave,
-          actualSeed: actualSeed,
-          fixedPrefixTags: fixedTagUsageSnapshot
-              .entriesFor(
-                promptType: FixedTagPromptType.positive,
-                position: FixedTagPosition.prefix,
-              )
-              .map((entry) => entry.renderedContent)
-              .toList(),
-          fixedSuffixTags: fixedTagUsageSnapshot
-              .entriesFor(
-                promptType: FixedTagPromptType.positive,
-                position: FixedTagPosition.suffix,
-              )
-              .map((entry) => entry.renderedContent)
-              .toList(),
-          fixedNegativePrefixTags: fixedTagUsageSnapshot
-              .entriesFor(
-                promptType: FixedTagPromptType.negative,
-                position: FixedTagPosition.prefix,
-              )
-              .map((entry) => entry.renderedContent)
-              .toList(),
-          fixedNegativeSuffixTags: fixedTagUsageSnapshot
-              .entriesFor(
-                promptType: FixedTagPromptType.negative,
-                position: FixedTagPosition.suffix,
-              )
-              .map((entry) => entry.renderedContent)
-              .toList(),
-          fixedTagUsageSnapshot: fixedTagUsageSnapshot,
-          charCaptions: charCaptions,
-          charNegCaptions: charNegCaptions,
-          useCoords: !characterConfig.globalAiChoice,
-        );
-      }
-
-      // 原子保存：日期分类路径 + 独占防冲突 + 失败清理，全部在工具内完成
-      final filePath = await ImageSaveUtils.saveBytesToDatedPath(
-        rootPath: saveDir.path,
-        bytes: finalBytes,
-        seed: actualSeed,
-      );
-
-      Object? systemGalleryError;
-      if (PlatformCapabilities.current.supportsSystemGalleryExport) {
-        try {
-          await AndroidMediaStoreService.savePng(
-            bytes: finalBytes,
-            fileName: p.basename(filePath),
-          );
-        } catch (error) {
-          systemGalleryError = error;
-        }
-      }
-
-      // 立即解析并缓存刚保存图像的元数据
-      unawaited(
-        ImageMetadataService()
-            .getMetadata(filePath)
-            .then((metadata) {
-              AppLogger.d(
-                '生成图像元数据已缓存: ${metadata?.prompt.substring(0, metadata.prompt.length > 30 ? 30 : metadata.prompt.length)}...',
-                'ImagePreview',
-              );
-            })
-            .catchError((e) {
-              AppLogger.w('生成图像元数据缓存失败: $e', 'ImagePreview');
-            }),
-      );
-
-      // 更新保存图像的文件路径到状态
-      final currentState = ref.read(imageGenerationNotifierProvider);
-      final updatedImages = currentState.displayImages.map((img) {
-        if (img.id == image.identifier) {
-          return img.copyWithFilePath(filePath);
-        }
-        return img;
-      }).toList();
-
-      if (updatedImages.isNotEmpty) {
-        ref
-            .read(imageGenerationNotifierProvider.notifier)
-            .updateDisplayImages(updatedImages);
-      }
-
-      ref.read(localGalleryNotifierProvider.notifier).refresh();
-
-      if (context.mounted) {
-        if (systemGalleryError != null) {
-          AppToast.warning(
-            context,
-            context.l10n.image_savedAppOnly(systemGalleryError.toString()),
-          );
-        } else {
-          AppToast.success(
-            context,
-            PlatformCapabilities.current.supportsSystemGalleryExport
-                ? context.l10n.image_savedToSystemGallery
-                : context.l10n.image_imageSaved(saveDir.path),
-          );
-        }
-      }
-    } catch (e) {
-      if (context.mounted) {
-        AppToast.error(context, context.l10n.image_saveFailed(e.toString()));
-      }
-    }
   }
 }
 

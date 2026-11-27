@@ -7,6 +7,8 @@ import 'package:nai_launcher/data/services/dlss/dlss_options.dart';
 import 'package:nai_launcher/data/services/dlss/dlss_worker.dart';
 import 'package:nai_launcher/data/services/metadata/image_metadata_container_codec.dart';
 
+import '../../../helpers/exif_orientation_fixture.dart';
+
 void main() {
   test('native processing requires start and single NR completion', () {
     final protocol = DlssWorkerProtocol();
@@ -247,4 +249,45 @@ void main() {
       );
     },
   );
+
+  test('baked jpeg orientation is not carried into the copied exif', () {
+    final source = orientedCameraJpeg(orientation: 6);
+    final decoded = img.decodeImage(source)!;
+
+    final result = preserveDlssImage(
+      source,
+      decoded,
+      const DlssOptions(scale: 1),
+      'v1.3',
+    );
+
+    final output = img.decodePng(result)!;
+    expect((output.width, output.height), (4, 6));
+    final ifd = readImageIfd(pngExifPayload(result)!);
+    expect(ifd.orientation, 1);
+    expect(ifd.make, 'Aaalice Camera');
+  });
+
+  test('webp sources are restored on their displayed axes', () {
+    for (final orientation in [1, 2, 3, 4, 5, 6, 7, 8]) {
+      final source = orientedCameraWebp(orientation: orientation);
+      final size = orientation >= 5 ? (14, 20) : (20, 14);
+      final reason = 'orientation $orientation';
+      final stored = img.decodeImage(source)!
+        ..exif.imageIfd.orientation = orientation;
+
+      final result = preserveDlssImage(
+        source,
+        img.bakeOrientation(stored),
+        const DlssOptions(scale: 1),
+        'v1.3',
+      );
+
+      final output = img.decodePng(result)!;
+      expect((output.width, output.height), size, reason: reason);
+      final ifd = readImageIfd(pngExifPayload(result)!);
+      expect(ifd.orientation, 1, reason: reason);
+      expect(ifd.make, 'Aaalice Camera', reason: reason);
+    }
+  });
 }

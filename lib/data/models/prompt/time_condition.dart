@@ -9,7 +9,7 @@ part 'time_condition.g.dart';
 /// 例如: 圣诞节词库 12月1-31日启用
 /// 注意: 首版不支持跨年日期范围
 @freezed
-class TimeCondition with _$TimeCondition {
+abstract class TimeCondition with _$TimeCondition {
   const TimeCondition._();
 
   const factory TimeCondition({
@@ -34,10 +34,10 @@ class TimeCondition with _$TimeCondition {
     /// 是否每年重复
     @Default(true) bool recurring,
 
-    /// 特定年份（仅当 recurring 为 false 时有效）
+    /// 特定年份（仅当 recurring 为 false 时有效，未设置时每年生效）
     int? specificYear,
 
-    /// 是否启用
+    /// 是否启用；停用的条件不限制词组，等同于没有时间条件
     @Default(true) bool enabled,
 
     /// 描述
@@ -135,7 +135,7 @@ class TimeCondition with _$TimeCondition {
 ///
 /// 管理多个时间条件
 @freezed
-class TimeConditionGroup with _$TimeConditionGroup {
+abstract class TimeConditionGroup with _$TimeConditionGroup {
   const TimeConditionGroup._();
 
   const factory TimeConditionGroup({
@@ -149,16 +149,22 @@ class TimeConditionGroup with _$TimeConditionGroup {
   factory TimeConditionGroup.fromJson(Map<String, dynamic> json) =>
       _$TimeConditionGroupFromJson(json);
 
+  /// 参与判断的条件，停用的条件不限制
+  Iterable<TimeCondition> get enabledConditions =>
+      conditions.where((c) => c.enabled);
+
   /// 检查是否有任何条件满足
   bool isAnyActive([DateTime? date]) {
-    if (conditions.isEmpty) return true;
-    return conditions.any((c) => c.isActive(date));
+    final enabled = enabledConditions;
+    if (enabled.isEmpty) return true;
+    return enabled.any((c) => c.isActive(date));
   }
 
   /// 检查是否所有条件都满足
   bool isAllActive([DateTime? date]) {
-    if (conditions.isEmpty) return true;
-    return conditions.every((c) => c.isActive(date));
+    final enabled = enabledConditions;
+    if (enabled.isEmpty) return true;
+    return enabled.every((c) => c.isActive(date));
   }
 
   /// 检查是否满足（根据 matchAny 模式）

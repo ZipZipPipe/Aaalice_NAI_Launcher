@@ -4,7 +4,7 @@ import 'package:nai_launcher/data/services/dlss/dlss_options.dart';
 import 'package:nai_launcher/data/services/dlss/dlss_presets.dart';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hive/hive.dart';
+import 'package:hive_ce/hive_ce.dart';
 import 'package:nai_launcher/core/constants/storage_keys.dart';
 import 'package:nai_launcher/core/storage/local_storage_service.dart';
 import 'package:nai_launcher/data/cloud_sync/cloud_sync.dart';
@@ -41,6 +41,51 @@ class _TrackingAdapter extends ValidatingCloudSyncDataAdapter {
 }
 
 void main() {
+  test(
+    'prompt assistant only exports user rules and preserves local model declarations on restore',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'sync-assistant-',
+      );
+      addTearDown(() async {
+        await Hive.close();
+        await directory.delete(recursive: true);
+      });
+      Hive.init(directory.path);
+      await Hive.openBox<dynamic>(StorageKeys.settingsBox);
+      final storage = LocalStorageService();
+      const providers = [
+        {
+          'id': 'local',
+          'modelReasoningFormats': {'gemini-carbon': 'geminiLevel'},
+          'modelReasoningFormatIds': {'gemini-carbon': 'local-declaration'},
+        },
+      ];
+      const rules = [
+        {'id': 'rule'},
+      ];
+      await storage.setSetting(
+        StorageKeys.promptAssistantConfigJson,
+        jsonEncode({'providers': providers, 'rules': rules}),
+      );
+      final adapter = PromptAssistantProfileCloudSyncAdapter(storage);
+      expect((await adapter.exportRecords().single).data, {'rules': rules});
+      final restored = PortableSyncRecord(
+        adapterId: adapter.id,
+        id: 'user-rules',
+        kind: 'profile',
+        data: const {'rules': []},
+      );
+      await adapter.apply([restored]);
+      expect(
+        jsonDecode(
+          storage.getSetting<String>(StorageKeys.promptAssistantConfigJson)!,
+        ),
+        {'providers': providers, 'rules': []},
+      );
+    },
+  );
+
   test('registry finishes every preflight before any mutation', () async {
     final first = _TrackingAdapter('first');
     final second = _TrackingAdapter('second', reject: true);
@@ -205,9 +250,21 @@ void main() {
   });
 
   test('portable preferences and explicit exclusions stay classified', () {
+    expect(portableSettingKeys, contains(StorageKeys.themeType));
+    expect(portableSettingKeys, contains(StorageKeys.themeMode));
+    expect(portableSettingKeys, contains(StorageKeys.lightThemeType));
+    expect(portableSettingKeys, contains(StorageKeys.darkThemeType));
     expect(portableSettingKeys, contains(StorageKeys.defaultModel));
+    expect(portableSettingKeys, contains(StorageKeys.imageModelMode));
     expect(portableSettingKeys, contains(StorageKeys.shareWatermark));
     expect(portableSettingKeys, contains(StorageKeys.watermarkConfigV1));
+    expect(portableSettingKeys, contains(StorageKeys.imageSaveFolderTemplate));
+    expect(
+      portableSettingKeys,
+      contains(StorageKeys.imageSaveFileNameTemplate),
+    );
+    // The gallery root is a device path and never leaves this machine.
+    expect(portableSettingKeys, isNot(contains(StorageKeys.imageSavePath)));
     // Redaction remains local-only, including its original-file associations.
     expect(portableSettingKeys, isNot(contains(StorageKeys.mosaicConfigV1)));
     expect(
@@ -244,6 +301,33 @@ void main() {
       portableSettingKeys,
       isNot(contains(StorageKeys.onnxTaggerModelDirectory)),
     );
+    // MCP 服务器端口、令牌与权限模式绑定本机，跨设备同步会互相踢掉端口。
+    // 聊天停靠方式、分栏尺寸与浮窗几何取决于本机窗口，同步到别的设备会错位。
+    // 元数据导入对话框记住的勾选、粘贴多角色时记住的导入方式只留在本机。
+    for (final key in const [
+      StorageKeys.metadataImportLastSelection,
+      StorageKeys.pasteCharacterImportMode,
+      StorageKeys.mcpServerEnabled,
+      StorageKeys.mcpServerPort,
+      StorageKeys.mcpServerPermissionMode,
+      StorageKeys.mcpServerToken,
+      StorageKeys.rightPanelTab,
+      StorageKeys.agentChatDockMode,
+      StorageKeys.agentChatDockFoldedPane,
+      StorageKeys.agentChatDockStackedChatFraction,
+      StorageKeys.agentChatDockSideBySideChatWidth,
+      StorageKeys.agentChatFloatingEnabled,
+      StorageKeys.agentChatFloatingVisible,
+      StorageKeys.agentChatFloatingRect,
+    ]) {
+      expect(portableSettingKeys, isNot(contains(key)), reason: key);
+      expect(portablePromptSettingKeys, isNot(contains(key)), reason: key);
+      expect(
+        portableOnlineGallerySettingKeys,
+        isNot(contains(key)),
+        reason: key,
+      );
+    }
   });
 
   test('settings adapter applies only currently selected groups', () async {

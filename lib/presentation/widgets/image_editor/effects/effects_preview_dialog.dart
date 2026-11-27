@@ -7,6 +7,7 @@ import '../../common/image_viewport_surface.dart';
 import '../../../../core/utils/localization_extension.dart';
 import '../../../adaptive/adaptive_presenter.dart';
 import '../../common/adaptive_dialog_frame.dart';
+import '../../common/themed_slider.dart';
 import '../image_editor_processing_service.dart';
 import 'editor_effects.dart';
 import 'image_editor_effects_controller.dart';
@@ -18,18 +19,24 @@ class EditorEffectSelection {
   final double intensity;
 }
 
+/// 旋转、翻转与裁剪的预览由调用方按实际写回的方式生成；返回 null 表示没有可处理的内容
+typedef EffectInPlacePreview =
+    Future<Uint8List?> Function(EditorEffectType type);
+
 class EffectsPreviewDialog extends StatefulWidget {
   const EffectsPreviewDialog({
     super.key,
     required this.sourceBytes,
     required this.cropRect,
     required this.processingService,
+    this.inPlacePreview,
     this.scrollController,
   });
 
   final Uint8List sourceBytes;
   final EditorEffectCropRect? cropRect;
   final ImageEditorProcessingService processingService;
+  final EffectInPlacePreview? inPlacePreview;
   final ScrollController? scrollController;
 
   static Future<EditorEffectSelection?> show(
@@ -37,6 +44,7 @@ class EffectsPreviewDialog extends StatefulWidget {
     required Uint8List sourceBytes,
     required EditorEffectCropRect? cropRect,
     required ImageEditorProcessingService processingService,
+    EffectInPlacePreview? inPlacePreview,
   }) => AdaptivePresenter.showForm<EditorEffectSelection>(
     context: context,
     dialogWidth: 960,
@@ -50,6 +58,7 @@ class EffectsPreviewDialog extends StatefulWidget {
       sourceBytes: sourceBytes,
       cropRect: cropRect,
       processingService: processingService,
+      inPlacePreview: inPlacePreview,
       scrollController: scrollController,
     ),
   );
@@ -86,34 +95,55 @@ class _EffectsPreviewDialogState extends State<EffectsPreviewDialog> {
   void _refresh() {
     debounce?.cancel();
     final epoch = ++previewEpoch;
+    // 没有选区时不能裁剪，提示原因并禁用应用
+    if (type == EditorEffectType.cropToSelection && widget.cropRect == null) {
+      setState(() {
+        previewBytes = widget.sourceBytes;
+        loading = false;
+        error = context.l10n.editor_cropNeedsSelection;
+      });
+      return;
+    }
     setState(() {
       loading = true;
       error = '';
     });
     debounce = Timer(const Duration(milliseconds: 180), () async {
+      bool isCurrent() => mounted && epoch == previewEpoch;
       try {
-        final result = await widget.processingService.applyEffect(
-          EditorEffectJob(
-            imageBytes: widget.sourceBytes,
-            effectType: type,
-            intensity: intensity,
-            maxPreviewDimension: 768,
-            cropRect: widget.cropRect,
-          ),
-        );
-        if (!mounted || epoch != previewEpoch) return;
+        final bytes = await _previewBytes(isCurrent);
+        if (!isCurrent()) return;
+        // 没有可变换的像素时保留上一张预览
         setState(() {
-          previewBytes = result.bytes;
+          if (bytes != null) previewBytes = bytes;
           loading = false;
         });
       } catch (exception) {
-        if (!mounted || epoch != previewEpoch) return;
+        if (!isCurrent()) return;
         setState(() {
           loading = false;
           error = exception.toString();
         });
       }
     });
+  }
+
+  Future<Uint8List?> _previewBytes(bool Function() isCurrent) async {
+    final inPlacePreview = widget.inPlacePreview;
+    if (inPlacePreview != null && editorEffectWorksInPlace(type)) {
+      return inPlacePreview(type);
+    }
+    final result = await widget.processingService.previewEffect(
+      EditorEffectJob(
+        imageBytes: widget.sourceBytes,
+        effectType: type,
+        intensity: intensity,
+        maxPreviewDimension: 768,
+        cropRect: widget.cropRect,
+      ),
+      isCurrent: isCurrent,
+    );
+    return result?.bytes;
   }
 
   @override
@@ -316,6 +346,9 @@ class _EffectsPreviewDialogState extends State<EffectsPreviewDialog> {
     );
   }
 
+  static String _intensityText(double intensity) =>
+      intensity.toStringAsFixed(2);
+
   Widget _effectControl() {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
@@ -345,6 +378,9 @@ class _EffectsPreviewDialogState extends State<EffectsPreviewDialog> {
       );
     }
 
+    final intensityLabel = context.l10n.editor_effectIntensity(
+      effectLabel(context, type),
+    );
     return DecoratedBox(
       decoration: BoxDecoration(
         color: colorScheme.surfaceContainer,
@@ -365,9 +401,7 @@ class _EffectsPreviewDialogState extends State<EffectsPreviewDialog> {
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
-                    context.l10n.editor_effectIntensity(
-                      effectLabel(context, type),
-                    ),
+                    intensityLabel,
                     style: theme.textTheme.titleSmall?.copyWith(
                       fontWeight: FontWeight.bold,
                     ),
@@ -382,7 +416,7 @@ class _EffectsPreviewDialogState extends State<EffectsPreviewDialog> {
                 spacing: 8,
                 children: [
                   Text(
-                    intensity.toStringAsFixed(2),
+                    _intensityText(intensity),
                     style: theme.textTheme.titleSmall,
                   ),
                   TextButton(
@@ -397,7 +431,9 @@ class _EffectsPreviewDialogState extends State<EffectsPreviewDialog> {
                 ],
               ),
             ),
-            Slider(
+            NamedSlider(
+              label: intensityLabel,
+              valueText: _intensityText,
               value: intensity,
               min: editorEffectMin(type),
               max: editorEffectMax(type),

@@ -5,6 +5,8 @@ import 'package:nai_launcher/core/utils/app_error_reporter.dart';
 import 'package:nai_launcher/core/utils/app_logger.dart';
 import 'package:nai_launcher/core/utils/fatal_diagnostics.dart';
 
+import '../../helpers/isolated_app_log_directory.dart';
+
 void main() {
   late Directory tempDir;
 
@@ -68,6 +70,64 @@ void main() {
       expect(content, isNot(contains('raw-private-key-body')));
     },
   );
+
+  test('writeSync removes signed URL queries from error text', () async {
+    await FatalDiagnostics.initialize(directory: tempDir);
+    final file = FatalDiagnostics.writeSync(
+      HttpException(
+        'closed',
+        uri: Uri.parse(
+          'https://user:password@cdn.discordapp.com/attachments/111/222/image.png'
+          '?ex=6a1b2c3d&is=6a1a0000&hm=0123456789abcdef#frag',
+        ),
+      ),
+      StackTrace.empty,
+      source: 'test',
+    );
+
+    expect(file, isNotNull);
+    final content = await file!.readAsString();
+    expect(
+      content,
+      contains('https://cdn.discordapp.com/attachments/111/222/image.png'),
+    );
+    expect(content, isNot(contains('?')));
+    expect(content, isNot(contains('ex=')));
+    expect(content, isNot(contains('is=')));
+    expect(content, isNot(contains('hm=')));
+    expect(content, isNot(contains('#frag')));
+    expect(content, isNot(contains('user:password@')));
+  });
+
+  test('normal and crash logs redact the URL and repeated API key', () async {
+    final logDir = createIsolatedAppLogDirectory('error_reporter_test_');
+    addTearDown(() => deleteIsolatedAppLogDirectory(logDir));
+    await AppLogger.initialize(isTestEnvironment: true);
+    await FatalDiagnostics.initialize(directory: tempDir);
+
+    const endpoint = 'https://danbooru.donmai.us/posts.json';
+    const apiKey = 'fixture-api-key';
+    AppErrorReporter.reportError(
+      Exception('$endpoint?api_key=$apiKey&login=bob&tags=private-tag'),
+      StackTrace.fromString('stack saw $apiKey'),
+      source: 'test',
+      context: 'retry saw $apiKey',
+    );
+    await AppLogger.flush();
+
+    final appLog = await File(AppLogger.currentLogFile!).readAsString();
+    final crashFile = await tempDir.list().cast<File>().single;
+    final crashLog = await crashFile.readAsString();
+    for (final content in [appLog, crashLog]) {
+      expect(content, contains(endpoint));
+      expect(content, contains('retry saw [REDACTED]'));
+      expect(content, isNot(contains('api_key=')));
+      expect(content, isNot(contains('&login=')));
+      expect(content, isNot(contains('private-tag')));
+      expect(content, isNot(contains(apiKey)));
+    }
+    expect(crashLog, contains('stack saw [REDACTED]'));
+  });
 
   test('truncates unusually large crash diagnostics', () async {
     await FatalDiagnostics.initialize(directory: tempDir);

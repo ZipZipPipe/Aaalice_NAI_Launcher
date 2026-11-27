@@ -94,6 +94,11 @@ String buildAgentSystemPromptBody({required bool webAccessEnabled}) {
         'variations, director, enhance, or upscale in the real application. It '
         'never submits or spends Anlas; report its next_step and let the user '
         'edit/review before any separately confirmed paid submission.',
+    '- To run them directly instead: upscale_image enlarges an image in one '
+        'call without changing its content; prepare_generation with '
+        'source_ref and enhance re-renders details at a higher resolution and '
+        'needs a prompt describing the image. Their paid calls are approved '
+        'inside the launcher.',
     '',
     'Image2Image source image:',
     '- The generation page has a persistent Image2Image source slot. '
@@ -136,9 +141,14 @@ String buildAgentSystemPromptBody({required bool webAccessEnabled}) {
         'curated"), pass that friendly name to update_generation_settings '
         '— it resolves aliases. For transparent-background requests '
         'toggle the transparent_background switch there (V5 renders '
-        'native alpha), optionally reinforced with the prompt tags.',
+        'native alpha), optionally reinforced with the prompt tags. '
+        'V5 Full has an effort setting: medium is cheaper but fixes steps, '
+        'sampler and UC preset and ignores negative prompts; switch to it '
+        'only when the user asks to save Anlas or quota. Set model_mode to '
+        'furry only when the user asks for furry style.',
     '- search_tags looks up danbooru tags as a reference (English fuzzy '
-        'search, Chinese translation, co-occurrence suggestions); newer '
+        'search, Chinese translation, co-occurrence suggestions) and takes a '
+        '"queries" array to resolve several tags in one call; newer '
         'models also understand natural language, so use whichever fits.',
     '- Direct generation outputs and explicitly displayed images appear as '
         'thumbnails in this chat; the user can expand them.',
@@ -247,8 +257,8 @@ String _buildRuntimeContext({
         'When it is exactly zero, call submit_generation with the '
         'preparation_id directly, without asking for confirmation. '
         'When cost is positive, report the exact cost and call submit_generation '
-        'with confirmed=true; the application permission UI obtains the '
-        'actual user approval before execution. Do not ask a duplicate '
+        'with confirmed=true; the application permission gate decides '
+        'whether user approval is needed before execution. Do not ask a duplicate '
         'question in chat or through ask_user_question. Unknown cost is not free. '
         'Use inspect/update/cancel_generation_preparation while pending. '
         'Never claim submission from a preparation result.',
@@ -273,8 +283,14 @@ String _buildRuntimeContext({
         'source=timeout_recommendation. These defaults resolve preferences only; '
         'cancellation and timeout never authorize destructive or paid actions.',
     '- The application permission gate is authoritative. In Full Access, '
-        'perform ordinary user-requested reads and writes directly. Destructive '
-        'operations and paid/unknown-cost submissions still need its approval. '
+        'perform user-requested reads, writes, and page-state removals '
+        '(characters, active references, source images, drafts, completed '
+        'queue records) directly. Permanently deleting saved data (library '
+        'entries or categories, fixed tags, pending or failed queue tasks) and '
+        'paid/unknown-cost submissions still need its approval. In Autopilot, '
+        'paid submissions below the user\'s high-cost threshold run without '
+        'approval, so submit only what the task needs and never repeat a paid '
+        'call to retry or compare unless asked. '
         'Do not add a conversational permission checkpoint before the tool '
         'approval UI, and never disguise a permission request as a preference '
         'question. Stay within the user\'s actual task scope.',

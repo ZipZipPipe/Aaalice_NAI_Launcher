@@ -1,10 +1,11 @@
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:hive_flutter/hive_flutter.dart';
+import 'package:hive_ce_flutter/hive_ce_flutter.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../constants/api_constants.dart';
 import '../constants/model_capabilities.dart';
 import '../constants/storage_keys.dart';
+import '../enums/image_model_mode.dart';
+import '../save_naming/image_save_naming.dart';
 
 part 'local_storage_service.g.dart';
 
@@ -16,7 +17,7 @@ class LocalStorageService {
   Box get _settingsBox => Hive.box(StorageKeys.settingsBox);
 
   /// 获取已打开的 history box (在 main.dart 中预先打开)
-  Box get _historyBox => Hive.box(StorageKeys.historyBox);
+  LazyBox get _historyBox => Hive.lazyBox(StorageKeys.historyBox);
 
   // ==================== Settings ====================
 
@@ -53,6 +54,30 @@ class LocalStorageService {
   /// 保存主题类型索引
   Future<void> setThemeIndex(int index) async {
     await setSetting(StorageKeys.themeType, index);
+  }
+
+  /// 获取主题模式（'light' / 'dark' / 'system'，未设置时返回 null）
+  String? getThemeMode() => getSetting<String>(StorageKeys.themeMode);
+
+  /// 保存主题模式
+  Future<void> setThemeMode(String mode) async {
+    await setSetting(StorageKeys.themeMode, mode);
+  }
+
+  /// 获取浅色主题风格索引（未设置时返回 null）
+  int? getLightThemeIndex() => getSetting<int>(StorageKeys.lightThemeType);
+
+  /// 保存浅色主题风格索引
+  Future<void> setLightThemeIndex(int index) async {
+    await setSetting(StorageKeys.lightThemeType, index);
+  }
+
+  /// 获取深色主题风格索引（未设置时返回 null）
+  int? getDarkThemeIndex() => getSetting<int>(StorageKeys.darkThemeType);
+
+  /// 保存深色主题风格索引
+  Future<void> setDarkThemeIndex(int index) async {
+    await setSetting(StorageKeys.darkThemeType, index);
   }
 
   // ==================== Font ====================
@@ -241,6 +266,43 @@ class LocalStorageService {
   /// 保存是否自动保存图片
   Future<void> setAutoSaveImages(bool value) async {
     await setSetting(StorageKeys.autoSaveImages, value);
+  }
+
+  /// 保存图片时是否同时发布到系统相册（仅 Android 生效）
+  bool getSyncImagesToSystemGallery() {
+    return getSetting<bool>(
+          StorageKeys.syncImagesToSystemGallery,
+          defaultValue: true,
+        ) ??
+        true;
+  }
+
+  Future<void> setSyncImagesToSystemGallery(bool value) async {
+    await setSetting(StorageKeys.syncImagesToSystemGallery, value);
+  }
+
+  /// 图库保存的子文件夹与文件名规则；未设置时沿用默认规则。
+  ImageSaveNaming getImageSaveNaming() {
+    return ImageSaveNaming(
+      folderTemplate:
+          getSetting<String>(StorageKeys.imageSaveFolderTemplate) ??
+          ImageSaveNaming.defaultFolderTemplate,
+      fileNameTemplate:
+          getSetting<String>(StorageKeys.imageSaveFileNameTemplate) ??
+          ImageSaveNaming.defaultFileNameTemplate,
+    );
+  }
+
+  // 选回默认规则也要写入，云同步才能把“改回默认”带到其他设备。
+  Future<void> setImageSaveNaming(ImageSaveNaming naming) async {
+    await setSetting(
+      StorageKeys.imageSaveFolderTemplate,
+      naming.folderTemplate,
+    );
+    await setSetting(
+      StorageKeys.imageSaveFileNameTemplate,
+      naming.fileNameTemplate,
+    );
   }
 
   /// 获取透明图像的 Alpha 模式（true=Straight，false=Premultiplied）。
@@ -471,6 +533,22 @@ class LocalStorageService {
     await setSetting(StorageKeys.sdSyntaxAutoConvert, value);
   }
 
+  // ==================== Separate Numeric Weight Closing ====================
+
+  /// 获取数字结尾的数值权重是否在闭合 :: 前补空格 (默认关闭)
+  bool getSeparateNumericWeightClosing() {
+    return getSetting<bool>(
+          StorageKeys.separateNumericWeightClosing,
+          defaultValue: false,
+        ) ??
+        false;
+  }
+
+  /// 保存数字结尾的数值权重是否在闭合 :: 前补空格
+  Future<void> setSeparateNumericWeightClosing(bool value) async {
+    await setSetting(StorageKeys.separateNumericWeightClosing, value);
+  }
+
   // ==================== Resolve Alias On Copy ====================
 
   /// 获取复制时是否展开词库别名 (默认关闭)
@@ -485,6 +563,35 @@ class LocalStorageService {
   /// 保存复制时是否展开词库别名
   Future<void> setResolveAliasOnCopy(bool value) async {
     await setSetting(StorageKeys.resolveAliasOnCopy, value);
+  }
+
+  // ==================== Detect Multi Character On Paste ====================
+
+  /// 获取粘贴时是否识别多角色提示词 (默认开启)
+  bool getDetectMultiCharacterOnPaste() {
+    return getSetting<bool>(
+          StorageKeys.detectMultiCharacterOnPaste,
+          defaultValue: true,
+        ) ??
+        true;
+  }
+
+  /// 保存粘贴时是否识别多角色提示词
+  Future<void> setDetectMultiCharacterOnPaste(bool value) async {
+    await setSetting(StorageKeys.detectMultiCharacterOnPaste, value);
+  }
+
+  /// 获取粘贴多角色提示词时上次确认的角色导入方式名称；从未确认过返回 null。
+  ///
+  /// 仅保存在本机，不参与云同步。
+  String? getPasteCharacterImportMode() {
+    final value = getSetting<Object?>(StorageKeys.pasteCharacterImportMode);
+    return value is String ? value : null;
+  }
+
+  /// 保存粘贴多角色提示词时确认的角色导入方式名称
+  Future<void> setPasteCharacterImportMode(String value) async {
+    await setSetting(StorageKeys.pasteCharacterImportMode, value);
   }
 
   // ==================== Prompt Regex Replace ====================
@@ -641,6 +748,18 @@ class LocalStorageService {
   /// 保存端到端 ×2 放大开关
   Future<void> setLastE2eUpscale(bool value) async {
     await setSetting(StorageKeys.lastE2eUpscale, value);
+  }
+
+  /// 获取 Anime / Furry 模式 (V4 起生效)
+  ImageModelMode getImageModelMode() {
+    return ImageModelMode.fromName(
+      getSetting<String>(StorageKeys.imageModelMode),
+    );
+  }
+
+  /// 保存 Anime / Furry 模式
+  Future<void> setImageModelMode(ImageModelMode mode) async {
+    await setSetting(StorageKeys.imageModelMode, mode.name);
   }
 
   // ==================== Seed Lock ====================
@@ -1103,6 +1222,47 @@ class LocalStorageService {
   /// 保存是否包含预发布版本
   Future<void> setIncludePrereleaseUpdates(bool value) async {
     await setSetting(StorageKeys.includePrereleaseUpdates, value);
+  }
+
+  // ==================== ComfyUI & Krita Bridge ====================
+
+  /// 获取 ComfyUI 服务端地址
+  String getComfyUIServerUrl() {
+    return getSetting<String>(
+          StorageKeys.comfyuiServerUrl,
+          defaultValue: 'http://127.0.0.1:8188',
+        ) ??
+        'http://127.0.0.1:8188';
+  }
+
+  /// 保存 ComfyUI 服务端地址
+  Future<void> setComfyUIServerUrl(String url) async {
+    await setSetting(StorageKeys.comfyuiServerUrl, url);
+  }
+
+  /// 获取是否启用 ComfyUI 集成
+  bool getComfyUIEnabled() {
+    return getSetting<bool>(StorageKeys.comfyuiEnabled, defaultValue: false) ??
+        false;
+  }
+
+  /// 保存是否启用 ComfyUI 集成
+  Future<void> setComfyUIEnabled(bool enabled) async {
+    await setSetting(StorageKeys.comfyuiEnabled, enabled);
+  }
+
+  /// 获取是否启用 Krita 桥接
+  bool getKritaBridgeEnabled() {
+    return getSetting<bool>(
+          StorageKeys.kritaBridgeEnabled,
+          defaultValue: false,
+        ) ??
+        false;
+  }
+
+  /// 保存是否启用 Krita 桥接
+  Future<void> setKritaBridgeEnabled(bool enabled) async {
+    await setSetting(StorageKeys.kritaBridgeEnabled, enabled);
   }
 }
 

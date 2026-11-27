@@ -44,6 +44,8 @@ class PromptEditDocument {
   const PromptEditDocument._();
   static const disabledPrefix = '/*disabled:';
   static final _numericOpening = RegExp(r'-?(?:\d+(?:\.\d*)?|\.\d+)::');
+  static final _stackedWeight = RegExp(r'^-?(?:\d+(?:\.\d*)?|\.\d+)$');
+  static final _bracketShell = RegExp(r'^[\{\[]+$');
 
   static String disable(String text) =>
       '$disabledPrefix${text.replaceAll(r'\', r'\\').replaceAll('*/', r'*\/')}*/';
@@ -102,7 +104,7 @@ class PromptEditDocument {
     final spans = <PromptEditSpan>[];
     var start = lower;
     final stack = <String>[];
-    var pipe = false;
+    final skipper = _StructureSkipper(source, upper);
     var complete = true;
     void append(int end) {
       var left = start;
@@ -115,7 +117,12 @@ class PromptEditDocument {
       }
       if (left < right) {
         spans.add(
-          _span(source, left, right, complete && stack.isEmpty && !pipe),
+          _span(
+            source,
+            left,
+            right,
+            complete && stack.isEmpty && !skipper.insidePipe,
+          ),
         );
       }
       start = end + 1;
@@ -123,36 +130,18 @@ class PromptEditDocument {
     }
 
     for (var i = lower; i < upper; i++) {
+      final resume = skipper.skip(i);
+      if (resume == _StructureSkipper.unterminated) {
+        complete = false;
+        break;
+      }
+      if (resume != null) {
+        i = resume - 1;
+        continue;
+      }
       final char = source[i];
-      if (char == r'\') {
-        i++;
-        continue;
-      }
-      if (source.startsWith(disabledPrefix, i)) {
-        final end = disabledEnd(source, i);
-        if (end < 0) {
-          complete = false;
-          break;
-        }
-        i = end - 1;
-        continue;
-      }
-      final literalEnd = PromptLiteralScanner.endAt(source, i, upper);
-      if (literalEnd != null) {
-        i = literalEnd - 1;
-        continue;
-      }
-      if (source.startsWith('||', i)) {
-        pipe = !pipe;
-        i++;
-        continue;
-      }
-      if (pipe) continue;
-      final numeric = _numericOpening.matchAsPrefix(source, i);
-      if (numeric != null &&
-          (i == start ||
-              source[i - 1].trim().isEmpty ||
-              '{[,'.contains(source[i - 1]))) {
+      final numeric = _numericOpeningAt(source, i, lower);
+      if (numeric != null) {
         if (!stack.contains('::')) stack.add('::');
         i = numeric.end - 1;
         continue;
@@ -212,8 +201,8 @@ class PromptEditDocument {
     // Consecutive bracket shells describe one weight, not separate groups.
     // Keep numeric resets and real subgroups as distinct editing boundaries.
     if (children.length == 1 &&
-        RegExp(r'^[\{\[]+$').hasMatch(raw.substring(0, innerStart - start)) &&
-        RegExp(r'^[\{\[]+$').hasMatch(children.single.prefix)) {
+        _bracketShell.hasMatch(raw.substring(0, innerStart - start)) &&
+        _bracketShell.hasMatch(children.single.prefix)) {
       final child = children.single;
       return PromptEditSpan(
         start,
@@ -246,6 +235,92 @@ class PromptEditDocument {
       contentStart: innerStart,
       contentEnd: innerEnd,
     );
+  }
+
+  /// Inline emphasis [parse] leaves as plain text; a new `x::` ends an open one.
+  static List<(int, int)> emphasisRanges(String source, int lower, int upper) {
+    final ranges = <(int, int)>[];
+    final brackets = <(int, String)>[];
+    final skipper = _StructureSkipper(source, upper);
+    int? numeric;
+    for (var i = lower; i < upper; i++) {
+      final resume = skipper.skip(i);
+      if (resume == _StructureSkipper.unterminated) break;
+      if (resume != null) {
+        i = resume - 1;
+        continue;
+      }
+      final opening = _numericOpeningAt(source, i, lower);
+      if (opening != null && opening.end <= upper) {
+        if (numeric != null) ranges.add((numeric, i));
+        numeric = i;
+        i = opening.end - 1;
+        continue;
+      }
+      if (numeric != null && i + 1 < upper && source.startsWith('::', i)) {
+        ranges.add((numeric, i + 2));
+        numeric = null;
+        i++;
+        continue;
+      }
+      final char = source[i];
+      if (char == '{' || char == '[') brackets.add((i, char));
+      if ((char == '}' || char == ']') &&
+          brackets.isNotEmpty &&
+          brackets.last.$2 == (char == '}' ? '{' : '[')) {
+        final open = brackets.removeLast().$1;
+        // Consecutive bracket shells describe one weight.
+        if (ranges.isNotEmpty &&
+            ranges.last == (open + 1, i) &&
+            '{['.contains(source[open + 1])) {
+          ranges.removeLast();
+        }
+        ranges.add((open, i + 1));
+      }
+    }
+    return ranges;
+  }
+
+  /// `(contentStart, closing)` for each `::` that ends a numeric weight. A bare
+  /// number right after an opening is a stacked opening, not weighted content.
+  static List<(int, int)> numericClosings(String source) {
+    final closings = <(int, int)>[];
+    final skipper = _StructureSkipper(source, source.length);
+    int? contentStart;
+    for (var i = 0; i < source.length; i++) {
+      final resume = skipper.skip(i);
+      if (resume == _StructureSkipper.unterminated) break;
+      if (resume != null) {
+        i = resume - 1;
+        continue;
+      }
+      final opening = _numericOpeningAt(source, i, 0);
+      if (opening != null) {
+        contentStart = opening.end;
+        i = opening.end - 1;
+        continue;
+      }
+      if (!source.startsWith('::', i)) continue;
+      final start = contentStart;
+      if (start != null &&
+          _stackedWeight.hasMatch(source.substring(start, i))) {
+        contentStart = i + 2;
+      } else {
+        if (start != null) closings.add((start, i));
+        contentStart = null;
+      }
+      i++;
+    }
+    return closings;
+  }
+
+  static Match? _numericOpeningAt(String source, int index, int lower) {
+    if (index > lower &&
+        source[index - 1].trim().isNotEmpty &&
+        !'{[,'.contains(source[index - 1])) {
+      return null;
+    }
+    return _numericOpening.matchAsPrefix(source, index);
   }
 
   static PromptEditSpan? singleSelected(String source, int start, int end) {
@@ -351,5 +426,36 @@ class PromptEditDocument {
     if (effectiveText(source) != source) {
       throw StateError('Unprocessed disabled prompt fragment in $field');
     }
+  }
+}
+
+/// Skips text without prompt structure, identically for every structural scan.
+final class _StructureSkipper {
+  _StructureSkipper(this._source, this._upper);
+
+  static const unterminated = -1;
+
+  final String _source;
+  final int _upper;
+  bool _insidePipe = false;
+
+  bool get insidePipe => _insidePipe;
+
+  /// Index to resume after structureless text, [unterminated] for an open
+  /// disabled fragment, or null when [index] may start structure.
+  int? skip(int index) {
+    final source = _source;
+    if (source[index] == r'\') return index + 2;
+    if (source.startsWith(PromptEditDocument.disabledPrefix, index)) {
+      final end = PromptEditDocument.disabledEnd(source, index);
+      return end < 0 ? unterminated : end;
+    }
+    final literalEnd = PromptLiteralScanner.endAt(source, index, _upper);
+    if (literalEnd != null) return literalEnd;
+    if (source.startsWith('||', index)) {
+      _insidePipe = !_insidePipe;
+      return index + 2;
+    }
+    return _insidePipe ? index + 1 : null;
   }
 }

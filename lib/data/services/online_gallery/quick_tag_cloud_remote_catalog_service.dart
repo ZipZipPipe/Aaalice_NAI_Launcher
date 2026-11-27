@@ -147,7 +147,7 @@ class QuickTagCloudRemoteCatalogService {
     final key = '${catalog.release}:canonical:$path';
     Future<QuickTagCloudCodex> load() async {
       try {
-        return _parseCodex(
+        return await _parseCodex(
           await _loadVerifiedCachedJson(
             catalog,
             path,
@@ -169,7 +169,7 @@ class QuickTagCloudRemoteCatalogService {
             : _findPreviousMeta(previous, meta);
         if (previous == null || previousMeta == null) rethrow;
         try {
-          return _parseCodex(
+          return await _parseCodex(
             await _loadVerifiedCachedJson(
               previous,
               _canonicalPath(previousMeta.id),
@@ -270,6 +270,7 @@ class QuickTagCloudRemoteCatalogService {
     File target,
     Map<String, Object?> snapshot,
   ) async {
+    // 目录刷新要等快照写完才返回，排在计算闸门后会让目录显示等别的后台任务
     final bytes = await Isolate.run(() {
       final payloadJson = jsonEncode(snapshot);
       final envelope = <String, Object?>{
@@ -458,6 +459,7 @@ class QuickTagCloudRemoteCatalogService {
     }
   }
 
+  // 离线回退与快照比对都在目录加载的关键路径上，同样不排计算闸门
   Future<Map<String, dynamic>> _decodeCatalogSnapshot(
     List<int> bytes,
     String source,
@@ -545,7 +547,7 @@ class QuickTagCloudRemoteCatalogService {
           noStore: true,
           cancelToken: cancelToken,
         );
-        return _parseCodex(
+        return await _parseCodex(
           data,
           meta,
           loadSource: QuickTagCloudCodexLoadSource.external,

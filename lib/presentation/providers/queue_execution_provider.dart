@@ -1,22 +1,29 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:hive_ce/hive.dart' show HiveError;
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../core/constants/storage_keys.dart';
 import '../../core/platform/platform_capabilities.dart';
 import '../../core/storage/local_storage_service.dart';
 import '../../core/storage/queue_state_storage.dart';
+import '../../core/storage/replication_queue_blob_store.dart';
+import '../../core/storage/replication_queue_blob_store_provider.dart';
 import '../../core/utils/app_logger.dart';
+import '../../data/models/image/image_params.dart';
 import '../../data/models/queue/replication_task.dart';
 import '../../data/models/queue/replication_task_generation_snapshot.dart';
 import '../../data/models/queue/replication_task_status.dart';
 import '../../data/models/queue/failure_handling_strategy.dart';
 import 'character_prompt_provider.dart';
+import 'generation/generation_error_classifier.dart';
 import 'image_generation_provider.dart';
-import 'auth_provider.dart';
+import '../../data/services/auth_provider.dart';
 import 'krita/krita_bridge_notifier.dart';
 import 'notification_settings_provider.dart';
+import 'queued_generation_request.dart';
 import 'replication_queue_provider.dart';
 import '../../core/services/notification_service.dart';
 
@@ -42,6 +49,9 @@ enum QueueExecutionStatus {
 
 enum QueueStartResult { started, empty, busy, authRequired }
 
+/// 队列被引擎自己停下的原因，只在本次运行期间提示，不持久化。
+enum QueueStopNotice { storageWriteFailed }
+
 /// 队列执行状态
 class QueueExecutionState {
   final QueueExecutionStatus status;
@@ -56,6 +66,8 @@ class QueueExecutionState {
   final FailureHandlingStrategy failureStrategy;
   final int totalTasksInSession;
   final DateTime? sessionStartTime;
+  final QueueStopNotice? stopNotice;
+  final bool pausedForFailure;
 
   const QueueExecutionState({
     this.status = QueueExecutionStatus.idle,
@@ -70,6 +82,8 @@ class QueueExecutionState {
     this.failureStrategy = FailureHandlingStrategy.skip,
     this.totalTasksInSession = 0,
     this.sessionStartTime,
+    this.stopNotice,
+    this.pausedForFailure = false,
   });
 
   QueueExecutionState copyWith({
@@ -86,6 +100,9 @@ class QueueExecutionState {
     FailureHandlingStrategy? failureStrategy,
     int? totalTasksInSession,
     DateTime? sessionStartTime,
+    QueueStopNotice? stopNotice,
+    bool clearStopNotice = false,
+    bool? pausedForFailure,
   }) {
     return QueueExecutionState(
       status: status ?? this.status,
@@ -102,6 +119,11 @@ class QueueExecutionState {
       failureStrategy: failureStrategy ?? this.failureStrategy,
       totalTasksInSession: totalTasksInSession ?? this.totalTasksInSession,
       sessionStartTime: sessionStartTime ?? this.sessionStartTime,
+      stopNotice: clearStopNotice ? null : (stopNotice ?? this.stopNotice),
+      pausedForFailure:
+          pausedForFailure ??
+          ((status == null || status == QueueExecutionStatus.paused) &&
+              this.pausedForFailure),
     );
   }
 
@@ -173,12 +195,16 @@ class QueueSettings {
 class QueueExecutionNotifier extends _$QueueExecutionNotifier {
   late final QueueStateStorage _stateStorage;
   bool _generationTriggerPending = false;
+  final _attribution = _QueueGenerationAttribution();
+  ProviderSubscription<bool>? _kritaBridgeIdleWatch;
+  bool _isDisposed = false;
   Future<void> _pendingStateWrite = Future.value();
   int _executionRevision = 0;
 
   @override
   QueueExecutionState build() {
     _stateStorage = ref.read(queueStateStorageProvider);
+    ref.onDispose(() => _isDisposed = true);
 
     // 使用 ref.listen 监听生成状态变化（不会触发 provider 重建，避免竞态条件）
     ref.listen<ImageGenerationState>(imageGenerationNotifierProvider, (
@@ -186,6 +212,13 @@ class QueueExecutionNotifier extends _$QueueExecutionNotifier {
       next,
     ) {
       _onGenerationStateChanged(previous, next);
+    });
+    // 当前任务的锁放在队列里，界面、智能体与 MCP 的删改入口都经过同一处判断
+    listenSelf((previous, next) {
+      if (previous?.currentTaskId == next.currentTaskId) return;
+      ref
+          .read(replicationQueueNotifierProvider.notifier)
+          .setExecutionLock(next.currentTaskId);
     });
 
     // 同步加载持久化状态（Hive Box 已在 main.dart 中预先打开）
@@ -387,6 +420,7 @@ class QueueExecutionNotifier extends _$QueueExecutionNotifier {
           ? queueState.count
           : state.totalTasksInSession,
       sessionStartTime: isNewSession ? DateTime.now() : state.sessionStartTime,
+      clearStopNotice: true,
     );
 
     // 填充提示词（此时状态已是 ready，prompt_input 不会同步）
@@ -430,136 +464,321 @@ class QueueExecutionNotifier extends _$QueueExecutionNotifier {
   void _triggerAutoGenerate() {
     if (_generationTriggerPending) return;
     _generationTriggerPending = true;
-    unawaited(_generateReadyTask());
+    _runSettlement(_generateReadyTask);
   }
 
   Future<void> _generateReadyTask() async {
+    final ImageGenerationNotifier generationNotifier;
+    final _QueuedSubmission? submission;
     try {
-      await ref.read(generationCooldownProvider.notifier).waitUntilAvailable();
+      try {
+        await ref
+            .read(generationCooldownProvider.notifier)
+            .waitUntilAvailable();
 
-      final generationNotifier = ref.read(
-        imageGenerationNotifierProvider.notifier,
-      );
-      // completed/error 会先于生成调用的 finally 对外可见。等待旧调用释放
-      // invocation 所有权，避免下一任务因 generate() 的并发保护而被静默丢弃。
-      await generationNotifier.waitUntilGenerationInvocationSettled();
+        generationNotifier = ref.read(imageGenerationNotifierProvider.notifier);
+        // completed/error 会先于生成调用的 finally 对外可见。等待旧调用释放
+        // invocation 所有权，避免下一任务因 generate() 的并发保护而被静默丢弃。
+        await generationNotifier.waitUntilGenerationInvocationSettled();
 
-      if (state.status != QueueExecutionStatus.ready) return;
-      if (ref.read(imageGenerationNotifierProvider).isBusy ||
-          (PlatformCapabilities.current.supportsKritaBridge &&
-              ref.read(kritaBridgeNotifierProvider).isBridgeGenerating)) {
-        return;
+        if (!_canGenerateReadyTask()) return;
+        final current = _currentQueueTask();
+        if (current == null) return;
+        submission = await _prepareSubmission(current);
+      } finally {
+        // 快照失败结算可能立即重试或推进下一项，必须先释放触发锁。
+        _generationTriggerPending = false;
       }
-
-      final baseParams = ref.read(generationParamsNotifierProvider);
-      final queueState = ref.read(replicationQueueNotifierProvider);
-      ReplicationTask? task;
-      for (final candidate in queueState.tasks) {
-        if (candidate.id == state.currentTaskId) {
-          task = candidate;
-          break;
-        }
-      }
-      if (task == null) return;
-      final snapshot = task.generationSnapshot;
-      final batchSizeOverride = snapshot == null
-          ? null
-          : ReplicationTaskGenerationSnapshot.decodeBatchSize(snapshot);
-      final params = snapshot == null
-          ? baseParams.copyWith(
-              prompt: task.prompt,
-              negativePrompt: task.applyNegativePrompt
-                  ? task.negativePrompt
-                  : baseParams.negativePrompt,
-              model: task.model ?? baseParams.model,
-              sampler: task.sampler ?? baseParams.sampler,
-              steps: task.steps ?? baseParams.steps,
-              scale: task.cfgScale ?? baseParams.scale,
-              seed: task.seed ?? -1,
-              width: task.width ?? baseParams.width,
-              height: task.height ?? baseParams.height,
-              nSamples: 1,
-            )
-          : ReplicationTaskGenerationSnapshot.decode(snapshot).copyWith(
-              prompt: task.prompt,
-              negativePrompt: task.applyNegativePrompt
-                  ? task.negativePrompt
-                  : baseParams.negativePrompt,
-              nSamples: 1,
-            );
-
-      // generate() 在首次异步让出前会把状态切到 generating；此后由生成状态
-      // 本身阻止重复提交，不要让该锁跨越整次生成而吞掉下一任务的触发。
-      _generationTriggerPending = false;
-      await generationNotifier.generate(
-        params,
-        batchSizeOverride: batchSizeOverride,
-        preserveCharacterSnapshot: snapshot != null,
-      );
+    } on QueueBlobReadFailedException catch (error) {
+      AppLogger.w(error.message, 'QueueExecution');
+      await _retryAfterTransientSnapshotFailure();
+      return;
     } on FormatException catch (error, stackTrace) {
-      final taskId = state.currentTaskId;
+      await _settleInvalidSnapshot(error, stackTrace);
+      return;
+    }
+    if (submission == null || _isDisposed) return;
+    // 准备参数也跨了 await，期间队列可能被暂停、被别处占用或当前任务被编辑
+    if (!_canGenerateReadyTask()) return;
+    if (!identical(_currentQueueTask(), submission.task)) {
+      _triggerAutoGenerate();
+      return;
+    }
+    // 自己先查登录：交给生成层再失败会先后弹出生成与队列两个登录提示
+    if (!ref.read(authNotifierProvider).isAuthenticated) {
+      _runSettlement(pause);
+      publishAuthPrompt(ref, AuthPromptReason.queueExecution);
+      return;
+    }
+
+    if (await _submitToGeneration(generationNotifier, submission)) {
+      _triggerAutoGenerate();
+    }
+  }
+
+  Future<_QueuedSubmission?> _prepareSubmission(ReplicationTask current) async {
+    final ready = current.generationSnapshot == null
+        ? (current, null)
+        : await _decodeReadyTask(current);
+    if (ready == null) return null;
+    final (task, snapshotParams) = ready;
+
+    final snapshot = task.generationSnapshot;
+    return (
+      task: task,
+      params: resolveQueuedTaskParams(
+        task,
+        base: ref.read(generationParamsNotifierProvider),
+        snapshotParams: snapshotParams,
+      ),
+      batchSizeOverride: snapshot == null
+          ? null
+          : ReplicationTaskGenerationSnapshot.decodeBatchSize(snapshot),
+      focusedOverride: queuedFocusedOverride(
+        snapshot == null
+            ? null
+            : ReplicationTaskGenerationSnapshot.decodeFocused(snapshot),
+      ),
+      preserveCharacterSnapshot: snapshot != null,
+    );
+  }
+
+  Future<void> _settleInvalidSnapshot(
+    FormatException error,
+    StackTrace stackTrace,
+  ) async {
+    final taskId = state.currentTaskId;
+    AppLogger.e(
+      'Queued generation snapshot is invalid (${error.runtimeType})',
+      null,
+      stackTrace,
+      'QueueExecution',
+    );
+    if (taskId != null) {
+      await _handleFailedTask(
+        revision: _executionRevision,
+        errorMessage: 'Invalid generation snapshot: ${error.message}',
+        retryable: false,
+      );
+    } else {
+      state = state.copyWith(
+        status: QueueExecutionStatus.idle,
+        clearCurrentTaskId: true,
+      );
+      await _saveToStorage();
+    }
+  }
+
+  /// 提交一次队列生成并等它结束；返回是否需要重新触发提交。
+  Future<bool> _submitToGeneration(
+    ImageGenerationNotifier generationNotifier,
+    _QueuedSubmission submission,
+  ) async {
+    final revision = _executionRevision;
+    final taskId = submission.task.id;
+    final serial = _attribution.openSubmission(taskId);
+    final Future<GenerationOutcome> generation;
+    try {
+      generation = generationNotifier.generate(
+        submission.params,
+        batchSizeOverride: submission.batchSizeOverride,
+        preserveCharacterSnapshot: submission.preserveCharacterSnapshot,
+        focusedOverride: submission.focusedOverride,
+      );
+    } finally {
+      _attribution.closeSubmissionWindow();
+    }
+    GenerationOutcome? outcome;
+    try {
+      outcome = await generation;
+    } catch (error, stackTrace) {
       AppLogger.e(
-        'Queued generation snapshot is invalid',
-        error,
+        'Queued generation threw ${error.runtimeType}',
+        null,
         stackTrace,
         'QueueExecution',
       );
-      if (taskId != null) {
-        final message = 'Invalid generation snapshot: $error';
-        await ref
-            .read(replicationQueueNotifierProvider.notifier)
-            .updateTaskStatus(
-              taskId,
-              ReplicationTaskStatus.running,
-              errorMessage: message,
-            );
-        await _handleFailedTask(errorMessage: message, retryable: false);
-      } else {
-        state = state.copyWith(
-          status: QueueExecutionStatus.idle,
-          clearCurrentTaskId: true,
-        );
-        await _saveToStorage();
-      }
-    } finally {
-      _generationTriggerPending = false;
     }
+    if (_isDisposed || !_attribution.releaseUnentered(serial)) return false;
+    if (outcome is GenerationRejected &&
+        !identical(_currentQueueTask(), submission.task)) {
+      return false;
+    }
+    // 期间被停止时这次提交已与队列无关；若又重新开始，新会话可能因这次占用没能提交
+    if (revision != _executionRevision) return state.isReady;
+    if (state.currentTaskId != taskId || !(state.isReady || state.isPaused)) {
+      return false;
+    }
+    if (outcome == null) {
+      _settleTaskFailure(null);
+      return false;
+    }
+    return _settleUnenteredOutcome(outcome);
+  }
+
+  /// 没进入生成就结束的提交按调用结局结算；返回是否需要重新触发提交。
+  bool _settleUnenteredOutcome(GenerationOutcome outcome) {
+    switch (outcome) {
+      case GenerationBusy():
+      case GenerationDisposed():
+        return false;
+      case GenerationAuthRequired():
+        // 提交前查过登录，这里只剩两者之间失效的情况，生成层已经发布了登录提示
+        _runSettlement(pause);
+        return false;
+      case GenerationRejected(:final errorCode):
+        _settleTaskFailure(errorCode);
+        return false;
+      case GenerationCooldownActive():
+        // 冷却由提交前的等待负责，这里只需重新提交
+        return true;
+      case GenerationCancelledBeforeStart():
+      case GenerationSuperseded():
+        _runSettlement(stopExecution);
+        return false;
+      case GenerationRunEnded():
+        // 进入过生成的提交由状态监听在终态转换时结算
+        return false;
+    }
+  }
+
+  void _settleTaskFailure(String? errorMessage) {
+    startExecution();
+    if (errorMessage != null && isDeterministicGenerationError(errorMessage)) {
+      _runSettlement(
+        () => _handleFailedTask(
+          revision: _executionRevision,
+          errorMessage: errorMessage,
+          retryable: false,
+        ),
+      );
+    } else {
+      _runSettlement(_onTaskError);
+    }
+  }
+
+  /// 读图片的暂时性失败按一次失败的执行结算，沿用重试次数、重试间隔与失败策略。
+  Future<void> _retryAfterTransientSnapshotFailure() async {
+    if (state.currentTaskId == null ||
+        state.status != QueueExecutionStatus.ready) {
+      return;
+    }
+    startExecution(errorMessage: QueueBlobReadFailedException.errorCode);
+    await _onTaskError(errorMessage: QueueBlobReadFailedException.errorCode);
+  }
+
+  /// 快照在后台解码，期间通知器可能被释放、队列可能暂停或被手动生成占用，
+  /// 当前任务也可能被编辑；结算后重新核对，任务被替换时改用最新任务。
+  Future<(ReplicationTask, ImageParams?)?> _decodeReadyTask(
+    ReplicationTask task,
+  ) async {
+    final blobStore = ref.read(replicationQueueBlobStoreProvider);
+    var current = task;
+    while (true) {
+      final snapshot = current.generationSnapshot;
+      if (snapshot == null) return (current, null);
+      final decoding = ReplicationTaskGenerationSnapshot.decode(
+        snapshot,
+        blobStore,
+      );
+      // 先等结算再核对，只抛出仍是当前任务的快照读取错误。
+      await decoding.then<void>((_) {}, onError: (Object _) {});
+      if (_isDisposed || !_canGenerateReadyTask()) return null;
+      final latest = _currentQueueTask();
+      if (latest == null) return null;
+      if (identical(latest, current)) return (current, await decoding);
+      current = latest;
+    }
+  }
+
+  /// 就绪且没有别的生成占着时才能提交；被占用而放弃的提交在占用结束后补一次。
+  bool _canGenerateReadyTask() {
+    if (state.status != QueueExecutionStatus.ready ||
+        ref.read(imageGenerationNotifierProvider).isBusy) {
+      return false;
+    }
+    if (!_isKritaBridgeGenerating) return true;
+    _resubmitWhenKritaBridgeIdle();
+    return false;
+  }
+
+  bool get _isKritaBridgeGenerating =>
+      PlatformCapabilities.current.supportsKritaBridge &&
+      ref.read(kritaBridgeNotifierProvider).isBridgeGenerating;
+
+  // Krita 桥的生成不经过生成通知器的忙碌状态，生成监听收不到它结束
+  void _resubmitWhenKritaBridgeIdle() {
+    if (_kritaBridgeIdleWatch != null) return;
+    _kritaBridgeIdleWatch = ref.listen<bool>(
+      kritaBridgeNotifierProvider.select((bridge) => bridge.isBridgeGenerating),
+      (_, generating) {
+        if (generating) return;
+        _kritaBridgeIdleWatch?.close();
+        _kritaBridgeIdleWatch = null;
+        if (state.isReady) _triggerAutoGenerate();
+      },
+    );
+  }
+
+  ReplicationTask? _currentQueueTask() {
+    final currentTaskId = state.currentTaskId;
+    for (final candidate in ref.read(replicationQueueNotifierProvider).tasks) {
+      if (candidate.id == currentTaskId) return candidate;
+    }
+    return null;
   }
 
   /// 开始执行队列
   ///
   /// 当用户点击生成按钮后，由生成状态监听器自动触发
-  void startExecution() {
+  void startExecution({String? errorMessage}) {
     if (state.status != QueueExecutionStatus.ready) return;
 
     state = state.copyWith(status: QueueExecutionStatus.running);
 
     // 实际开始执行时，更新当前任务状态为 running
-    if (state.currentTaskId != null) {
-      ref
-          .read(replicationQueueNotifierProvider.notifier)
-          .updateTaskStatus(
-            state.currentTaskId!,
-            ReplicationTaskStatus.running,
-          );
+    final taskId = state.currentTaskId;
+    if (taskId != null) {
+      _runSettlement(
+        () => ref
+            .read(replicationQueueNotifierProvider.notifier)
+            .updateTaskStatus(
+              taskId,
+              ReplicationTaskStatus.running,
+              errorMessage: errorMessage,
+            ),
+      );
     }
   }
 
   /// 停止执行队列。已提交的生成请求继续完成，但不再推进队列。
-  Future<void> stopExecution() async {
+  Future<void> stopExecution() => _stopExecution();
+
+  Future<void> _stopExecution({bool completeCurrentTask = false}) async {
     _executionRevision++;
     _generationTriggerPending = false;
     final currentTaskId = state.currentTaskId;
     state = state.copyWith(
       status: QueueExecutionStatus.idle,
       clearCurrentTaskId: true,
+      completedCount: completeCurrentTask ? state.completedCount + 1 : null,
+      retryCount: completeCurrentTask ? 0 : null,
     );
     if (currentTaskId != null) {
-      await ref
-          .read(replicationQueueNotifierProvider.notifier)
-          .resetRunningTask(currentTaskId);
+      final queue = ref.read(replicationQueueNotifierProvider.notifier);
+      if (completeCurrentTask) {
+        await queue.markCompleted(currentTaskId);
+      } else {
+        await queue.resetRunningTask(currentTaskId);
+      }
     }
+    if (_isDisposed) return;
     await _saveToStorage();
+  }
+
+  void dismissStopNotice() {
+    if (state.stopNotice == null) return;
+    state = state.copyWith(clearStopNotice: true);
   }
 
   /// 原子停止执行状态后再清空待处理任务，避免运行中的回调复活旧队列。
@@ -568,59 +787,119 @@ class QueueExecutionNotifier extends _$QueueExecutionNotifier {
     await ref.read(replicationQueueNotifierProvider.notifier).clear();
   }
 
-  /// 监听生成状态变化
+  // 提交后、进入生成前被暂停时请求照常发出，任务仍要锁成运行中，完成才能按任务结算
+  void _markOwnedTaskRunning(String taskId) {
+    if (state.currentTaskId != taskId) return;
+    if (state.isReady) {
+      startExecution();
+    } else if (state.isPaused) {
+      _runSettlement(
+        () => ref
+            .read(replicationQueueNotifierProvider.notifier)
+            .updateTaskStatus(taskId, ReplicationTaskStatus.running),
+      );
+    }
+  }
+
+  /// 监听生成状态变化；完成、失败、取消只归属队列自己提交且进入过生成的那一次
   void _onGenerationStateChanged(
     ImageGenerationState? previous,
     ImageGenerationState next,
   ) {
-    // 检测生成完成（优先处理，无论队列模式还是普通模式）
-    if (previous?.status == GenerationStatus.generating &&
-        next.status == GenerationStatus.completed) {
-      // 判断是否为队列模式
-      final isQueueMode =
-          state.currentTaskId != null &&
-          (state.status == QueueExecutionStatus.running ||
-              state.status == QueueExecutionStatus.ready ||
-              state.status == QueueExecutionStatus.paused);
+    if (next.preparationCancelled) {
+      final taskId = _attribution.releasePreparing();
+      if (taskId != null && taskId == state.currentTaskId) {
+        _runSettlement(stopExecution);
+        return;
+      }
+    }
+    if (previous?.isBusy != true && next.isBusy) {
+      _attribution.onBusyStarted();
+    } else if (previous?.isBusy == true &&
+        !next.isBusy &&
+        !_attribution.ownsBusySession &&
+        state.isReady) {
+      // 就绪的队列可能因这次别处发起的生成占用而没能提交，占用结束后补一次
+      _triggerAutoGenerate();
+    }
+    final wasGenerating = previous?.status == GenerationStatus.generating;
 
-      if (isQueueMode) {
-        // 队列模式：不播放单张完成音效，等队列全部完成后播放
-        _onTaskCompleted();
-      } else {
-        // 非队列模式：立即播放生成完成音效
+    if (!wasGenerating && next.status == GenerationStatus.generating) {
+      final taskId = _attribution.onEnteredGenerating();
+      if (taskId != null) _markOwnedTaskRunning(taskId);
+      return;
+    }
+    if (!wasGenerating ||
+        (next.status != GenerationStatus.completed &&
+            next.status != GenerationStatus.error &&
+            next.status != GenerationStatus.cancelled)) {
+      return;
+    }
+
+    final taskId = _attribution.releaseEntered();
+    if (taskId == null || !_hasQueueTask || state.currentTaskId != taskId) {
+      if (next.status == GenerationStatus.completed) {
         _triggerGenerationNotification();
       }
       return;
     }
 
-    // 以下逻辑仅在队列模式下执行
-    if (state.status != QueueExecutionStatus.running &&
-        state.status != QueueExecutionStatus.ready) {
-      return;
-    }
-
-    // 检测到开始生成，进入运行状态
-    if (previous?.status != GenerationStatus.generating &&
-        next.status == GenerationStatus.generating) {
-      if (state.status == QueueExecutionStatus.ready) {
-        startExecution(); // 调用 startExecution 来同时更新队列状态和任务状态
-      }
-      return;
-    }
-
-    // 生成错误
-    if (previous?.status == GenerationStatus.generating &&
-        next.status == GenerationStatus.error) {
-      _onTaskError();
-      return;
-    }
-
-    // 生成取消
-    if (next.status == GenerationStatus.cancelled) {
-      unawaited(stopExecution());
-      return;
+    switch (next.status) {
+      case GenerationStatus.completed:
+        final outcome = ref
+            .read(imageGenerationNotifierProvider.notifier)
+            .waitUntilGenerationInvocationSettled();
+        _runSettlement(() => _onTaskCompleted(outcome));
+      case GenerationStatus.error:
+        _settleTaskFailure(next.errorMessage);
+      default:
+        _runSettlement(stopExecution);
     }
   }
+
+  // 结算里的队列写入失败时不能停在运行中；只记异常类型，异常文本可能带着任务内容
+  void _runSettlement(Future<void> Function() settlement) {
+    final revision = _executionRevision;
+    unawaited(
+      settlement().then<void>(
+        (_) {},
+        onError: (Object error, StackTrace stackTrace) async {
+          AppLogger.e(
+            'Queue settlement failed with ${error.runtimeType}',
+            null,
+            stackTrace,
+            'QueueExecution',
+          );
+          final storageFailure = _isQueueStorageWriteFailure(error);
+          // 期间已被停止或重新开始时，旧结算的失败不能停掉用户的新会话
+          if (!_isDisposed && revision == _executionRevision) {
+            await _stopAfterSettlementFailure(
+              storageFailure ? QueueStopNotice.storageWriteFailed : null,
+            );
+          }
+          if (!storageFailure) Error.throwWithStackTrace(error, stackTrace);
+        },
+      ),
+    );
+  }
+
+  Future<void> _stopAfterSettlementFailure(QueueStopNotice? notice) async {
+    if (notice != null) state = state.copyWith(stopNotice: notice);
+    try {
+      await stopExecution();
+    } catch (stopError, stopStackTrace) {
+      AppLogger.e(
+        'Stopping the queue failed with ${stopError.runtimeType}',
+        null,
+        stopStackTrace,
+        'QueueExecution',
+      );
+    }
+  }
+
+  bool get _hasQueueTask =>
+      state.currentTaskId != null &&
+      (state.isRunning || state.isReady || state.isPaused);
 
   /// 触发生成完成音效
   void _triggerGenerationNotification() {
@@ -636,7 +915,7 @@ class QueueExecutionNotifier extends _$QueueExecutionNotifier {
   }
 
   /// 任务完成处理
-  Future<void> _onTaskCompleted() async {
+  Future<void> _onTaskCompleted(Future<GenerationRunEnded?> outcome) async {
     final revision = _executionRevision;
     final currentTaskId = state.currentTaskId;
     if (currentTaskId == null) {
@@ -647,6 +926,14 @@ class QueueExecutionNotifier extends _$QueueExecutionNotifier {
         'QueueExecution',
       );
       await stopExecution();
+      return;
+    }
+
+    // 取消后处理也会发布原图完成事件，调用结束时才能决定队列是否继续。
+    final ended = await outcome;
+    if (_isDisposed || revision != _executionRevision) return;
+    if (ended is! GenerationRunCompleted) {
+      await _stopExecution(completeCurrentTask: true);
       return;
     }
 
@@ -681,23 +968,38 @@ class QueueExecutionNotifier extends _$QueueExecutionNotifier {
         Duration(milliseconds: (state.taskIntervalSeconds * 1000).toInt()),
       );
     }
-    if (revision != _executionRevision) return;
+    if (!_canAdvanceFrom(currentTaskId, revision)) return;
 
     _processNextTask();
   }
 
+  // 等待期间可能被暂停、停止，或已由 resume 推进到下一条，这些情况都不能再由原流程推进
+  bool _canAdvanceFrom(String settledTaskId, int revision) =>
+      revision == _executionRevision &&
+      (state.isRunning || state.isReady) &&
+      state.currentTaskId == settledTaskId;
+
   /// 任务错误处理
-  Future<void> _onTaskError() async {
+  Future<void> _onTaskError({String? errorMessage}) async {
     final settings = _getSettings();
+    final revision = _executionRevision;
 
     if (state.retryCount < settings.retryCount) {
+      final taskId = state.currentTaskId;
       // 重试
       state = state.copyWith(retryCount: state.retryCount + 1);
 
       // 等待重试间隔
       await Future.delayed(settings.retryInterval);
+      if (revision != _executionRevision) return;
 
-      // 检查是否仍在运行或暂停
+      if (state.isPaused && taskId != null && state.currentTaskId == taskId) {
+        // 失败后已无在途请求，任务改回待执行，resume 才会重新提交而不是当作仍在生成
+        await ref
+            .read(replicationQueueNotifierProvider.notifier)
+            .resetRunningTask(taskId);
+        return;
+      }
       if (state.status != QueueExecutionStatus.running) return;
 
       // 重新设置为 ready 状态，等待用户再次点击或自动执行
@@ -706,15 +1008,18 @@ class QueueExecutionNotifier extends _$QueueExecutionNotifier {
       _triggerAutoGenerate();
     } else {
       // 超过重试次数，根据策略处理
-      await _handleFailedTask();
+      await _handleFailedTask(errorMessage: errorMessage, revision: revision);
     }
   }
 
   /// 处理失败任务
   Future<void> _handleFailedTask({
+    required int revision,
     String? errorMessage,
     bool retryable = true,
   }) async {
+    // 结算前已被停止时任务已改回待执行，当前任务也可能属于重新开始的新会话
+    if (revision != _executionRevision) return;
     final currentTaskId = state.currentTaskId;
     if (currentTaskId == null) {
       _processNextTask();
@@ -722,13 +1027,19 @@ class QueueExecutionNotifier extends _$QueueExecutionNotifier {
     }
 
     final queueNotifier = ref.read(replicationQueueNotifierProvider.notifier);
-    final task = ref
-        .read(replicationQueueNotifierProvider)
-        .tasks
-        .firstWhere(
-          (t) => t.id == currentTaskId,
-          orElse: () => ReplicationTask.create(prompt: ''),
-        );
+    if (!retryable) {
+      // 失败池保留任务上的错误原因，写入期间已换任务时不继续结算。
+      await queueNotifier.updateTaskStatus(
+        currentTaskId,
+        ReplicationTaskStatus.running,
+        errorMessage: errorMessage,
+      );
+      if (_isDisposed ||
+          revision != _executionRevision ||
+          state.currentTaskId != currentTaskId) {
+        return;
+      }
+    }
 
     switch (state.failureStrategy) {
       case FailureHandlingStrategy.autoRetry:
@@ -736,11 +1047,12 @@ class QueueExecutionNotifier extends _$QueueExecutionNotifier {
           await queueNotifier.moveToFailedPool(currentTaskId);
           break;
         }
-        // 重新入队到末尾。执行中的任务只能通过专用结算入口移除。
-        final removed = await queueNotifier.removeRunningTaskForRetry(
+        // 重新入队到末尾。执行中的任务只能通过专用结算入口移动。
+        final requeued = await queueNotifier.requeueRunningTaskForRetry(
           currentTaskId,
         );
-        if (!removed) {
+        if (revision != _executionRevision) return;
+        if (!requeued) {
           AppLogger.e(
             'Queue retry target no longer exists: $currentTaskId',
             null,
@@ -750,13 +1062,6 @@ class QueueExecutionNotifier extends _$QueueExecutionNotifier {
           await stopExecution();
           return;
         }
-        await queueNotifier.add(
-          task.copyWith(
-            status: ReplicationTaskStatus.pending,
-            retryCount: 0,
-            errorMessage: null,
-          ),
-        );
         break;
 
       case FailureHandlingStrategy.skip:
@@ -765,13 +1070,14 @@ class QueueExecutionNotifier extends _$QueueExecutionNotifier {
         break;
 
       case FailureHandlingStrategy.pauseAndWait:
-        // 更新任务状态为 failed
+        // 写盘期间窗口也可能恢复，先由失败策略接管暂停原因。
+        state = state.copyWith(pausedForFailure: true);
         await queueNotifier.updateTaskStatus(
           currentTaskId,
           ReplicationTaskStatus.failed,
           errorMessage: errorMessage,
         );
-        // 暂停执行
+        if (revision != _executionRevision) return;
         state = state.copyWith(
           status: QueueExecutionStatus.paused,
           failedCount: state.failedCount + 1,
@@ -781,6 +1087,7 @@ class QueueExecutionNotifier extends _$QueueExecutionNotifier {
         await _saveToStorage();
         return;
     }
+    if (revision != _executionRevision) return;
 
     state = state.copyWith(
       failedCount: state.failedCount + 1,
@@ -789,6 +1096,7 @@ class QueueExecutionNotifier extends _$QueueExecutionNotifier {
     );
 
     await _saveToStorage();
+    if (!_canAdvanceFrom(currentTaskId, revision)) return;
 
     // 处理下一个任务
     _processNextTask();
@@ -804,7 +1112,7 @@ class QueueExecutionNotifier extends _$QueueExecutionNotifier {
         status: QueueExecutionStatus.completed,
         clearCurrentTaskId: true,
       );
-      _saveToStorage();
+      _runSettlement(_saveToStorage);
 
       // 触发队列完成通知
       _triggerGenerationNotification();
@@ -885,6 +1193,85 @@ class QueueExecutionNotifier extends _$QueueExecutionNotifier {
   }
 }
 
+/// 队列提交的生成归属：只认队列自己在 generate() 同步置忙窗口内发起的那一次；
+/// 进入过生成的由状态终态结算，没进入的由调用结局结算，同一次提交只会被释放一次。
+class _QueueGenerationAttribution {
+  int _serial = 0;
+  int? _submitting;
+  String? _submittingTaskId;
+  int? _owned;
+  String? _ownedTaskId;
+  bool _entered = false;
+  bool _ownsBusySession = false;
+
+  /// 当前忙碌区间是否由队列的提交开启。
+  bool get ownsBusySession => _ownsBusySession;
+
+  /// 调用 generate() 之前登记，返回这次提交的编号。
+  int openSubmission(String taskId) {
+    _submitting = ++_serial;
+    _submittingTaskId = taskId;
+    return _serial;
+  }
+
+  /// generate() 同步返回后结束登记窗口。
+  void closeSubmissionWindow() {
+    _submitting = null;
+    _submittingTaskId = null;
+  }
+
+  /// 生成从空闲变为忙碌；只有落在登记窗口内的才归属队列。
+  void onBusyStarted() {
+    _owned = _submitting;
+    _ownedTaskId = _submittingTaskId;
+    _entered = false;
+    _ownsBusySession = _submitting != null;
+  }
+
+  /// 状态进入 generating；归属队列时返回提交的任务。
+  String? onEnteredGenerating() {
+    if (_owned == null) return null;
+    _entered = true;
+    return _ownedTaskId;
+  }
+
+  /// 进入过生成的提交到达终态；归属队列时释放并返回任务。
+  String? releaseEntered() {
+    if (_owned == null || !_entered) return null;
+    final taskId = _ownedTaskId;
+    _release();
+    return taskId;
+  }
+
+  /// 编号为 [serial] 的提交没进入生成就结束；仍归属队列时释放并返回 true。
+  bool releaseUnentered(int serial) {
+    if (_owned != serial || _entered) return false;
+    _release();
+    return true;
+  }
+
+  String? releasePreparing() {
+    if (_entered) return null;
+    final taskId = _ownedTaskId;
+    _release();
+    return taskId;
+  }
+
+  void _release() {
+    _owned = null;
+    _ownedTaskId = null;
+    _entered = false;
+  }
+}
+
+typedef _QueuedSubmission = ({
+  ReplicationTask task,
+  ImageParams params,
+  int? batchSizeOverride,
+  GenerationFocusedSnapshot? focusedOverride,
+  bool preserveCharacterSnapshot,
+});
+
 /// 队列设置 Provider（从本地存储读取）
 @riverpod
 QueueSettings queueSettings(Ref ref) {
@@ -909,3 +1296,9 @@ QueueSettings queueSettings(Ref ref) {
     failureStrategy: executionState.failureStrategy,
   );
 }
+
+// 队列索引写入失败由持久化层包装，执行状态仍由 Hive 直接写入。
+bool _isQueueStorageWriteFailure(Object error) =>
+    error is ReplicationQueueWriteException ||
+    error is HiveError ||
+    error is FileSystemException;

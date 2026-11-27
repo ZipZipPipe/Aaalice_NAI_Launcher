@@ -3,13 +3,13 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
-import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
 
 import '../../data/models/vibe/vibe_library_entry.dart';
 import '../../data/models/vibe/vibe_reference.dart';
 import '../services/file_export_service.dart';
 import 'app_logger.dart';
+import 'byte_content.dart';
 import 'file_name_sanitizer.dart';
 import 'novelai_vibe_codec.dart';
 import 'vibe_file_parser.dart';
@@ -57,14 +57,12 @@ class VibeExportUtils {
     VibeLibraryEntry entry,
   ) {
     final candidates = <VibeExportImageCandidate>[];
-    final seenHashes = <String>{};
 
     void addCandidate(String id, String label, Uint8List? bytes) {
       if (bytes == null || bytes.isEmpty) {
         return;
       }
-      final hash = sha256.convert(bytes).toString();
-      if (!seenHashes.add(hash)) {
+      if (candidates.any((seen) => ByteContent.equals(seen.bytes, bytes))) {
         return;
       }
       candidates.add(
@@ -107,7 +105,7 @@ class VibeExportUtils {
           displayName: entry.displayName,
           vibes: [entry.toVibeReference()],
           carrierImageBytes: candidate.bytes,
-          fileName: _generateEmbeddedPngFileName(entry.displayName),
+          fileName: embeddedPngFileName(entry.displayName),
         ),
       );
     }
@@ -520,10 +518,10 @@ class VibeExportUtils {
 
   static String _archiveFileNameForEntry(VibeLibraryEntry entry) {
     final extension = entry.isBundle ? 'naiv4vibebundle' : 'naiv4vibe';
-    final baseName = FileNameSanitizer.sanitize(
+    final baseName = FileNameSanitizer.segment(
       entry.displayName,
       fallback: entry.isBundle ? 'vibe-bundle' : 'vibe',
-      maxLength: 80,
+      maxCodePoints: 80,
     );
     return '$baseName.$extension';
   }
@@ -587,10 +585,10 @@ class VibeExportUtils {
 
   /// 生成文件名
   static String _generateFileName(String name) {
-    final finalName = FileNameSanitizer.sanitize(
+    final finalName = FileNameSanitizer.segment(
       name,
       fallback: 'vibe',
-      maxLength: 50,
+      maxCodePoints: 50,
     );
 
     return '$finalName.naiv4vibe';
@@ -598,44 +596,33 @@ class VibeExportUtils {
 
   /// 生成 bundle 文件名
   static String _generateBundleFileName(String name) {
-    final finalName = FileNameSanitizer.sanitize(
+    final finalName = FileNameSanitizer.segment(
       name,
       fallback: 'vibe-bundle',
-      maxLength: 50,
+      maxCodePoints: 50,
     );
 
     return '$finalName.naiv4vibebundle';
   }
 
   static String _generateZipFileName(String name) {
-    final finalName = FileNameSanitizer.sanitize(
+    final finalName = FileNameSanitizer.segment(
       name,
       fallback: 'vibe-library',
-      maxLength: 50,
+      maxCodePoints: 50,
     );
 
     return '$finalName.zip';
   }
 
-  static String _generateEmbeddedPngFileName(String name) {
-    final finalName = FileNameSanitizer.sanitize(
+  static String embeddedPngFileName(String name) {
+    final finalName = FileNameSanitizer.segment(
       name,
       fallback: 'vibe',
-      maxLength: 50,
+      maxCodePoints: 50,
     );
 
     return '${finalName}_vibe.png';
-  }
-
-  /// 验证 .naiv4vibe JSON 格式是否有效
-  static bool validateNaiv4VibeJson(String jsonString) {
-    try {
-      final jsonData = jsonDecode(jsonString);
-      return jsonData is Map<String, dynamic> &&
-          NovelAiVibeCodec.validateSingleMap(jsonData);
-    } catch (e) {
-      return false;
-    }
   }
 }
 

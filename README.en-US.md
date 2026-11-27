@@ -1,15 +1,11 @@
-# NAI Launcher
+# NAI Launcher (ZipZipPipe fork)
 
 <p align="center">
   <a href="README.md">简体中文</a> · <a href="README.zh-TW.md">繁體中文</a> · English
 </p>
 
-> [!WARNING]
-> **Project updates paused (2026-09-08)**
->
-> NovelAI has restricted my account: my subscription was canceled, and I can no longer make purchases or subscribe. I still do not understand the specific reason for this action, so I have decided to pause updates to this project.
-
-![Notice from NovelAI canceling the subscription and restricting purchases](docs/screenshots/novelai-subscription-canceled-2026-09-08.png)
+> [!NOTE]
+> This is the ZipZipPipe fork of [Aaalice233/Aaalice_NAI_Launcher](https://github.com/Aaalice233/Aaalice_NAI_Launcher). In-app updates and the packages below come from this repository.
 
 <p align="center">
   <img src="assets/icons/Icon.png" alt="NAI Launcher icon" width="112">
@@ -20,14 +16,14 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Aaalice233/Aaalice_NAI_Launcher/releases/latest"><img src="https://img.shields.io/github/v/release/Aaalice233/Aaalice_NAI_Launcher?display_name=tag&sort=semver" alt="Latest release"></a>
+  <a href="https://github.com/ZipZipPipe/Aaalice_NAI_Launcher/releases/latest"><img src="https://img.shields.io/github/v/release/ZipZipPipe/Aaalice_NAI_Launcher?display_name=tag&sort=semver" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/Windows%20%7C%20macOS%20%7C%20Android-available-6f7785" alt="Supported platforms">
   <img src="https://img.shields.io/badge/license-MIT-5b8c5a" alt="MIT License">
   <a href="https://discord.gg/R48n6GwXzD"><img src="https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white" alt="Discord community"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/Aaalice233/Aaalice_NAI_Launcher/releases/latest">Download latest release</a> ·
+  <a href="https://github.com/ZipZipPipe/Aaalice_NAI_Launcher/releases/latest">Download latest release</a> ·
   <a href="CHANGELOG.md">Read the changelog</a> ·
   <a href="https://github.com/Aaalice233/Aaalice_NAI_Launcher/issues">Report an issue</a> ·
   <a href="https://discord.gg/R48n6GwXzD">Join Discord</a>
@@ -53,10 +49,12 @@ NAI Launcher is built for people who use NovelAI regularly. Generation, editing,
 ### 🎨 NovelAI generation and editing
 
 - Text-to-image, image-to-image, regular Inpaint, Focused Inpaint, Outpaint, variations, and enhancement are supported.
-- Common NovelAI V5 Curated / Full, V4.5, V4, and V3 workflows are available. Controls, defaults, Token limits, and reference features follow the selected model's capabilities.
+- Common NovelAI V5 Curated / Full, V4.5, V4, and V3 workflows are available. Controls, defaults, Token limits, and reference features follow the selected model's capabilities. When you switch back to a model you've used before, the app restores its locally saved sampling parameters.
+- V5 Full offers the Medium / High effort switch: Medium costs fewer Anlas and less of the Opus allowance, and like the official site it fixes the steps, sampler and Undesired Content preset. V4 and later models offer Anime / Furry mode; Furry mode adds the fur dataset tag to the start of the prompt and is recognized automatically when importing images.
 - Configure size, sampler, Steps, CFG, Seed, noise schedule, and related parameters. Invalid NovelAI dimensions are caught early with a usable size suggestion.
 - Estimated Anlas cost appears before generation. Important paid actions require separate confirmation, and balances and statistics refresh afterward.
 - Built-in history and previews let you reuse Prompts, Seeds, models, or selected settings without overwriting work still being edited.
+- Previews and history images support "Save as": pick a location and file name for one image from its context menu, More menu, or the full-screen detail toolbar, or save a multi-selection into one folder. Save as exports a copy with its full generation parameters and does not add it to the app gallery. With Protection Mode and "Avoid overwriting existing files on export" enabled, name conflicts are numbered automatically.
 
 ### ✍️ Prompts, pinned tags, and characters
 
@@ -70,15 +68,17 @@ NAI Launcher is built for people who use NovelAI regularly. Generation, editing,
 - Disable and restore tags without losing their content. The `/*disabled:original fragment*/` notation is saved and cloud-synced with the Prompt, while disabled content is excluded from generation, effective previews, and Token counts. This is Launcher editing syntax; older clients and external tools may not recognize it. Choose “Copy effective prompt” from the menu for external use.
 - Local translation misses can be sent to a configured AI translation service.
 - Prompt Assistant tasks, including reverse prompting, optimization, and translation, share a configurable response wait timeout: 1, 2, 5, 10, 15, or 30 minutes, with a 5-minute default.
-- Each Prompt Assistant provider saves its own automatic or manual concurrency mode. Automatic mode starts at 5 concurrent requests, and independent tag batches translate in parallel. Each task offers the thinking levels supported by its model. Configure these local settings under Settings → Integrations → Prompt Assistant.
+- Each Prompt Assistant provider saves its own automatic or manual concurrency mode. Automatic mode starts at 5 concurrent requests, and independent tag batches translate in parallel. Each task offers the thinking levels supported by its model. Manage providers, API keys, and models under Settings → Integrations → Model services, and task routing and thinking levels under Settings → Integrations → Prompt Assistant. Both stay on this device.
+- Models outside the catalog start at Model default in Agent Chat and Prompt Assistant. Choose Low, Medium, or High directly on OpenAI-compatible providers. For native Gemini and Anthropic providers, first open Configure reasoning and select the format your model accepts.
+- If a provider rejects a reasoning level, choose Model default in the chat menu and select Retry on the error card. The new request omits reasoning parameters. Models that support explicitly disabling reasoning also offer Off.
 
 ### 🧬 Vibe, Precise Reference, and image editing
 
 - Vibe Transfer accepts images, pre-encoded Vibes, and Bundles, with information extraction and reference strength controls and model-aware encoding reuse.
-- Precise Reference supports character and style references, multi-select, batch type changes, and portable packages that include their images.
+- V4.5 and V5 support Precise Reference. V5 adds outfit references and a same-outfit preference. The library supports multi-select, batch type changes, and portable packages that include their images.
 - Dedicated Vibe and Precise Reference libraries provide categories, search, previews, batch management, import/export, and direct use in the current generation.
 - The inpaint editor includes brushes, masks, Focused Inpaint regions, and canvas expansion. Agent Chat can prepare a mask or outpaint draft for review.
-- NovelAI image metadata can restore selected model, size, sampler, Steps, CFG, Seed, pinned tags, and character content.
+- NovelAI image metadata can restore selected model, size, sampler, Steps, CFG, Seed, pinned tags, and character content; the next import reuses the items you last checked. Imported characters can replace your existing characters or be appended in the order they appear in the image.
 - On Android, share a single image or a direct image link from apps such as Discord to NAI Launcher, then choose metadata import, img2img, or reference use. Direct links must be accessible, and restoring parameters requires an original image with metadata intact.
 
 ### 🗂️ Local gallery and artwork organization
@@ -86,13 +86,18 @@ NAI Launcher is built for people who use NovelAI regularly. Generation, editing,
 - Scan only the folders you choose, then find artwork by folder, album, favorite status, Prompt, or generation metadata.
 - Image details separate positive and negative Prompts, pinned tags, character content, and full parameters for all-at-once or selective copying.
 - Batch categorization, favorites, moving, and deletion sit alongside comparison, slideshows, watermarks, redacted copies, and several viewing modes.
+- In the local gallery viewer, use Delete in the toolbar or the ⋮ menu on narrower screens. The default keyboard shortcut is Delete. Confirming permanently deletes the current image file.
 - In Settings → Privacy & Sharing, independently enable "Add watermark when copying or dragging" to apply the saved default watermark to an output copy without changing the original. Adding a watermark does not remove metadata. To remove it, also enable Protection Mode and "Remove all metadata when copying or dragging"; metadata is removed before the watermark is added.
+- The watermark editor offers Auto placement: the anchor you set is preferred, and when another corner is clearly cleaner, the whole watermark is mirrored there. Text and logo each have Auto grayscale, which picks a gray from the background beneath them, with Tone difference controlling how far it stands out.
 - Desktop gets context menus, hover previews, and drag-and-drop; touch devices get equivalent menus instead of losing features.
 - Persistent sidebars in the local gallery, Vibe library, Precise Reference library, and tag library can be resized by dragging. Each page remembers its width on this device only, outside cloud sync.
 - Local gallery folders, albums, Vibe categories, and tag-library categories support original order or ascending/descending name and count sorting, remembered separately on this device only. Folders default to descending names, placing consistently formatted date folders newest first. Dragging to reorder starts from the displayed order and switches to original order automatically. Drag directly on desktop or long-press and drag on touchscreens; folders, albums, and tag-library categories also support nesting, while Vibe categories remain flat.
+- Under Custom Sort, tag-library entries can be reordered by dragging: drag cards directly on desktop, or long-press and drag on touchscreens, where multi-select is entered from the card's More menu instead. Dragging a selected entry moves the whole selection, favorites always stay first, and in the grouped view dropping onto another category moves the entry into that category at the drop position.
 - Image and resource cards use consistent actions across context menus, More menus, and batch toolbars. Selected cards open batch actions; unselected cards act only on themselves. Desktop supports Ctrl/Cmd toggling, Shift range selection, and selecting the current page, with selection preserved across pages.
 - Dragging a selected card includes the entire selected set: actual images for image cards and portable resource files for Vibes, Bundles, and Precise References. In-app targets include compatible generation references, Agent, categories, and albums; single-item targets reject multiple items.
 - Local images can go directly to generation, Agent Chat, or Krita without repeated exports and file picking.
+- Choose how the gallery stores images in Settings → Data & Storage → Folders & File Names: subfolders by date, by month, by year then month, or none; file names as time + seed, date and time + seed, or prompt + seed, or a custom template using the same syntax as the NovelAI website (for example `{prompt} s-{seed}` or `{model}/{date}`), with a live preview of the full path. By default images still go into date folders and are named by time and seed; changes only apply to images saved afterwards, and existing files are not renamed or moved.
+- On Android, saved images are copied to the photo gallery by default. Turn off "Sync to photo gallery" in Settings → Data & Storage to keep generated and saved images in the app gallery only; you can still save individual images to the photo gallery when needed.
 
 ### 🔎 Online galleries and inspiration
 
@@ -105,13 +110,15 @@ NAI Launcher is built for people who use NovelAI regularly. Generation, editing,
 ### 🤖 Agent Chat
 
 - From a desktop sidebar or mobile drawer, the agent can search tags, organize Prompts, inspect generation history, use libraries, and prepare generation tasks.
-- Images, Vibes, and Precise References can be added directly as context. The agent can also prepare masks, expanded canvases, and inpaint drafts.
-- Preparation verifies the cost before generation. In Full Access, verified zero-Anlas generations proceed directly; deletion and paid operations still require approval.
+- Images, Vibes, and Precise References can be added directly as context. Images can also be pasted into the input with Ctrl/Cmd+V or dragged onto the panel from a file manager or browser, and Android keyboards can insert them. The agent can also prepare masks, expanded canvases, and inpaint drafts, or upscale and enhance images directly.
+- Preparation verifies the cost before generation. In Full Access, verified zero-Anlas generations proceed directly; deleting saved data and paid operations still require approval. For unattended batch work, switch to Autopilot: paid operations run directly and only ask when a single request reaches the Protection Mode high-cost threshold, while deleting saved data still requires approval.
 - The default character research workflow combines online identity verification, canonical tag lookup, and gallery appearance evidence, noting disabled web access or missing evidence.
 - Customize the system prompt by adding plain-language instructions or replacing the built-in body; no placeholders are needed. The working directory, web availability, Skills, and app execution rules are added automatically, with a preview of the final prompt. Customization does not bypass app permission checks.
-- Assistant prefill lets DeepSeek continue from a specified thinking opening on every model request, including tool continuations; thinking mode is required. Tools use a text protocol adapter while retaining existing argument validation and permission checks. Other OpenAI-compatible providers that support prefill still use a reply opening; support varies by provider. Spaces and line breaks are kept exactly, and background summaries are not prefilled. It is disabled and empty by default, is stored locally and included in agent settings import/export, and is excluded from the existing system-prompt cloud sync.
+- Agent Chat supports assistant prefill on the first request only or on every request. DeepSeek continues from the specified opening of its reasoning and requires thinking mode. Requests with a DeepSeek prefill use a text protocol for tools and keep the existing argument validation and permission checks. Other compatible OpenAI services can use a reply opening if the provider supports it. Spaces and line breaks are preserved, and background summaries are excluded. Prefill starts disabled and empty. It is stored locally, included in Agent settings import and export, and excluded from system prompt cloud sync.
 - Structured questions offer three feasible directions, one Recommended marker, and a custom-answer option per question. Answer sequentially, then review and submit the full set. After two minutes without submission, all recommended options are selected automatically. New questions show a Toast, a question-mark entry icon, and an Android system notification.
-- Supports OpenAI-compatible APIs, Google's native Gemini API, third-party Gemini-compatible relays, and OpenRouter, including model lists, thinking levels, and tool calls when supported.
+- On Windows and macOS, a local MCP server can be enabled under Settings → Integrations → MCP, letting external agents such as Claude Code, Codex CLI, Cursor, Cherry Studio, Pi, Antigravity, and Claude Desktop drive Launcher through the same tools. The server is off by default; approvals and Anlas cost confirmations still happen inside Launcher. See [MCP server](docs/mcp_server.md).
+- MCP generation and image retrieval return original-resolution images by default. Clients may show them inside collapsed tool details. Inline answers can use temporary loopback HTTP image URLs for same-machine clients such as Cherry Studio, or optional display-cache files for Codex, without saving gallery copies. HTTP links last at most one hour and are revoked on server shutdown or cache eviction. With Protection Mode and "Remove all metadata when copying or dragging" enabled, MCP images, HTTP display, display-cache files, saved exports, and clipboard output all remove metadata and NAI steganographic watermark data without exposing original file paths. Local originals remain unchanged. Sanitized exports use PNG and retain destination-permission and no-overwrite checks.
+- Supports OpenAI-compatible APIs, Google's native Gemini API, Google Vertex AI (service account JSON, gcloud ADC credentials, or an API key), third-party Gemini-compatible relays, and OpenRouter. Pick models from each provider's list or add a model ID by hand, with thinking levels and tool calls when supported.
 - Your provider controls API keys, regional availability, and fees. Extra network tools such as web search are off by default.
 
 ### 📋 Queue, history, and statistics
@@ -131,7 +138,7 @@ NAI Launcher is built for people who use NovelAI regularly. Generation, editing,
 
 - Supports OneDrive, GitHub, and WebDAV. New Google Drive connections are temporarily disabled pending authorization approval. Connecting an account never uploads, downloads, or overwrites content by itself.
 - Push, pull, and restore start only when requested, with change previews and conflict handling.
-- Select settings, Prompts and libraries, previews, online-gallery settings and favorites, local albums, Agent Prompts and Skills, and optional Vibe or Precise Reference content independently.
+- Select settings, Prompts and libraries, previews, online-gallery settings and favorites, local albums, fixed-tag usage records, Agent Prompts and Skills, and optional Vibe or Precise Reference content independently.
 - Original local and remote gallery images, credentials, caches, and logs never enter a backup.
 - Backups use readable plain data and need no separate recovery key. Check the destination's permissions before syncing.
 
@@ -166,8 +173,8 @@ NAI Launcher is built for people who use NovelAI regularly. Generation, editing,
 
 | Platform | Current status | Notes |
 | --- | --- | --- |
-| **Windows** | Primary development and release platform | Installer and portable packages are available. Well suited to long sessions, batch work, and Krita / ComfyUI integration. |
-| **macOS** | Available and still being refined | A portable package is available. If macOS blocks an unnotarized build, allow it through the system security prompt. |
+| **Windows** | Primary development and release platform | Installer and portable packages are available. Well suited to long sessions, batch work, Krita / ComfyUI integration, and external MCP access. |
+| **macOS** | Available and still being refined | Requires macOS 12 or later. A portable package is available. If macOS blocks an unnotarized build, allow it through the system security prompt. |
 | **Android** | Beta | Supports phones, landscape, tablets, and large screens, with touch access to generation, galleries, libraries, queues, Agent Chat, and settings. |
 | **Linux** | No official release package | No official download is currently provided. |
 
@@ -175,14 +182,14 @@ NAI Launcher is built for people who use NovelAI regularly. Generation, editing,
 
 ### 1. Download the package for your platform
 
-Open [GitHub Releases](https://github.com/Aaalice233/Aaalice_NAI_Launcher/releases/latest):
+Open [GitHub Releases](https://github.com/ZipZipPipe/Aaalice_NAI_Launcher/releases/latest):
 
 | Platform | File | Usage |
 | --- | --- | --- |
 | Windows | `NAI_Launcher_Windows_<version>_Setup.exe` | Installer recommended for most users. |
 | Windows | `NAI_Launcher_Windows_<version>_Portable.zip` | Portable package; extract and run. |
 | macOS | `NAI_Launcher_macOS_<version>_Portable.zip` | Extract and open `Aaalice NAI Launcher.app`. |
-| Android | `NAI_Launcher_Android_<version>.apk` | Sideload the APK. The first install may require permission to install unknown apps. |
+| Android | `NAI_Launcher_Android_<version>_arm64-v8a.apk`<br>`NAI_Launcher_Android_<version>_armeabi-v7a.apk`<br>`NAI_Launcher_Android_<version>_x86_64.apk` | Sideload the APK matching your device architecture (`arm64-v8a` for most phones and tablets, `armeabi-v7a` for older 32-bit devices, `x86_64` for desktop emulators). The first install may require permission to install unknown apps. |
 
 Every release includes `checksums.txt`. If an archive cannot be extracted or installed, verify the downloaded file first.
 
@@ -209,9 +216,9 @@ NAI Launcher does not host your account or artwork on a project-operated server.
 | AI translation or Agent Chat | The model service you configured. Conversations, attached images, and tool results required by the task may incur provider fees. |
 | Sync and backup | Your selected Google Drive, OneDrive, GitHub, or WebDAV destination. Only explicitly selected content is uploaded. |
 
-- NovelAI Tokens, OAuth access/refresh tokens, WebDAV passwords, and GitHub Tokens use device secure storage and are never written into backups.
+- NovelAI Tokens, OAuth access/refresh tokens, WebDAV passwords, GitHub Tokens, and model service API keys and Vertex AI credentials use device secure storage and are never written into backups.
 - Local Prompts, gallery indexes, tags, resource libraries, and Agent sessions stay on the device by default.
-- Cloud backups store selected data in plaintext. Local gallery image files are not uploaded; albums, categories, and membership references can sync as lightweight data.
+- Cloud backups store selected data in plaintext. Local gallery image files are not uploaded; albums, categories, membership references, and fixed-tag usage records can sync as lightweight data.
 - Online galleries can contain third-party content. Rating filters do not replace user judgment.
 - WebDAV security depends on the server and transport you configure. Keep a local copy of important data.
 

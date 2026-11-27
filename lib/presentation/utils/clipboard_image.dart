@@ -1,8 +1,90 @@
-import 'dart:isolate';
 import 'dart:typed_data';
 
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image/image.dart' as img;
 import 'package:super_clipboard/super_clipboard.dart';
+
+import '../../core/utils/app_logger.dart';
+import '../../core/utils/dib_bitmap_codec.dart';
+import '../../core/utils/exif_orientation.dart';
+import '../../core/utils/isolate_pool.dart';
+import '../../core/utils/windows_clipboard_bitmap_reader.dart';
+import 'dropped_file_reader.dart';
+
+/// 剪贴板同时带纯文本与图片时由谁胜出。
+enum ClipboardContentPriority { image, text }
+
+typedef ClipboardFileReader =
+    Future<DroppedFileData?> Function({
+      required String logTag,
+      ClipboardContentPriority priority,
+      bool allowVibeFiles,
+    });
+
+/// 系统剪贴板读取入口；测试替换它以避开平台插件。
+final clipboardFileReaderProvider = Provider<ClipboardFileReader>(
+  (ref) => readClipboardFile,
+);
+
+/// 文本优先时，带纯文本的剪贴板交还文本粘贴；复制的文件仍按文件处理，
+/// 因为 Finder 复制文件会附带文件名纯文本，不能把图片附件降级成粘贴文件名。
+bool clipboardDefersToText(
+  DataReader reader,
+  ClipboardContentPriority priority,
+) =>
+    priority == ClipboardContentPriority.text &&
+    reader.canProvide(Formats.plainText) &&
+    !reader.canProvide(Formats.fileUri);
+
+/// 读取剪贴板里第一份可用的图片或文件；为空表示调用方应走文本粘贴。
+Future<DroppedFileData?> readClipboardFile({
+  required String logTag,
+  ClipboardContentPriority priority = ClipboardContentPriority.image,
+  bool allowVibeFiles = false,
+}) async {
+  try {
+    final clipboard = SystemClipboard.instance;
+    if (clipboard == null) return null;
+    final reader = await clipboard.read();
+    if (clipboardDefersToText(reader, priority)) return null;
+    for (final item in reader.items) {
+      final file = await DroppedFileReader.read(
+        item,
+        allowVibeFiles: allowVibeFiles,
+        allowRemoteImages: false,
+        logTag: logTag,
+      );
+      if (file != null) return file;
+    }
+    // 带纯文本时保持原有的文本粘贴结果，只为纯图片剪贴板兜底。
+    if (reader.canProvide(Formats.plainText)) return null;
+    return await _readWindowsClipboardBitmap(logTag);
+  } catch (error) {
+    AppLogger.d('Failed to inspect clipboard for pasted image: $error', logTag);
+    return null;
+  }
+}
+
+/// super_clipboard 读不到只以 GDI 位图提供的图片，例如 Win+V 剪贴板历史恢复的条目。
+Future<DroppedFileData?> _readWindowsClipboardBitmap(String logTag) async {
+  if (!WindowsClipboardBitmapReader.isSupported) return null;
+  try {
+    final png = await ComputeGate().runIsolate(() {
+      final dib = WindowsClipboardBitmapReader.readDib();
+      return dib == null ? null : DibBitmapCodec.toPng(dib);
+    }, debugName: 'ClipboardBitmapToPng');
+    if (png == null) return null;
+    return DroppedFileData(fileName: _clipboardBitmapFileName, bytes: png);
+  } on FormatException catch (error) {
+    AppLogger.w('Unsupported clipboard bitmap: ${error.message}', logTag);
+    return null;
+  } on WindowsClipboardBusyException catch (error) {
+    AppLogger.w('Failed to read clipboard bitmap: $error', logTag);
+    return null;
+  }
+}
+
+const String _clipboardBitmapFileName = 'clipboard_image.png';
 
 /// 把图片字节写入系统剪贴板，统一规范化为 PNG。
 ///
@@ -31,8 +113,8 @@ Future<Uint8List> _ensurePngBytes(Uint8List bytes) async {
   if (_looksLikePng(bytes)) {
     return bytes;
   }
-  return Isolate.run(() {
-    final decoded = img.decodeImage(bytes);
+  return ComputeGate().runIsolate(() {
+    final decoded = ExifOrientation.decodeUpright(bytes);
     if (decoded == null) {
       throw const FormatException('无法解码图片用于复制到剪贴板');
     }

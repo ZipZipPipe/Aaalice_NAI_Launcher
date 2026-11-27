@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import '../platform/directory_picker.dart';
 import '../platform/platform_capabilities.dart';
 import '../utils/file_name_sanitizer.dart';
 
@@ -23,12 +24,15 @@ class FileExportService {
 
   static bool get _isAndroid => PlatformCapabilities.operatingSystem.isAndroid;
 
+  /// [preventOverwrite] applies to desktop only; Android documents rename on
+  /// conflict by themselves.
   static Future<String?> saveBytes({
     required Uint8List bytes,
     required String fileName,
     required String dialogTitle,
     required String mimeType,
     required List<String> allowedExtensions,
+    bool preventOverwrite = false,
   }) async {
     if (bytes.isEmpty) {
       throw ArgumentError.value(bytes, 'bytes', 'Export bytes cannot be empty');
@@ -48,16 +52,17 @@ class FileExportService {
       );
     }
 
-    final outputPath = await FilePicker.platform.saveFile(
+    final outputPath = await _pickDesktopSavePath(
       dialogTitle: dialogTitle,
       fileName: fileName,
-      type: FileType.custom,
       allowedExtensions: allowedExtensions,
     );
     if (outputPath == null) return null;
-    final normalizedPath = _ensureExtension(outputPath, allowedExtensions);
-    await _writeAtomically(normalizedPath, bytes);
-    return normalizedPath;
+    final targetPath = preventOverwrite
+        ? await resolveNonOverwritingPath(outputPath)
+        : outputPath;
+    await _writeAtomically(targetPath, bytes);
+    return targetPath;
   }
 
   static Future<String?> saveText({
@@ -76,12 +81,15 @@ class FileExportService {
     );
   }
 
+  /// [preventOverwrite] applies to desktop only; Android documents rename on
+  /// conflict by themselves.
   static Future<String?> saveFileFromPath({
     required String sourcePath,
     required String fileName,
     required String dialogTitle,
     required String mimeType,
     required List<String> allowedExtensions,
+    bool preventOverwrite = false,
   }) async {
     final source = File(sourcePath);
     if (!await source.exists()) {
@@ -96,26 +104,28 @@ class FileExportService {
       });
     }
 
-    final outputPath = await FilePicker.platform.saveFile(
+    final outputPath = await _pickDesktopSavePath(
       dialogTitle: dialogTitle,
       fileName: fileName,
-      type: FileType.custom,
       allowedExtensions: allowedExtensions,
     );
     if (outputPath == null) return null;
-    final normalizedPath = _ensureExtension(outputPath, allowedExtensions);
-    if (p.equals(source.absolute.path, File(normalizedPath).absolute.path)) {
-      return normalizedPath;
+    // Choosing the source itself is a no-op, not a reason to duplicate it.
+    if (p.equals(source.absolute.path, File(outputPath).absolute.path)) {
+      return outputPath;
     }
-    await _copyAtomically(source, normalizedPath);
-    return normalizedPath;
+    final targetPath = preventOverwrite
+        ? await resolveNonOverwritingPath(outputPath)
+        : outputPath;
+    await _copyAtomically(source, targetPath);
+    return targetPath;
   }
 
   static Future<String?> pickExportDirectory({required String dialogTitle}) {
     if (_isAndroid) {
       return _channel.invokeMethod<String>('pickExportDirectory');
     }
-    return FilePicker.platform.getDirectoryPath(dialogTitle: dialogTitle);
+    return pickDirectoryPath(dialogTitle: dialogTitle);
   }
 
   static Future<String> writeBytesToDirectory({
@@ -199,21 +209,33 @@ class FileExportService {
     required String fileName,
     required Future<T> Function(String path) action,
   }) async {
-    final tempRoot = await getTemporaryDirectory();
-    final exportDirectory = Directory(p.join(tempRoot.path, 'exports'));
+    final exportDirectory = await _temporaryOutputRoot();
     await exportDirectory.create(recursive: true);
-    final suffix = DateTime.now().microsecondsSinceEpoch;
-    final temporaryFile = File(
-      p.join(exportDirectory.path, '${suffix}_${_safeFileName(fileName)}'),
-    );
+    // A unique directory lets the leaf keep its plain name without a prefix.
+    final workDirectory = await exportDirectory.createTemp();
     try {
-      return await action(temporaryFile.path);
+      return await action(p.join(workDirectory.path, _safeFileName(fileName)));
     } finally {
-      if (await temporaryFile.exists()) {
-        await temporaryFile.delete();
+      await workDirectory.delete(recursive: true);
+    }
+  }
+
+  /// Call at startup: no export is running yet, so every entry is a leftover
+  /// of a process that exited inside [withTemporaryOutput].
+  static Future<void> cleanupTemporaryOutputs() async {
+    final exportDirectory = await _temporaryOutputRoot();
+    if (!await exportDirectory.exists()) return;
+    await for (final entity in exportDirectory.list(followLinks: false)) {
+      try {
+        await entity.delete(recursive: true);
+      } on FileSystemException {
+        // A locked leftover is retried on the next launch.
       }
     }
   }
+
+  static Future<Directory> _temporaryOutputRoot() async =>
+      Directory(p.join((await getTemporaryDirectory()).path, 'exports'));
 
   static Future<String?> _withTemporaryFile({
     required Uint8List bytes,
@@ -229,21 +251,37 @@ class FileExportService {
     );
   }
 
-  static String _safeFileName(String fileName) {
-    final leafName = p.basename(fileName);
-    final rawExtension = p.extension(leafName);
-    final extension = RegExp(r'^\.[A-Za-z0-9]{1,24}$').hasMatch(rawExtension)
-        ? rawExtension.toLowerCase()
-        : '';
-    final baseName = extension.isEmpty
-        ? leafName
-        : p.basenameWithoutExtension(leafName);
-    final safeBaseName = FileNameSanitizer.sanitize(
-      baseName,
-      fallback: 'export',
-      maxLength: 120,
+  static String _safeFileName(String fileName) =>
+      FileNameSanitizer.fileName(fileName, fallback: 'export');
+
+  static Future<String?> _pickDesktopSavePath({
+    required String dialogTitle,
+    required String fileName,
+    required List<String> allowedExtensions,
+  }) async {
+    final outputPath = await FilePicker.platform.saveFile(
+      dialogTitle: dialogTitle,
+      fileName: fileName,
+      type: FileType.custom,
+      allowedExtensions: allowedExtensions,
     );
-    return '$safeBaseName$extension';
+    if (outputPath == null) return null;
+    return _ensureExtension(outputPath, allowedExtensions);
+  }
+
+  /// Returns [requestedPath] when free, otherwise the first free
+  /// `name (n).ext` sibling.
+  static Future<String> resolveNonOverwritingPath(String requestedPath) async {
+    if (!await File(requestedPath).exists()) return requestedPath;
+    final directory = p.dirname(requestedPath);
+    final extension = p.extension(requestedPath);
+    final baseName = p.basenameWithoutExtension(requestedPath);
+    var index = 1;
+    while (true) {
+      final candidate = p.join(directory, '$baseName ($index)$extension');
+      if (!await File(candidate).exists()) return candidate;
+      index++;
+    }
   }
 
   static String _ensureExtension(
@@ -317,15 +355,8 @@ class FileExportService {
   ) async {
     final outputDirectory = Directory(directory);
     await outputDirectory.create(recursive: true);
-    final safeName = _safeFileName(fileName);
-    final extension = p.extension(safeName);
-    final baseName = p.basenameWithoutExtension(safeName);
-    var candidate = p.join(outputDirectory.path, safeName);
-    var suffix = 1;
-    while (await File(candidate).exists()) {
-      candidate = p.join(outputDirectory.path, '$baseName ($suffix)$extension');
-      suffix++;
-    }
-    return candidate;
+    return resolveNonOverwritingPath(
+      p.join(outputDirectory.path, _safeFileName(fileName)),
+    );
   }
 }

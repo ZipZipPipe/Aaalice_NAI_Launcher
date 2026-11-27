@@ -4,7 +4,7 @@ import 'dart:ui';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hive_flutter/hive_flutter.dart';
+import 'package:hive_ce_flutter/hive_ce_flutter.dart';
 import 'package:image/image.dart' as img;
 import 'package:nai_launcher/core/constants/api_constants.dart';
 import 'package:nai_launcher/core/constants/storage_keys.dart';
@@ -14,11 +14,15 @@ import 'package:nai_launcher/core/utils/focused_inpaint_utils.dart';
 import 'package:nai_launcher/data/models/image/image_params.dart';
 import 'package:nai_launcher/data/models/user/user_subscription.dart';
 import 'package:nai_launcher/data/models/vibe/vibe_reference.dart';
-import 'package:nai_launcher/presentation/providers/auth_provider.dart';
+import 'package:nai_launcher/data/services/auth_provider.dart';
 import 'package:nai_launcher/presentation/providers/cost_estimate_provider.dart';
 import 'package:nai_launcher/presentation/providers/generation/image_workflow_controller.dart';
 import 'package:nai_launcher/presentation/providers/image_generation_provider.dart';
 import 'package:nai_launcher/presentation/providers/subscription_provider.dart';
+
+import '../../helpers/shared_compute_gate.dart';
+
+const _opusTier = 3;
 
 void main() {
   late Directory hiveTempDir;
@@ -31,7 +35,7 @@ void main() {
     );
     Hive.init(hiveTempDir.path);
     await Hive.openBox(StorageKeys.settingsBox);
-    await Hive.openBox(StorageKeys.historyBox);
+    await Hive.openLazyBox<dynamic>(StorageKeys.historyBox);
   });
 
   tearDownAll(() async {
@@ -46,7 +50,7 @@ void main() {
 
     setUp(() async {
       await Hive.box(StorageKeys.settingsBox).clear();
-      await Hive.box(StorageKeys.historyBox).clear();
+      await Hive.lazyBox<dynamic>(StorageKeys.historyBox).clear();
       container = ProviderContainer(
         overrides: [authNotifierProvider.overrideWith(_TestAuthNotifier.new)],
       );
@@ -104,7 +108,7 @@ void main() {
       );
 
       subscription.state = const SubscriptionState.loaded(
-        UserSubscription(tier: AnlasCalculator.opusTier, active: true),
+        UserSubscription(tier: _opusTier, active: true),
       );
       paramsNotifier.updateAction(ImageGenerationAction.img2img);
       paramsNotifier.setSourceImage(_buildPng(width: 1536, height: 1024));
@@ -113,17 +117,10 @@ void main() {
       paramsNotifier.updateStrength(0.5);
 
       final params = container.read(generationParamsNotifierProvider);
-      final expected = AnlasCalculator.calculateRequestCost(
-        width: 1536,
-        height: 1024,
-        steps: params.steps,
-        batchCount: params.nSamples,
+      final expected = AnlasCalculator.calculate(
+        params,
         batchSize: container.read(imagesPerRequestProvider),
-        smea: params.effectiveSmea,
-        smeaDyn: params.effectiveSmeaDyn,
-        model: params.model,
-        subscriptionTier: AnlasCalculator.opusTier,
-        strength: 0.5,
+        isOpus: true,
       );
 
       expect(expected, greaterThan(0));
@@ -140,7 +137,7 @@ void main() {
       );
 
       subscription.state = const SubscriptionState.loaded(
-        UserSubscription(tier: AnlasCalculator.opusTier, active: true),
+        UserSubscription(tier: _opusTier, active: true),
       );
       paramsNotifier.updateAction(ImageGenerationAction.img2img);
       paramsNotifier.setSourceImage(_buildPng(width: 832, height: 1216));
@@ -151,8 +148,46 @@ void main() {
       expect(container.read(estimatedCostProvider), 0);
     });
 
+    test('should price V5 by the server quota flag, not the extra pool', () {
+      final subscription = container.read(
+        subscriptionNotifierProvider.notifier,
+      );
+      final paramsNotifier = container.read(
+        generationParamsNotifierProvider.notifier,
+      );
+      paramsNotifier.updateModel(
+        ImageModels.animeDiffusionV5Curated,
+        persist: false,
+        followDefaults: false,
+      );
+      paramsNotifier.updateSize(832, 1216);
+      paramsNotifier.updateSteps(28);
+
+      subscription.state = const SubscriptionState.loaded(
+        UserSubscription(
+          tier: _opusTier,
+          active: true,
+          usage: OpusUsageInfo(percent: 0, purchasedPercent: 200),
+        ),
+      );
+      expect(container.read(estimatedCostProvider), 0);
+
+      subscription.state = const SubscriptionState.loaded(
+        UserSubscription(
+          tier: _opusTier,
+          active: true,
+          usage: OpusUsageInfo(
+            percent: -1,
+            isNegative: true,
+            purchasedPercent: 200,
+          ),
+        ),
+      );
+      expect(container.read(estimatedCostProvider), greaterThan(0));
+    });
+
     test('should share the max enhance billing size with quota estimates', () {
-      final billingSize = resolveGenerationBillingSize(
+      final billingSize = AnlasCalculator.resolveBillingSize(
         width: 832,
         height: 1216,
         maxEnhance: true,
@@ -172,7 +207,7 @@ void main() {
       );
 
       subscription.state = const SubscriptionState.loaded(
-        UserSubscription(tier: AnlasCalculator.opusTier, active: true),
+        UserSubscription(tier: _opusTier, active: true),
       );
       paramsNotifier.updateModel(
         ImageModels.animeDiffusionV5Curated,
@@ -187,22 +222,11 @@ void main() {
       paramsNotifier.updateUpscaledEnhance(true);
 
       final params = container.read(generationParamsNotifierProvider);
-      final billingSize = resolveGenerationBillingSize(
-        width: params.width,
-        height: params.height,
-        maxEnhance: params.effectiveUpscaledEnhance,
-      );
-      final expected = AnlasCalculator.calculateRequestCost(
-        width: billingSize.width,
-        height: billingSize.height,
-        steps: params.steps,
-        batchCount: params.nSamples,
+      final billingSize = AnlasCalculator.billingSize(params);
+      final expected = AnlasCalculator.calculate(
+        params,
         batchSize: container.read(imagesPerRequestProvider),
-        smea: params.effectiveSmea,
-        smeaDyn: params.effectiveSmeaDyn,
-        model: params.model,
-        subscriptionTier: AnlasCalculator.opusTier,
-        strength: params.strength,
+        isOpus: true,
       );
 
       expect(params.upscaledEnhance, isTrue);
@@ -224,7 +248,7 @@ void main() {
       );
 
       subscription.state = const SubscriptionState.loaded(
-        UserSubscription(tier: AnlasCalculator.opusTier, active: true),
+        UserSubscription(tier: _opusTier, active: true),
       );
       paramsNotifier.updateAction(ImageGenerationAction.infill);
       paramsNotifier.setSourceImage(_buildPng(width: 832, height: 1216));
@@ -243,7 +267,7 @@ void main() {
       );
 
       subscription.state = const SubscriptionState.loaded(
-        UserSubscription(tier: AnlasCalculator.opusTier, active: true),
+        UserSubscription(tier: _opusTier, active: true),
       );
       paramsNotifier.updateModel('nai-diffusion-4-5-full');
       paramsNotifier.updateSize(832, 1216);
@@ -265,7 +289,7 @@ void main() {
       );
 
       subscription.state = const SubscriptionState.loaded(
-        UserSubscription(tier: AnlasCalculator.opusTier, active: true),
+        UserSubscription(tier: _opusTier, active: true),
       );
       paramsNotifier.updateAction(ImageGenerationAction.img2img);
       paramsNotifier.setSourceImage(_buildPng(width: 832, height: 1216));
@@ -324,29 +348,77 @@ void main() {
 
         expect(focusedRequest, isNotNull);
 
-        final expected = AnlasCalculator.calculateRequestCost(
-          width: focusedRequest!.targetWidth,
-          height: focusedRequest.targetHeight,
-          steps: params.steps,
-          batchCount: params.nSamples,
+        final expected = AnlasCalculator.calculate(
+          params,
+          requestSize: (
+            width: focusedRequest!.targetWidth,
+            height: focusedRequest.targetHeight,
+          ),
           batchSize: 1,
-          model: params.model,
-          subscriptionTier:
-              container.read(subscriptionNotifierProvider).subscription?.tier ??
-              0,
-          smea: params.effectiveSmea,
-          smeaDyn: params.effectiveSmeaDyn,
-          strength: params.inpaintStrength,
-          extraPerSampleCost: 0,
+          isOpus: container.read(subscriptionBillingViewProvider).isOpus,
         );
 
         expect(container.read(estimatedCostProvider), equals(expected));
       },
     );
 
+    test('should estimate focus outpaint from the fixed frame crop', () {
+      final workflow = container.read(imageWorkflowControllerProvider.notifier);
+      final subscription = container.read(
+        subscriptionNotifierProvider.notifier,
+      );
+      subscription.state = const SubscriptionState.loaded(
+        UserSubscription(tier: 1),
+      );
+      const crop = Rect.fromLTWH(384, 0, 832, 1216);
+
+      workflow.applyInpaintEditorResult(
+        sourceImage: _buildPng(width: 1216, height: 1216),
+        sourceWidth: 1216,
+        sourceHeight: 1216,
+        sourceIsOutpaint: false,
+        requestSize: (width: 1216, height: 1216),
+        maskImage: _buildMask(
+          width: 1216,
+          height: 1216,
+          rect: const Rect.fromLTWH(831, 0, 385, 1216),
+        ),
+        focusedInpaintEnabled: true,
+        focusedSelectionRect: null,
+        focusedContextCrop: crop,
+        minimumContextMegaPixels: 88,
+      );
+      container
+          .read(generationParamsNotifierProvider.notifier)
+          .updateInpaintStrength(0.5);
+
+      final params = container.read(generationParamsNotifierProvider);
+      final geometry = FocusedInpaintUtils.resolveGeometryForCrop(
+        sourceWidth: 1216,
+        sourceHeight: 1216,
+        crop: crop,
+      )!;
+      expect((geometry.requestWidth, geometry.requestHeight), (832, 1216));
+      expect(
+        container.read(focusedInpaintMaskRequestSizeProvider),
+        const AsyncData<FocusedInpaintGeometry?>(null),
+      );
+
+      final expected = AnlasCalculator.calculate(
+        params,
+        requestSize: (
+          width: geometry.requestWidth,
+          height: geometry.requestHeight,
+        ),
+        batchSize: 1,
+        isOpus: container.read(subscriptionBillingViewProvider).isOpus,
+      );
+      expect(container.read(estimatedCostProvider), equals(expected));
+    });
+
     test(
       'should estimate mask-only focused inpaint from lightweight mask bounds',
-      () {
+      () async {
         final workflow = container.read(
           imageWorkflowControllerProvider.notifier,
         );
@@ -374,7 +446,12 @@ void main() {
         workflow.enterInpaintMode();
         workflow.setFocusedInpaintEnabled(true);
         workflow.setMinimumContextMegaPixels(1.0);
+        container.listen(estimatedCostProvider, (_, __) {});
         workflow.onMaskChanged(mask);
+        final settledCost = await readSettledEstimatedCost(
+          container,
+          readGenerationPageRequest(container),
+        );
 
         final params = container.read(generationParamsNotifierProvider);
         final focusedRequest = FocusedInpaintUtils.prepareRequest(
@@ -384,32 +461,156 @@ void main() {
         );
 
         expect(focusedRequest, isNotNull);
-        final maskGeometry = container.read(
-          focusedInpaintMaskRequestSizeProvider,
-        );
+        final maskGeometry = container
+            .read(focusedInpaintMaskRequestSizeProvider)
+            .requireValue;
         expect(maskGeometry, isNotNull);
         expect(maskGeometry!.requestWidth, focusedRequest!.targetWidth);
         expect(maskGeometry.requestHeight, focusedRequest.targetHeight);
 
-        final expected = AnlasCalculator.calculateRequestCost(
-          width: focusedRequest.targetWidth,
-          height: focusedRequest.targetHeight,
-          steps: params.steps,
-          batchCount: params.nSamples,
+        final expected = AnlasCalculator.calculate(
+          params,
+          requestSize: (
+            width: focusedRequest.targetWidth,
+            height: focusedRequest.targetHeight,
+          ),
           batchSize: 1,
-          model: params.model,
-          subscriptionTier:
-              container.read(subscriptionNotifierProvider).subscription?.tier ??
-              0,
-          smea: params.effectiveSmea,
-          smeaDyn: params.effectiveSmeaDyn,
-          strength: 1.0,
-          extraPerSampleCost: 0,
+          isOpus: container.read(subscriptionBillingViewProvider).isOpus,
         );
 
+        expect(settledCost, (knownCost: expected, confirmationCost: expected));
         expect(container.read(estimatedCostProvider), equals(expected));
       },
     );
+
+    test('mask bounds wait for the shared compute gate', () async {
+      _enterMaskOnlyFocusedInpaint(container);
+      container.listen(estimatedCostProvider, (_, __) {});
+      final mask = _buildMask(
+        width: 1536,
+        height: 1536,
+        rect: const Rect.fromLTWH(300, 400, 160, 120),
+      );
+
+      final settledCost = await expectQueuedBehindSharedComputeGate(() {
+        container
+            .read(imageWorkflowControllerProvider.notifier)
+            .onMaskChanged(mask);
+        expect(container.read(estimatedCostProvider), isNull);
+        expect(container.read(isBalanceInsufficientProvider), isFalse);
+        return readSettledEstimatedCost(
+          container,
+          readGenerationPageRequest(container),
+        );
+      });
+
+      final expected = _maskOnlyCost(container, mask);
+      expect(settledCost, (knownCost: expected, confirmationCost: expected));
+      expect(container.read(estimatedCostProvider), expected);
+      expect(container.read(isBalanceInsufficientProvider), isTrue);
+    });
+
+    test('a changed mask keeps the previous cost until decoded', () async {
+      _enterMaskOnlyFocusedInpaint(container);
+      container.listen(estimatedCostProvider, (_, __) {});
+      final workflow = container.read(imageWorkflowControllerProvider.notifier);
+      final first = _buildMask(
+        width: 1536,
+        height: 1536,
+        rect: const Rect.fromLTWH(300, 400, 160, 120),
+      );
+      final second = _buildMask(
+        width: 1536,
+        height: 1536,
+        rect: const Rect.fromLTWH(40, 60, 1400, 1380),
+      );
+      workflow.onMaskChanged(first);
+      final firstCost = await readSettledEstimatedCost(
+        container,
+        readGenerationPageRequest(container),
+      );
+      expect(container.read(estimatedCostProvider), firstCost.knownCost);
+
+      final secondCost = await expectQueuedBehindSharedComputeGate(() {
+        workflow.onMaskChanged(second);
+        expect(
+          container.read(focusedInpaintMaskRequestSizeProvider).isLoading,
+          isTrue,
+        );
+        expect(container.read(estimatedCostProvider), firstCost.knownCost);
+        return readSettledEstimatedCost(
+          container,
+          readGenerationPageRequest(container),
+        );
+      });
+
+      final firstExpected = _maskOnlyCost(container, first);
+      final secondExpected = _maskOnlyCost(container, second);
+      expect(firstCost, (
+        knownCost: firstExpected,
+        confirmationCost: firstExpected,
+      ));
+      expect(secondCost, (
+        knownCost: secondExpected,
+        confirmationCost: secondExpected,
+      ));
+      expect(secondExpected, isNot(firstExpected));
+    });
+
+    test('context size changes reuse the decoded mask bounds', () async {
+      _enterMaskOnlyFocusedInpaint(container);
+      container.listen(estimatedCostProvider, (_, __) {});
+      final workflow = container.read(imageWorkflowControllerProvider.notifier);
+      final mask = _buildMask(
+        width: 1536,
+        height: 1536,
+        rect: const Rect.fromLTWH(300, 400, 160, 120),
+      );
+      workflow.onMaskChanged(mask);
+      await readSettledEstimatedCost(
+        container,
+        readGenerationPageRequest(container),
+      );
+      final smallContext = container
+          .read(focusedInpaintMaskRequestSizeProvider)
+          .requireValue!;
+
+      final release = holdSharedComputeGate();
+      try {
+        workflow.setMinimumContextMegaPixels(192);
+        expect(
+          container.read(focusedInpaintMaskRequestSizeProvider).isLoading,
+          isFalse,
+        );
+        final geometry = container
+            .read(focusedInpaintMaskRequestSizeProvider)
+            .requireValue!;
+        final expected = FocusedInpaintUtils.resolveGeometryForMask(
+          maskImage: mask,
+          minContextMegaPixels: 192,
+        )!;
+        expect(geometry.contextCrop.rect, expected.contextCrop.rect);
+        expect(geometry.contextCrop.rect, isNot(smallContext.contextCrop.rect));
+        expect(
+          container.read(estimatedCostProvider),
+          _maskOnlyCost(container, mask),
+        );
+      } finally {
+        await release();
+      }
+    });
+
+    test('settled cost does not wait when no mask bounds apply', () async {
+      final cost = await expectRunsWithoutSharedComputeGate(
+        () => readSettledEstimatedCost(
+          container,
+          readGenerationPageRequest(container),
+        ),
+      );
+
+      final knownCost = container.read(estimatedCostProvider)!;
+      expect(cost, (knownCost: knownCost, confirmationCost: knownCost));
+    });
 
     test('should use regular inpaint strength for the base price', () {
       final subscription = container.read(
@@ -557,20 +758,14 @@ void main() {
           selectionRect: const Rect.fromLTWH(2500, 200, 400, 400),
           minContextMegaPixels: state.minimumContextMegaPixels,
         )!;
-        final expected = AnlasCalculator.calculateRequestCost(
-          width: geometry.requestWidth,
-          height: geometry.requestHeight,
-          steps: params.steps,
-          batchCount: params.nSamples,
+        final expected = AnlasCalculator.calculate(
+          params,
+          requestSize: (
+            width: geometry.requestWidth,
+            height: geometry.requestHeight,
+          ),
           batchSize: 1,
-          model: params.model,
-          subscriptionTier:
-              container.read(subscriptionNotifierProvider).subscription?.tier ??
-              0,
-          smea: params.effectiveSmea,
-          smeaDyn: params.effectiveSmeaDyn,
-          strength: 1.0,
-          extraPerSampleCost: 0,
+          isOpus: container.read(subscriptionBillingViewProvider).isOpus,
         );
 
         expect(container.read(estimatedCostProvider), expected);
@@ -584,6 +779,36 @@ class _TestAuthNotifier extends AuthNotifier {
   AuthState build() {
     return const AuthState(status: AuthStatus.unauthenticated);
   }
+}
+
+void _enterMaskOnlyFocusedInpaint(ProviderContainer container) {
+  container.read(subscriptionNotifierProvider.notifier).state =
+      const SubscriptionState.loaded(UserSubscription(tier: 1));
+  container.read(imageWorkflowControllerProvider.notifier)
+    ..replaceSourceImage(
+      _buildPng(width: 1536, height: 1536),
+      sourceWidth: 1536,
+      sourceHeight: 1536,
+      autoAdapt: false,
+    )
+    ..enterInpaintMode()
+    ..setFocusedInpaintEnabled(true)
+    ..setMinimumContextMegaPixels(16);
+}
+
+int _maskOnlyCost(ProviderContainer container, Uint8List mask) {
+  final workflow = container.read(imageWorkflowControllerProvider);
+  final params = container.read(generationParamsNotifierProvider);
+  final geometry = FocusedInpaintUtils.resolveGeometryForMask(
+    maskImage: mask,
+    minContextMegaPixels: workflow.minimumContextMegaPixels,
+  )!;
+  return AnlasCalculator.calculate(
+    params,
+    requestSize: (width: geometry.requestWidth, height: geometry.requestHeight),
+    batchSize: 1,
+    isOpus: container.read(subscriptionBillingViewProvider).isOpus,
+  );
 }
 
 Uint8List _buildPng({required int width, required int height}) {

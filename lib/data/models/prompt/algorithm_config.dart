@@ -11,7 +11,7 @@ part 'algorithm_config.g.dart';
 ///
 /// 控制随机提示词生成的各项参数
 @freezed
-class AlgorithmConfig with _$AlgorithmConfig {
+abstract class AlgorithmConfig with _$AlgorithmConfig {
   const AlgorithmConfig._();
 
   const factory AlgorithmConfig({
@@ -200,17 +200,6 @@ class AlgorithmConfig with _$AlgorithmConfig {
     return globalTimeConditions!.isActive(date);
   }
 
-  /// 应用全局后处理规则
-  List<String> applyGlobalPostProcessRules(
-    List<String> tags,
-    Map<String, List<String>> context, {
-    Map<String, String>? variables,
-  }) {
-    if (globalPostProcessRules == null) return tags;
-    return globalPostProcessRules!
-        .applyAll(tags, context, variables: variables);
-  }
-
   /// 检查类别全局可见性
   bool isCategoryGloballyVisible(
     String categoryId,
@@ -271,7 +260,7 @@ class AlgorithmConfig with _$AlgorithmConfig {
 ///
 /// 存储每个类别被选中的概率
 @freezed
-class CategoryProbabilityConfig with _$CategoryProbabilityConfig {
+abstract class CategoryProbabilityConfig with _$CategoryProbabilityConfig {
   const CategoryProbabilityConfig._();
 
   const factory CategoryProbabilityConfig({

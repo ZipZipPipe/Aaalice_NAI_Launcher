@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -7,6 +8,9 @@ import 'package:nai_launcher/data/models/vibe/vibe_library_entry.dart';
 import 'package:nai_launcher/data/models/vibe/vibe_reference.dart';
 import 'package:nai_launcher/data/services/vibe_library_storage_service.dart';
 import 'package:nai_launcher/presentation/providers/vibe_library_provider.dart';
+import 'package:nai_launcher/presentation/providers/vibe_library_selection_provider.dart';
+
+import '../../helpers/log_capture.dart';
 
 void main() {
   test(
@@ -147,6 +151,50 @@ void main() {
     );
   });
 
+  for (final batch in [false, true]) {
+    final operation = batch ? 'entries' : 'entry';
+    test(
+      'Vibe delete $operation reports only the file error summary',
+      () async {
+        final entry = _entry('vibe', 'Vibe', DateTime(2026));
+        const path = r'C:\QA\App Folder\library\vibe_library.hive';
+        const failure = FileSystemException(
+          'private database write failed',
+          path,
+          OSError('private OS message', 5),
+        );
+        final container = ProviderContainer(
+          overrides: [
+            vibeLibraryStorageServiceProvider.overrideWithValue(
+              _FailingDeleteStorageService([entry], failure),
+            ),
+          ],
+        );
+        addTearDown(container.dispose);
+        final notifier = container.read(vibeLibraryNotifierProvider.notifier);
+        await notifier.loadFromCache(showLoading: false);
+
+        final logs = await captureLogs(() async {
+          if (batch) {
+            expect(await notifier.deleteEntries([entry.id]), 0);
+          } else {
+            expect(await notifier.deleteEntry(entry.id), isFalse);
+          }
+        });
+        final text = logs.join('\n');
+        expect(text, contains('Failed to delete $operation'));
+        expect(text, contains('FileSystemException(errno: 5)'));
+        expect(text, isNot(contains(path)));
+        expect(text, isNot(contains('private database write failed')));
+        expect(text, isNot(contains('private OS message')));
+
+        final state = container.read(vibeLibraryNotifierProvider);
+        expect(state.entries, [entry]);
+        expect(state.error, 'FileSystemException(errno: 5)');
+      },
+    );
+  }
+
   test('过滤结果写入和删除后会把 currentPage 校正到最后一个有效页', () async {
     final storage = _MutableStorageService();
     final container = ProviderContainer(
@@ -198,17 +246,6 @@ void main() {
     );
     expect(moveProgress, [1, 2]);
 
-    final tagProgress = <int>[];
-    expect(
-      await notifier.bulkEditTags(
-        ['ok', 'failed'],
-        tagsToAdd: ['tag'],
-        onProgress: (completed, _) => tagProgress.add(completed),
-      ),
-      1,
-    );
-    expect(tagProgress, [1, 2]);
-
     final deleteProgress = <int>[];
     expect(
       await notifier.bulkDeleteEntries([
@@ -237,7 +274,6 @@ void main() {
 
     expect(storage.processedIds, ['throws', 'updated', 'not-updated']);
     expect(result.successCount, 1);
-    expect(result.failedCount, 2);
     expect(result.errors, hasLength(2));
     expect(result.errors.first.itemName, 'throws');
     expect(result.errors.first.details, contains('encoding update failed'));
@@ -275,9 +311,273 @@ void main() {
       reason: '首屏不应先经历“数据已到但当前页为空”的额外状态切换，否则会放大首次打开卡顿',
     );
   });
+
+  group('派生列表按输入记忆', () {
+    final entries = _derivedFixture();
+
+    test('进度、加载、错误和分类元数据变化复用同一份筛选结果与当前页', () {
+      final base = VibeLibraryState(
+        entries: entries,
+        pageSize: 10,
+        currentPage: 1,
+      );
+      final filtered = base.filteredEntries;
+      final page = base.currentEntries;
+
+      final unrelatedChanges = {
+        'same state': base,
+        'isLoading': base.copyWith(isLoading: true),
+        'isInitializing': base.copyWith(isInitializing: true),
+        'bulk progress': base.copyWith(
+          isBulkOperating: true,
+          bulkOperationProgress: 0.5,
+          bulkOperationType: VibeLibraryBulkOperationType.delete,
+        ),
+        'error': base.copyWith(error: 'boom'),
+        'categories': base.copyWith(
+          categories: [
+            VibeLibraryCategory(
+              id: 'cat',
+              name: 'Cat',
+              createdAt: DateTime(2026),
+            ),
+          ],
+        ),
+      };
+      for (final MapEntry(key: change, value: state)
+          in unrelatedChanges.entries) {
+        expect(state.filteredEntries, same(filtered), reason: change);
+        expect(state.currentEntries, same(page), reason: change);
+        expect(state.totalPages, 5, reason: change);
+        expect(state.filteredCount, entries.length, reason: change);
+      }
+    });
+
+    test('翻页和改页大小只重新切片，不重新筛选排序', () {
+      final base = VibeLibraryState(entries: entries, pageSize: 10);
+      final filtered = base.filteredEntries;
+
+      final third = base.copyWith(currentPage: 2);
+      expect(third.filteredEntries, same(filtered));
+      expect(
+        third.currentEntries.map((entry) => entry.id),
+        filtered.sublist(20, 30).map((entry) => entry.id),
+      );
+
+      final resized = base.copyWith(pageSize: 20);
+      expect(resized.filteredEntries, same(filtered));
+      expect(resized.totalPages, 3);
+      expect(resized.currentEntries, hasLength(20));
+    });
+
+    test('筛选、排序输入或 entries 变化时重新计算', () {
+      final base = VibeLibraryState(entries: entries);
+      final filtered = base.filteredEntries;
+
+      final inputChanges = {
+        'searchQuery': base.copyWith(searchQuery: 'MIXED'),
+        'selectedCategoryId': base.copyWith(selectedCategoryId: 'cat'),
+        'favoritesOnly': base.copyWith(favoritesOnly: true),
+        'sortOrder': base.copyWith(sortOrder: VibeLibrarySortOrder.name),
+        'sortDescending': base.copyWith(sortDescending: false),
+        'entries': base.copyWith(entries: List.of(entries)),
+      };
+      for (final MapEntry(key: change, value: state) in inputChanges.entries) {
+        expect(state.filteredEntries, isNot(same(filtered)), reason: change);
+      }
+    });
+
+    test('搜索、分类与收藏条件同时生效，升序是降序的逆序', () {
+      final state = VibeLibraryState(
+        entries: [
+          _entry(
+            'hit-old',
+            'Mixed old',
+            DateTime(2026, 1, 1),
+            categoryId: 'cat',
+            isFavorite: true,
+          ),
+          _entry(
+            'hit-new',
+            'mixed new',
+            DateTime(2026, 1, 3),
+            categoryId: 'cat',
+            isFavorite: true,
+          ),
+          _entry(
+            'not-favorite',
+            'Mixed plain',
+            DateTime(2026, 1, 2),
+            categoryId: 'cat',
+          ),
+          _entry(
+            'other-category',
+            'Mixed elsewhere',
+            DateTime(2026, 1, 4),
+            isFavorite: true,
+          ),
+          _entry(
+            'no-match',
+            'Zeta',
+            DateTime(2026, 1, 5),
+            categoryId: 'cat',
+            isFavorite: true,
+          ),
+        ],
+        searchQuery: 'MIXED',
+        selectedCategoryId: 'cat',
+        favoritesOnly: true,
+      );
+
+      expect(state.filteredEntries.map((entry) => entry.id), [
+        'hit-new',
+        'hit-old',
+      ]);
+      expect(
+        state
+            .copyWith(sortDescending: false)
+            .filteredEntries
+            .map((entry) => entry.id),
+        ['hit-old', 'hit-new'],
+      );
+    });
+
+    test('分页边界：空库、整页、末页不满、越界与负页码', () {
+      const empty = VibeLibraryState(pageSize: 10);
+      expect(empty.filteredCount, 0);
+      expect(empty.totalPages, 0);
+      expect(empty.currentEntries, isEmpty);
+
+      final twenty = VibeLibraryState(
+        entries: entries.take(20).toList(),
+        pageSize: 10,
+      );
+      expect(twenty.totalPages, 2);
+      expect(twenty.copyWith(currentPage: 1).currentEntries, hasLength(10));
+      expect(twenty.copyWith(currentPage: 2).currentEntries, isEmpty);
+
+      final partial = VibeLibraryState(entries: entries, pageSize: 10);
+      expect(partial.totalPages, 5);
+      final last = partial.copyWith(currentPage: 4);
+      expect(last.currentEntries, hasLength(entries.length - 40));
+      expect(
+        last.currentEntries.map((entry) => entry.id),
+        partial.filteredEntries.skip(40).map((entry) => entry.id),
+      );
+      expect(partial.copyWith(currentPage: 5).currentEntries, isEmpty);
+      expect(partial.copyWith(currentPage: -1).currentEntries, isEmpty);
+      expect(
+        () => last.currentEntries.add(entries.first),
+        throwsUnsupportedError,
+      );
+    });
+
+    test('只改变选择状态时库状态与派生列表都保持原实例', () async {
+      final container = ProviderContainer(
+        overrides: [
+          vibeLibraryStorageServiceProvider.overrideWithValue(
+            _FixedEntriesStorageService(entries),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      await container
+          .read(vibeLibraryNotifierProvider.notifier)
+          .loadFromCache(showLoading: false);
+      final state = container.read(vibeLibraryNotifierProvider);
+      final filtered = state.filteredEntries;
+      final page = state.currentEntries;
+
+      final selection = container.read(
+        vibeLibrarySelectionNotifierProvider.notifier,
+      );
+      selection.enterAndSelect(page.first.id);
+      selection.selectAll(page.map((entry) => entry.id));
+      selection.exit();
+
+      final after = container.read(vibeLibraryNotifierProvider);
+      expect(after, same(state));
+      expect(after.filteredEntries, same(filtered));
+      expect(after.currentEntries, same(page));
+    });
+
+    test('批量操作的进度状态序列全程复用同一份派生列表', () async {
+      final container = ProviderContainer(
+        overrides: [
+          vibeLibraryStorageServiceProvider.overrideWithValue(
+            _FixedEntriesStorageService(entries),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      final notifier = container.read(vibeLibraryNotifierProvider.notifier);
+      await notifier.loadFromCache(showLoading: false);
+      final filtered = container
+          .read(vibeLibraryNotifierProvider)
+          .filteredEntries;
+      final emitted = <VibeLibraryState>[];
+      final subscription = container.listen(
+        vibeLibraryNotifierProvider,
+        (_, next) => emitted.add(next),
+      );
+      addTearDown(subscription.close);
+
+      final deleted = await notifier.bulkDeleteEntries(
+        entries.take(12).map((entry) => entry.id).toList(),
+      );
+
+      expect(deleted, 0);
+      expect(emitted.length, greaterThan(2));
+      expect(emitted.any((state) => state.isBulkOperating), isTrue);
+      for (final state in emitted) {
+        expect(state.filteredEntries, same(filtered));
+      }
+    });
+  });
 }
 
-VibeLibraryEntry _entry(String id, String name, DateTime createdAt) {
+List<VibeLibraryEntry> _derivedFixture() {
+  const names = ['beta', 'Alpha', 'alpha', 'Mixed Case', 'MIXED', 'zeta', ''];
+  return [
+    for (var index = 0; index < 45; index++)
+      VibeLibraryEntry(
+        id: 'derived-$index',
+        name: names[index % names.length],
+        vibeDisplayName: 'Display ${44 - index}',
+        vibeEncoding: 'enc-$index',
+        sourceTypeIndex: VibeSourceType.naiv4vibe.index,
+        categoryId: index % 3 == 0 ? 'cat' : null,
+        tags: index % 4 == 0 ? const ['mixed-tag'] : const [],
+        isFavorite: index.isEven,
+        usedCount: index % 5,
+        lastUsedAt: index % 6 == 0 ? null : DateTime(2026, 1, 1, index % 7),
+        createdAt: DateTime(2026, 1, 1).add(Duration(minutes: index * 7 % 45)),
+      ),
+  ];
+}
+
+class _FixedEntriesStorageService extends VibeLibraryStorageService {
+  _FixedEntriesStorageService(this.entries);
+
+  final List<VibeLibraryEntry> entries;
+
+  @override
+  Future<List<VibeLibraryEntry>> getDisplayEntries() async => List.of(entries);
+
+  @override
+  Future<List<VibeLibraryCategory>> getAllCategories() async => const [];
+
+  @override
+  Future<bool> deleteEntry(String id) async => false;
+}
+
+VibeLibraryEntry _entry(
+  String id,
+  String name,
+  DateTime createdAt, {
+  String? categoryId,
+  bool isFavorite = false,
+}) {
   return VibeLibraryEntry(
     id: id,
     name: name,
@@ -286,6 +586,8 @@ VibeLibraryEntry _entry(String id, String name, DateTime createdAt) {
     strength: 0.6,
     infoExtracted: 0.7,
     sourceTypeIndex: VibeSourceType.naiv4vibe.index,
+    categoryId: categoryId,
+    isFavorite: isFavorite,
     createdAt: createdAt,
   );
 }
@@ -336,6 +638,18 @@ class _FailingWriteStorageService extends VibeLibraryStorageService {
   }
 }
 
+class _FailingDeleteStorageService extends _FixedEntriesStorageService {
+  _FailingDeleteStorageService(super.entries, this.failure);
+
+  final FileSystemException failure;
+
+  @override
+  Future<bool> deleteEntry(String id) async => throw failure;
+
+  @override
+  Future<int> deleteEntries(List<String> ids) async => throw failure;
+}
+
 class _MutableStorageService extends VibeLibraryStorageService {
   final entries = [
     _entry('a', 'Alpha', DateTime(2026, 1, 1)).copyWith(isFavorite: true),
@@ -380,12 +694,6 @@ class _PartialBulkStorageService extends VibeLibraryStorageService {
     String id,
     String? categoryId,
   ) async => id == 'ok' ? entries.first.copyWith(categoryId: categoryId) : null;
-
-  @override
-  Future<VibeLibraryEntry?> updateEntryTags(
-    String id,
-    List<String> tags,
-  ) async => id == 'ok' ? entries.first.copyWith(tags: tags) : null;
 
   @override
   Future<bool> deleteEntry(String id) async => id == 'ok';

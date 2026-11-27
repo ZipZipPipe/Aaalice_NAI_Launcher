@@ -5,7 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_driver/driver_extension.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:hive_flutter/hive_flutter.dart';
+import 'package:hive_ce_flutter/hive_ce_flutter.dart';
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:screen_retriever/screen_retriever.dart';
@@ -20,21 +20,26 @@ import 'l10n/app_localizations_ja.dart';
 import 'l10n/app_localizations_zh.dart';
 import 'core/services/desktop_app_shutdown_service.dart';
 import 'core/services/interactive_work_gate.dart';
+import 'core/storage/replication_queue_startup_gate.dart';
+import 'core/storage/windows/launcher_windows_secure_storage.dart';
 import 'core/utils/app_error_reporter.dart';
 import 'core/utils/app_locale.dart';
 import 'core/utils/fatal_diagnostics.dart';
 import 'core/utils/app_logger.dart';
+import 'core/utils/drag_export_file_store.dart';
 import 'core/utils/hive_startup_box_opener.dart';
 import 'core/utils/hive_storage_helper.dart';
+import 'core/utils/share_temp_directories.dart';
 import 'core/utils/window_focus_tracker.dart';
 import 'core/utils/windows_clipboard_history_key_fix.dart';
 import 'core/utils/window_state_persistence.dart';
 import 'core/windowing/desktop_window_state_controller.dart';
+import 'core/windowing/desktop_window_state_observer.dart';
 import 'core/windowing/windows_native_window_state.dart';
 import 'data/models/gallery/nai_image_metadata.dart';
 import 'data/repositories/gallery_folder_repository.dart';
 import 'data/services/temp_image_service.dart';
-import 'core/cache/gallery_cache_manager.dart';
+import 'data/services/metadata/l2_cache_cleaner.dart';
 import 'core/cache/local_gallery_thumbnail_migration.dart';
 import 'core/services/sqflite_bootstrap_service.dart';
 import 'presentation/providers/online_gallery_blacklist_provider.dart';
@@ -86,33 +91,6 @@ Future<void> _runNonFatalStartupStep(
     '$name completed in ${stopwatch.elapsedMilliseconds}ms',
     'Startup',
   );
-}
-
-/// 在桌面生命周期切换时刷新最后一个有效的普通窗口状态。
-class WindowStateObserver extends WidgetsBindingObserver {
-  WindowStateObserver(this.controller);
-
-  final DesktopWindowStateController controller;
-
-  @override
-  Future<void> didChangeAppLifecycleState(AppLifecycleState state) async {
-    if (state != AppLifecycleState.paused &&
-        state != AppLifecycleState.detached) {
-      return;
-    }
-
-    try {
-      await controller.flush();
-      await AppLogger.flush();
-    } catch (error, stackTrace) {
-      AppLogger.e(
-        'Failed to flush window state during lifecycle transition',
-        error,
-        stackTrace,
-        'Main',
-      );
-    }
-  }
 }
 
 Future<void> _restoreWindowIfMinimized() async {
@@ -326,7 +304,9 @@ class _DesktopWindowConfiguration {
       );
     });
 
-    WidgetsBinding.instance.addObserver(WindowStateObserver(stateController));
+    WidgetsBinding.instance.addObserver(
+      DesktopWindowStateObserver(stateController),
+    );
     nativePlatform?.setBoundsChangedHandler(() async {
       try {
         await stateController.captureCurrentState();
@@ -495,12 +475,15 @@ Future<bool> _initializeSystemTray() async {
   }
 }
 
-void _scheduleDeferredStartup(ProviderContainer container) {
+void _scheduleDeferredStartup(
+  ProviderContainer container,
+  DateTime launchedAt,
+) {
   unawaited(
     InteractiveWorkGate.instance.runWhenIdle(
       minimumDelay: const Duration(seconds: 5),
       priority: InteractiveWorkPriority.maintenance,
-      action: () => _runDeferredStartup(container),
+      action: () => _runDeferredStartup(container, launchedAt),
     ),
   );
   unawaited(
@@ -517,7 +500,10 @@ void _scheduleDeferredStartup(ProviderContainer container) {
   );
 }
 
-Future<void> _runDeferredStartup(ProviderContainer container) async {
+Future<void> _runDeferredStartup(
+  ProviderContainer container,
+  DateTime launchedAt,
+) async {
   await _runNonFatalStartupStep(
     'Legacy gallery album import',
     () => container
@@ -547,6 +533,12 @@ Future<void> _runDeferredStartup(ProviderContainer container) async {
     'Temp files cleanup',
     () => TempImageService().cleanupOldTempFiles(),
   );
+  await _runNonFatalStartupStep('Share temp files cleanup', () async {
+    final removed = await ShareTempDirectories.sweepPreviousRuns(launchedAt);
+    if (removed > 0) {
+      AppLogger.i('Removed $removed share temp entries from earlier runs', 'Main');
+    }
+  });
 }
 
 void main() {
@@ -567,10 +559,13 @@ void main() {
 }
 
 Future<void> _bootstrapApplication() async {
+  // 单实例运行，早于此刻的分享临时文件都属于之前异常退出的进程。
+  final launchedAt = DateTime.now();
   if (const bool.fromEnvironment('ENABLE_FLUTTER_DRIVER')) {
     enableFlutterDriverExtension(enableTextEntryEmulation: false);
   }
   WidgetsFlutterBinding.ensureInitialized();
+  if (Platform.isWindows) LauncherWindowsSecureStorage.register();
   WindowsClipboardHistoryKeyFix.instance.install();
   AppErrorReporter.installGlobalHandlers();
 
@@ -627,17 +622,23 @@ Future<void> _bootstrapApplication() async {
 
   final desktopWindow = await desktopWindowFuture;
   final container = ProviderContainer(
+    retry: (retryCount, error) => null,
     overrides: [
       generationSessionPersistenceEnabledProvider.overrideWithValue(true),
     ],
   );
+  DesktopAppShutdownService.addCleanupHandler(
+    DragExportFileStore.instance.clear,
+  );
+  // 队列索引要等 Splash 的迁移步骤结束后才能读取
+  ReplicationQueueStartupGate.close();
   AppLogger.i('Calling runApp; database warmup has not started', 'Main');
   runApp(
     UncontrolledProviderScope(
       container: container,
       child: AppBootstrap(
         onWarmupComplete: () {
-          _scheduleDeferredStartup(container);
+          _scheduleDeferredStartup(container, launchedAt);
         },
       ),
     ),

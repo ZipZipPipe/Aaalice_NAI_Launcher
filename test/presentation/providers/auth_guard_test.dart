@@ -4,7 +4,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nai_launcher/core/storage/secure_storage_service.dart';
 import 'package:nai_launcher/data/datasources/remote/nai_image_generation_api_service.dart';
 import 'package:nai_launcher/data/models/image/image_params.dart';
-import 'package:nai_launcher/presentation/providers/auth_provider.dart';
+import 'package:nai_launcher/data/services/auth_provider.dart';
+import 'package:nai_launcher/core/services/auth_error_service.dart';
 import 'package:nai_launcher/presentation/providers/image_generation_provider.dart';
 
 class _UnauthenticatedAuthNotifier extends AuthNotifier {
@@ -71,14 +72,20 @@ void main() {
           height: 768,
         );
 
-        expect(container.exists(naiImageGenerationApiServiceProvider), isFalse);
+        expect(
+          container.read(naiImageGenerationApiServiceProvider.exists),
+          isFalse,
+        );
         await container
             .read(imageGenerationNotifierProvider.notifier)
             .generate(params);
 
         final generation = container.read(imageGenerationNotifierProvider);
         final request = container.read(authPromptRequestProvider);
-        expect(container.exists(naiImageGenerationApiServiceProvider), isFalse);
+        expect(
+          container.read(naiImageGenerationApiServiceProvider.exists),
+          isFalse,
+        );
         expect(generation.status, GenerationStatus.idle);
         expect(generation.errorMessage, isNull);
         expect(params.prompt, 'keep this prompt');

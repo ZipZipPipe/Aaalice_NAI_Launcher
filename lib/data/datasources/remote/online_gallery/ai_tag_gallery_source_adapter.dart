@@ -4,7 +4,6 @@ import 'dart:isolate';
 import 'dart:math';
 
 import 'package:dio/dio.dart';
-import 'package:html/parser.dart' as html_parser;
 
 import '../../../../core/cache/online_gallery_image_cache_manager.dart';
 import '../../../../core/utils/app_logger.dart';
@@ -14,6 +13,7 @@ import '../../../models/online_gallery/gallery_item.dart';
 import '../../../models/online_gallery/gallery_source.dart';
 import '../../../services/metadata/ai_tag_generation_parser.dart';
 import '../../../services/metadata/unified_metadata_parser.dart';
+import '../../../services/online_gallery/gallery_prompt_tags.dart';
 import 'gallery_random_sampler.dart';
 import 'gallery_source_adapter.dart';
 
@@ -24,6 +24,10 @@ class AiTagGallerySourceAdapter implements GallerySourceAdapter {
 
   static const _baseUrl = 'https://aitag.win';
   static const _configTtl = Duration(minutes: 30);
+  static const _apiHeaders = <String, String>{
+    'Accept': 'application/json',
+    'Referer': aiTagReferer,
+  };
 
   final Dio _dio;
   final Random _random;
@@ -60,7 +64,7 @@ class AiTagGallerySourceAdapter implements GallerySourceAdapter {
     try {
       final response = await _dio.get(
         '$_baseUrl/api/config',
-        options: Options(headers: const {'Accept': 'application/json'}),
+        options: Options(headers: _apiHeaders),
         cancelToken: cancelToken,
       );
       if (response.data is! Map) {
@@ -126,7 +130,7 @@ class AiTagGallerySourceAdapter implements GallerySourceAdapter {
       queryParameters: {
         'page': page,
         'page_size': config.pageSize,
-        'q': _toAiTagWeightedQuery(request.query),
+        'q': request.query,
         'prompt': request.prompt,
         'sort': 'new',
         'time_range': request.timeRange,
@@ -150,7 +154,7 @@ class AiTagGallerySourceAdapter implements GallerySourceAdapter {
     final queryParameters = <String, dynamic>{
       'page': page,
       'page_size': config.pageSize,
-      'q': _toAiTagWeightedQuery(request.query),
+      'q': request.query,
       'prompt': request.prompt,
     };
     if (period == 'current') {
@@ -187,7 +191,7 @@ class AiTagGallerySourceAdapter implements GallerySourceAdapter {
         queryParameters: queryParameters,
         options: Options(
           headers: {
-            'Accept': 'application/json',
+            ..._apiHeaders,
             if (noCache) 'Cache-Control': 'no-cache',
           },
         ),
@@ -263,6 +267,8 @@ class AiTagGallerySourceAdapter implements GallerySourceAdapter {
           source: GallerySourceId.aiTag,
         );
       }
+      final emptyPage = _emptyListPageForNotFound(error.response, cursor);
+      if (emptyPage != null) return emptyPage;
       throw mapGalleryDioException(error, sourceId);
     } catch (error) {
       throw GallerySourceException(
@@ -271,6 +277,28 @@ class AiTagGallerySourceAdapter implements GallerySourceAdapter {
         cause: error,
       );
     }
+  }
+
+  // 列表接口无结果或页码越界时返回 404，body 为空 items 或 no_content。
+  static GalleryPage? _emptyListPageForNotFound(
+    Response<dynamic>? response,
+    String cursor,
+  ) {
+    if (response?.statusCode != 404) return null;
+    final data = response!.data;
+    if (data is! Map) return null;
+    final items = data['items'];
+    final isEmptyList = items is List && items.isEmpty;
+    final isNoContent = data['error'] == 'no_content';
+    if (!isEmptyList && !isNoContent) return null;
+    return GalleryPage(
+      items: const [],
+      cursor: cursor,
+      nextCursor: null,
+      total: _asInt(data['total']),
+      hasMore: false,
+      rawPageIdentity: '',
+    );
   }
 
   @override
@@ -282,7 +310,7 @@ class AiTagGallerySourceAdapter implements GallerySourceAdapter {
     try {
       final response = await _dio.get(
         '$_baseUrl/api/work/${item.id}',
-        options: Options(headers: const {'Accept': 'application/json'}),
+        options: Options(headers: _apiHeaders),
         cancelToken: cancelToken,
       );
       if (response.data is! Map) {
@@ -338,15 +366,16 @@ class AiTagGallerySourceAdapter implements GallerySourceAdapter {
         );
       }
       final listItem = _parseListItem(work);
-      final searchableTags = <String>{
+      final displayTags = <String>{
         ...listItem.tags,
         for (final image in media)
-          if (image.prompt != null) ..._parsePromptTags(image.prompt!),
+          if (image.prompt != null) ...parseGalleryPromptTags(image.prompt!),
       };
+      final characterTags = positiveGalleryCharacterTags(media).toSet();
       final searchTerms = <String>{
         ...listItem.searchTerms,
-        ...searchableTags,
-        for (final tag in searchableTags) ..._searchTextTerms(tag),
+        for (final tag in displayTags.followedBy(characterTags))
+          ..._searchTextTerms(tag),
         for (final image in media) ...[
           ..._searchTextTerms(image.metadata['model']?.toString()),
           ..._searchTextTerms(image.metadata['source_model']?.toString()),
@@ -367,7 +396,8 @@ class AiTagGallerySourceAdapter implements GallerySourceAdapter {
         cover: media.first,
         mediaCount: media.length,
         rank: item.rank,
-        tags: List.unmodifiable(searchableTags),
+        tags: List.unmodifiable(displayTags),
+        positiveCharacterTags: List.unmodifiable(characterTags),
         searchTerms: List.unmodifiable(searchTerms),
         tagsComplete: promptMetadataComplete,
       );
@@ -401,7 +431,7 @@ class AiTagGallerySourceAdapter implements GallerySourceAdapter {
       throw const FormatException('AI TAG work id is invalid');
     }
     final caption = json['caption']?.toString() ?? '';
-    final description = _plainText(caption);
+    final description = galleryPlainText(caption);
     final title = json['title']?.toString().trim();
     final author = json['userName']?.toString().trim();
     final aiType = (json['AI_type'] ?? json['ai_type'])?.toString();
@@ -434,16 +464,9 @@ class AiTagGallerySourceAdapter implements GallerySourceAdapter {
       rank: rank,
       tags: List<String>.unmodifiable(searchableTags),
       searchTerms: List<String>.unmodifiable(searchTerms),
-      // The list payload omits per-media prompts searched by the upstream q
-      // endpoint. Detail loading must aggregate every media prompt first.
+      // The list payload omits per-media prompts the blacklist must inspect.
       tagsComplete: false,
-      cover: GalleryMedia(
-        id: '${id}_pending',
-        previewUrl: '',
-        displayUrl: '',
-        downloadUrl: '',
-        mediaType: 'image',
-      ),
+      cover: GalleryMedia.pending('$id'),
     );
   }
 
@@ -526,15 +549,6 @@ class AiTagGallerySourceAdapter implements GallerySourceAdapter {
     );
   }
 
-  String _plainText(String html) {
-    if (html.isEmpty) return '';
-    final withBreaks = html.replaceAll(
-      RegExp(r'<br\s*/?>', caseSensitive: false),
-      '\n',
-    );
-    return html_parser.parseFragment(withBreaks).text?.trim() ?? '';
-  }
-
   static String? _rawJsonString(Object? value) {
     if (value == null) return null;
     if (value is String) return value;
@@ -548,15 +562,6 @@ class AiTagGallerySourceAdapter implements GallerySourceAdapter {
   static int _mediaPageIndex(String value) {
     final match = RegExp(r'_p(\d+)(?:\D|$)').firstMatch(value);
     return int.tryParse(match?.group(1) ?? '') ?? 0;
-  }
-
-  String _toAiTagWeightedQuery(String query) {
-    return query
-        .trim()
-        .split(RegExp(r'\s+'))
-        .where((term) => term.isNotEmpty)
-        .map((term) => '$term::1')
-        .join(' ');
   }
 
   static int? _asInt(Object? value) {
@@ -825,15 +830,6 @@ class AiTagGallerySourceAdapter implements GallerySourceAdapter {
     );
   }
 
-  List<String> _parsePromptTags(String raw) {
-    if (raw.trim().isEmpty) return const [];
-    return _plainText(raw)
-        .split(RegExp(r'[,\n]+'))
-        .map(_cleanPromptTag)
-        .where((tag) => tag.isNotEmpty && tag.length <= 200)
-        .toList(growable: false);
-  }
-
   static List<String> _searchTextTerms(String? raw) {
     final value = raw?.trim() ?? '';
     if (value.isEmpty) return const [];
@@ -849,20 +845,9 @@ class AiTagGallerySourceAdapter implements GallerySourceAdapter {
   static List<String> _parseStringList(Object? value) {
     final decoded = _decodeList(value);
     return decoded
-        .map((item) => _cleanPromptTag(item?.toString() ?? ''))
+        .map((item) => cleanGalleryPromptTag(item?.toString() ?? ''))
         .where((item) => item.isNotEmpty)
         .toList(growable: false);
-  }
-
-  static String _cleanPromptTag(String raw) {
-    var value = raw.trim();
-    value = value.replaceAll(RegExp(r'^[{}\[\]()\s]+|[{}\[\]()\s]+$'), '');
-    value = value.replaceFirst(RegExp(r'^-?\d+(?:\.\d+)?::'), '');
-    value = value.replaceFirst(RegExp(r'::$'), '');
-    value = value.replaceFirst(RegExp(r'::-?\d+(?:\.\d+)?$'), '');
-    value = value.replaceFirst(RegExp(r':-?\d+(?:\.\d+)?$'), '');
-    value = value.replaceAll(RegExp(r'^[{}\[\]()\s]+|[{}\[\]()\s,，;；]+$'), '');
-    return value.trim();
   }
 
   static List<dynamic> _decodeList(Object? value) {

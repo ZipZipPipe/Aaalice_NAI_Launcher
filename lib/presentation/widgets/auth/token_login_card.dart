@@ -5,8 +5,9 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/utils/localization_extension.dart';
 import '../../../data/datasources/remote/nai_auth_api_service.dart';
-import '../../providers/account_manager_provider.dart';
-import '../../providers/auth_provider.dart';
+import '../../../data/services/account_manager_provider.dart';
+import '../../../data/services/auth_provider.dart';
+import '../../../core/services/auth_error_service.dart';
 import '../common/floating_label_input.dart';
 
 /// Token 登录卡片组件
@@ -316,6 +317,8 @@ class _TokenLoginCardState extends ConsumerState<TokenLoginCard> {
         return context.l10n.auth_error_credentialsLoginUnavailable;
       case AuthErrorCode.serverError:
         return context.l10n.auth_error_serverError;
+      case AuthErrorCode.secureStorageUnavailable:
+        return context.l10n.common_secureStorageUnavailable;
       case AuthErrorCode.unknown:
       default:
         return context.l10n.auth_error_unknown;

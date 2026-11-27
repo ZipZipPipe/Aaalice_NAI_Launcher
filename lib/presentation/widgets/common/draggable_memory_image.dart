@@ -1,10 +1,8 @@
-import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:path/path.dart' as p;
 
 import '../../../core/utils/drag_drop_utils.dart';
 import '../../../core/agent/resources/agent_chat_resource_reference.dart';
@@ -34,6 +32,7 @@ class DraggableMemoryImage extends ConsumerStatefulWidget {
     this.sourceFilePath,
     this.enabled = true,
     this.requirePreparedDragFile = false,
+    this.preheatHistoryShareFile = false,
     this.preparedDragFile,
     this.preparedDragStripMetadata,
     this.preparedDragTransformKey,
@@ -54,6 +53,10 @@ class DraggableMemoryImage extends ConsumerStatefulWidget {
   final String? sourceFilePath;
   final bool enabled;
   final bool requirePreparedDragFile;
+
+  /// Prepares the history share file on hover so dragging out hands over a
+  /// ready file instead of exporting while the receiver waits.
+  final bool preheatHistoryShareFile;
   final File? preparedDragFile;
   final bool? preparedDragStripMetadata;
   final String? preparedDragTransformKey;
@@ -78,15 +81,20 @@ class _DraggableMemoryImageState extends ConsumerState<DraggableMemoryImage> {
     final stripMetadata = ref
         .read(shareImageSettingsProvider)
         .effectiveStripMetadataForCopyAndDrag;
+    final prepared = widget.preparedDragFile;
+    final transformMatches =
+        widget.preparedDragTransformKey == transform?.cacheKey;
+    final stripMatches =
+        widget.preparedDragStripMetadata == null ||
+        widget.preparedDragStripMetadata == stripMetadata;
     if (widget.requirePreparedDragFile) {
-      if (widget.preparedDragFile == null) {
+      if (prepared == null) {
         throw StateError('Prepared drag file is not ready');
       }
-      if (widget.preparedDragTransformKey != transform?.cacheKey) {
+      if (!transformMatches) {
         throw StateError('Prepared drag file does not match current watermark');
       }
-      if (widget.preparedDragStripMetadata != null &&
-          widget.preparedDragStripMetadata != stripMetadata) {
+      if (!stripMatches) {
         throw StateError(
           'Prepared drag file does not match current metadata setting',
         );
@@ -97,6 +105,9 @@ class _DraggableMemoryImageState extends ConsumerState<DraggableMemoryImage> {
       fileName: widget.fileName,
       bytes: widget.imageBytes,
       filePath: widget.sourceFilePath,
+      preparedFile:
+          (transformMatches && stripMatches ? prepared : null) ??
+          _historyPreparedFile(widget.imageId, stripMetadata, transform),
       stripMetadata: stripMetadata,
       transform: transform,
       reference: _agentResourceReference,
@@ -142,15 +153,33 @@ class _DraggableMemoryImageState extends ConsumerState<DraggableMemoryImage> {
       },
       child: widget.child,
     );
+    final preheated = widget.preheatHistoryShareFile && widget.imageId != null
+        ? MouseRegion(onEnter: (_) => _preheatHistoryShareFile(), child: content)
+        : content;
     final reference = _agentResourceReference;
-    if (reference == null) return content;
+    if (reference == null) return preheated;
     return ImageCardActionScope(
       onAddToAgent: () => addAgentResourceToComposer(
         context: context,
         ref: ref,
         reference: reference,
       ),
-      child: content,
+      child: preheated,
+    );
+  }
+
+  void _preheatHistoryShareFile() {
+    final imageId = widget.imageId;
+    if (imageId == null) return;
+    ShareImagePreparationService.instance.enqueue(
+      imageId: imageId,
+      imageBytes: widget.imageBytes,
+      fileName: widget.fileName,
+      sourceFilePath: widget.sourceFilePath,
+      stripMetadata: ref
+          .read(shareImageSettingsProvider)
+          .effectiveStripMetadataForCopyAndDrag,
+      transform: ref.read(copyDragWatermarkProvider),
     );
   }
 
@@ -169,6 +198,7 @@ class _DraggableMemoryImageState extends ConsumerState<DraggableMemoryImage> {
       fileName: 'history_$id.png',
       bytes: image.bytes,
       filePath: image.filePath,
+      preparedFile: _historyPreparedFile(id, strip, transform),
       stripMetadata: strip,
       transform: transform,
       reference: AgentChatResourceReference(
@@ -179,6 +209,20 @@ class _DraggableMemoryImageState extends ConsumerState<DraggableMemoryImage> {
       localData: buildHistoryInternalDragLocalData(id),
     );
   }
+
+  /// The history panel prepares share files in the background; the preview and
+  /// multi-selected history images reuse them instead of exporting again.
+  static File? _historyPreparedFile(
+    String? imageId,
+    bool stripMetadata,
+    ShareImageTransform? transform,
+  ) => imageId == null
+      ? null
+      : ShareImagePreparationService.instance.readyFileFor(
+          imageId,
+          stripMetadata: stripMetadata,
+          transform: transform,
+        );
 
   Widget _buildDragFeedback(BuildContext context) {
     final hint = widget.feedbackHint ?? context.l10n.drop_dragToImg2ImgOrOther;
@@ -223,33 +267,4 @@ class _DraggableMemoryImageState extends ConsumerState<DraggableMemoryImage> {
       display: {'name': widget.fileName},
     );
   }
-}
-
-Future<SanitizedShareImage> prepareDragImageForTransfer({
-  required Uint8List imageBytes,
-  required String fileName,
-  required bool stripMetadata,
-  String? sourceFilePath,
-}) async {
-  if (stripMetadata) {
-    return ImageShareSanitizer.sanitizeForShare(imageBytes, fileName: fileName);
-  }
-
-  final normalizedSourceFilePath = sourceFilePath?.trim();
-  if (normalizedSourceFilePath != null && normalizedSourceFilePath.isNotEmpty) {
-    final sourceFile = File(normalizedSourceFilePath);
-    if (await sourceFile.exists()) {
-      return SanitizedShareImage(
-        bytes: await sourceFile.readAsBytes(),
-        fileName: p.basename(normalizedSourceFilePath),
-        mimeType: 'image/png',
-      );
-    }
-  }
-
-  return SanitizedShareImage(
-    bytes: imageBytes,
-    fileName: fileName,
-    mimeType: 'image/png',
-  );
 }

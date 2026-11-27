@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/autocomplete/autocomplete_providers.dart';
+import '../../providers/autocomplete_services_provider.dart';
 import '../../../core/autocomplete/autocomplete_settings.dart';
 import '../../../core/autocomplete/cooccurrence_data_pack_provider.dart';
 import '../../../core/autocomplete/completion_models.dart';
@@ -295,7 +296,7 @@ class _AutocompleteWrapperState extends ConsumerState<AutocompleteWrapper> {
           previousCursorPosition: _cursorPosition(previousValue),
           currentText: text,
           currentCursorPosition: _cursorPosition(value),
-          splitOnSpaces: widget.config?.treatSpacesAsSeparators ?? false,
+          mode: widget.config?.tokenMode ?? PromptTokenMode.commaSeparated,
         );
     final composingRange = value.composing;
     final isComposing = composingRange.isValid && !composingRange.isCollapsed;
@@ -380,6 +381,7 @@ class _AutocompleteWrapperState extends ConsumerState<AutocompleteWrapper> {
     final settings = ref.read(autocompleteSettingsProvider);
     _maybePromptZhDictionary(settings);
     final config = widget.config;
+    final mode = config?.tokenMode ?? PromptTokenMode.commaSeparated;
     final selection = widget.controller.selection;
     final cursorPosition = selection.isValid
         ? selection.extentOffset
@@ -389,7 +391,7 @@ class _AutocompleteWrapperState extends ConsumerState<AutocompleteWrapper> {
       cursorPosition: cursorPosition,
       limit: config?.maxSuggestions ?? settings.resultLimit,
       locale: Localizations.localeOf(context).toLanguageTag(),
-      splitOnSpaces: config?.treatSpacesAsSeparators ?? false,
+      mode: mode,
     );
     var query = related
         ? PromptTokenParser.parseRelated(
@@ -397,7 +399,7 @@ class _AutocompleteWrapperState extends ConsumerState<AutocompleteWrapper> {
             cursorPosition: cursorPosition,
             limit: config?.maxSuggestions ?? settings.resultLimit,
             locale: Localizations.localeOf(context).toLanguageTag(),
-            splitOnSpaces: config?.treatSpacesAsSeparators ?? false,
+            mode: mode,
           )
         : fallbackQuery;
     if (resetPinnedRelatedTag) _pinnedRelatedTag = null;
@@ -724,18 +726,21 @@ class _AutocompleteWrapperState extends ConsumerState<AutocompleteWrapper> {
     if (candidate.isExisting) return;
     final query = state.query!;
     final settings = ref.read(autocompleteSettingsProvider);
+    final config = widget.config ?? const AutocompleteConfig();
+    final text = widget.controller.text;
     final completedTag = query.kind == CompletionQueryKind.tag
         ? candidate.canonicalTag
         : null;
     final applied = PromptTokenParser.apply(
-      text: widget.controller.text,
+      text: text,
       query: query,
       canonicalTag: candidate.canonicalTag,
-      autoInsertComma:
-          settings.autoInsertComma && (widget.config?.autoInsertComma ?? true),
-      replaceUnderscores:
-          settings.replaceUnderscores ||
-          (widget.config?.replaceUnderscoreWithSpace ?? false),
+      autoInsertComma: settings.autoInsertComma && config.autoInsertComma,
+      replaceUnderscores: config.insertsSpacedTags(
+        text: text,
+        userPreference: settings.replaceUnderscores,
+      ),
+      mode: config.tokenMode,
     );
     _applyingSuggestion = true;
     widget.controller.value = TextEditingValue(

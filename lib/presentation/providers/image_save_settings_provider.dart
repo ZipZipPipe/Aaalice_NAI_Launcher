@@ -1,5 +1,8 @@
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
+import '../../core/save_naming/image_save_naming.dart';
+import '../../core/services/system_gallery_publisher.dart';
 import '../../core/storage/local_storage_service.dart';
 
 part 'image_save_settings_provider.g.dart';
@@ -12,19 +15,31 @@ class ImageSaveSettings {
   /// 是否自动保存
   final bool autoSave;
 
+  /// 保存时是否同时发布到系统相册
+  final bool syncToSystemGallery;
+
+  /// 图库保存的子文件夹与文件名规则
+  final ImageSaveNaming naming;
+
   const ImageSaveSettings({
     this.customPath,
     this.autoSave = false,
+    this.syncToSystemGallery = true,
+    this.naming = ImageSaveNaming.standard,
   });
 
   ImageSaveSettings copyWith({
     String? customPath,
     bool? autoSave,
+    bool? syncToSystemGallery,
+    ImageSaveNaming? naming,
     bool clearCustomPath = false,
   }) {
     return ImageSaveSettings(
       customPath: clearCustomPath ? null : (customPath ?? this.customPath),
       autoSave: autoSave ?? this.autoSave,
+      syncToSystemGallery: syncToSystemGallery ?? this.syncToSystemGallery,
+      naming: naming ?? this.naming,
     );
   }
 
@@ -46,6 +61,8 @@ class ImageSaveSettingsNotifier extends _$ImageSaveSettingsNotifier {
     return ImageSaveSettings(
       customPath: storage.getImageSavePath(),
       autoSave: storage.getAutoSaveImages(),
+      syncToSystemGallery: storage.getSyncImagesToSystemGallery(),
+      naming: storage.getImageSaveNaming(),
     );
   }
 
@@ -78,4 +95,28 @@ class ImageSaveSettingsNotifier extends _$ImageSaveSettingsNotifier {
   Future<void> toggleAutoSave() async {
     await setAutoSave(!state.autoSave);
   }
+
+  Future<void> setSyncToSystemGallery(bool value) async {
+    final storage = ref.read(localStorageServiceProvider);
+    await storage.setSyncImagesToSystemGallery(value);
+    state = state.copyWith(syncToSystemGallery: value);
+  }
+
+  Future<void> setNaming(ImageSaveNaming naming) async {
+    final storage = ref.read(localStorageServiceProvider);
+    await storage.setImageSaveNaming(naming);
+    state = state.copyWith(naming: naming);
+  }
+}
+
+/// 每次保存前读取，保证开关变更对下一次保存立即生效。
+@riverpod
+SystemGalleryPublisher systemGalleryPublisher(Ref ref) {
+  return SystemGalleryPublisher(
+    syncEnabled: ref.watch(
+      imageSaveSettingsNotifierProvider.select(
+        (settings) => settings.syncToSystemGallery,
+      ),
+    ),
+  );
 }

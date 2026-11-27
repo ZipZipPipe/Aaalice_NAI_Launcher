@@ -4,24 +4,27 @@ import 'dart:ui' show PointerDeviceKind;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nai_launcher/core/agent/agent_types.dart';
 import 'package:nai_launcher/core/agent/context_usage.dart';
 import 'package:nai_launcher/core/agent/harness/harness_types.dart';
 import 'package:nai_launcher/core/agent/resources/agent_chat_resource_reference.dart';
-import 'package:nai_launcher/core/windowing/agent_chat_shared_widgets.dart';
+import 'package:nai_launcher/presentation/agent_chat/widgets/agent_chat_shared_widgets.dart';
 import 'package:nai_launcher/data/models/agent/agent_settings.dart';
 import 'package:nai_launcher/l10n/app_localizations.dart';
-import 'package:nai_launcher/presentation/agent_chat/providers/agent_chat_state.dart';
+import 'package:nai_launcher/presentation/agent_chat/providers/agent_chat_notifier.dart';
 import 'package:nai_launcher/presentation/adaptive/interaction_policy.dart';
 import 'package:nai_launcher/presentation/agent_chat/widgets/agent_chat_composer.dart';
 import 'package:nai_launcher/presentation/agent_chat/widgets/agent_chat_panel_controller.dart';
 import 'package:nai_launcher/presentation/agent_chat/widgets/agent_chat_panel_view_data.dart';
 import 'package:nai_launcher/presentation/agent_settings/providers/agent_settings_provider.dart';
-import 'package:nai_launcher/presentation/prompt_assistant/models/prompt_assistant_models.dart';
+import 'package:nai_launcher/data/models/prompt_assistant/prompt_assistant_models.dart';
+import 'package:nai_launcher/presentation/prompt_assistant/providers/prompt_assistant_config_provider.dart';
 import 'package:nai_launcher/presentation/prompt_assistant/providers/web_access_provider.dart';
 import 'package:nai_launcher/presentation/themes/core/layered_surface_style.dart';
 import 'package:nai_launcher/presentation/themes/modules/color/palettes/grunge_palette.dart';
+import 'package:nai_launcher/presentation/utils/dropped_file_reader.dart';
 import 'package:nai_launcher/presentation/widgets/common/model_family_icon.dart';
 import 'package:nai_launcher/presentation/widgets/common/ai_brand_icon.dart';
 
@@ -549,6 +552,31 @@ void main() {
       find.byKey(const ValueKey('agent-chat-model-search')),
       findsOneWidget,
     );
+    await tester.tap(
+      find.byKey(const ValueKey('agent-chat-model-option-deepseek-$modelName')),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('agent-chat-model-submenu')),
+      findsOneWidget,
+    );
+    final close = find.byKey(const ValueKey('agent-chat-model-picker-close'));
+    await tester.tap(close);
+    await tester.pumpAndSettle();
+
+    final inputFocus = tester.widget<TextField>(_input).focusNode!;
+    inputFocus.requestFocus();
+    await tester.pump();
+    expect(inputFocus.hasFocus, isTrue);
+    final selectorNode = tester.semantics.find(selector);
+    tester.semantics.tap(
+      find.semantics.byPredicate((node) => node.id == selectorNode.id),
+    );
+    await tester.pumpAndSettle();
+    expect(inputFocus.hasFocus, isFalse);
+    await tester.tap(close);
+    await tester.pumpAndSettle();
+    expect(inputFocus.hasFocus, isTrue);
     expect(tester.takeException(), isNull);
   });
 
@@ -957,6 +985,24 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('a manual compaction can be stopped from the send target', (
+    tester,
+  ) async {
+    var stopped = false;
+    await _pumpComposer(
+      tester,
+      width: 600,
+      mobile: false,
+      state: _readyState.copyWith(compacting: true),
+      onStop: () => stopped = true,
+    );
+
+    expect(find.bySemanticsLabel('Stop'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('agent-chat-send')));
+    expect(stopped, isTrue);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('keyboard insets and composing enter preserve the draft', (
     tester,
   ) async {
@@ -1193,7 +1239,11 @@ void main() {
     final controller = AgentChatPanelController();
     addTearDown(controller.dispose);
     controller.inputController.text = 'unfinished draft';
-    controller.beginEditingUserMessage(2, 'correct this request', const []);
+    controller.beginEditingUserMessage(
+      'entry-2',
+      'correct this request',
+      const [],
+    );
 
     await _pumpComposer(tester, width: 420, controller: controller);
 
@@ -1214,6 +1264,81 @@ void main() {
       findsNothing,
     );
   });
+
+  testWidgets('Ctrl+V in the input asks for a clipboard image first', (
+    tester,
+  ) async {
+    var pastes = 0;
+    final controller = AgentChatPanelController();
+    addTearDown(controller.dispose);
+    await _pumpComposer(
+      tester,
+      width: 840,
+      mobile: false,
+      controller: controller,
+      onPasteClipboardImage: () async {
+        pastes++;
+        return true;
+      },
+    );
+
+    await tester.tap(_input);
+    await tester.pump();
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pump();
+
+    expect(pastes, 1);
+    expect(controller.inputController.text, isEmpty);
+  });
+
+  testWidgets('keyboard-inserted images reach the attachment command', (
+    tester,
+  ) async {
+    final attached = <DroppedFileData>[];
+    await _pumpComposer(
+      tester,
+      width: 420,
+      onAttachImageFiles: (files) async => attached.addAll(files),
+    );
+    await tester.tap(_input);
+    await tester.pump();
+
+    await _commitKeyboardContent(
+      tester,
+      mimeType: 'image/png',
+      uri: 'content://ime.provider/clipboard/shot.png',
+      data: const [0x89, 0x50, 0x4E, 0x47],
+    );
+
+    expect(attached.single.fileName, 'shot.png');
+    expect(attached.single.bytes, [0x89, 0x50, 0x4E, 0x47]);
+  });
+}
+
+/// The engine routes IME image commits through performAction; -1 is the
+/// client id test bindings accept without a live connection.
+Future<void> _commitKeyboardContent(
+  WidgetTester tester, {
+  required String mimeType,
+  required String uri,
+  required List<int> data,
+}) async {
+  final message = const JSONMessageCodec().encodeMessage(<String, Object?>{
+    'method': 'TextInputClient.performAction',
+    'args': <Object?>[
+      -1,
+      'TextInputAction.commitContent',
+      <String, Object?>{'mimeType': mimeType, 'data': data, 'uri': uri},
+    ],
+  });
+  await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+    'flutter/textinput',
+    message,
+    (_) {},
+  );
+  await tester.pump();
 }
 
 final _input = find.byKey(const ValueKey('agent-chat-input'));
@@ -1258,6 +1383,8 @@ Future<void> _pumpComposer(
   VoidCallback? onStop,
   Future<void> Function()? onAttachCurrentCanvas,
   void Function(AgentChatMoreAction action)? onMoreAction,
+  Future<bool> Function()? onPasteClipboardImage,
+  Future<void> Function(List<DroppedFileData> files)? onAttachImageFiles,
   AgentChatResourceReference? currentCanvasReference,
   PromptAssistantConfigState? config,
   AgentSettingsState? agentSettings,
@@ -1267,41 +1394,55 @@ Future<void> _pumpComposer(
   await tester.binding.setSurfaceSize(Size(width, height));
   addTearDown(() => tester.binding.setSurfaceSize(null));
   await tester.pumpWidget(
-    MaterialApp(
-      theme: theme,
-      locale: const Locale('en'),
-      localizationsDelegates: AppLocalizations.localizationsDelegates,
-      supportedLocales: AppLocalizations.supportedLocales,
-      home: MediaQuery(
-        data: MediaQueryData(
-          size: Size(width, height),
-          textScaler: textScaler,
-          viewInsets: viewInsets,
+    ProviderScope(
+      overrides: [
+        promptAssistantConfigProvider.overrideWithBuild(
+          (_, _) => config ?? PromptAssistantConfigState.defaults(),
         ),
-        child: Scaffold(
-          resizeToAvoidBottomInset: true,
-          body: Align(
-            alignment: Alignment.bottomCenter,
-            child: InteractionPolicyScope(
-              initialPolicy: InteractionPolicy(
-                modality: mobile
-                    ? InteractionModality.touch
-                    : InteractionModality.pointer,
-                touchAvailable: mobile,
-                precisePointerAvailable: !mobile,
-              ),
-              child: _ComposerHarness(
-                state: state,
-                width: width,
-                height: height - viewInsets.bottom,
-                controller: controller,
-                onSend: onSend,
-                onStop: onStop,
-                onAttachCurrentCanvas: onAttachCurrentCanvas,
-                onMoreAction: onMoreAction,
-                currentCanvasReference: currentCanvasReference,
-                config: config,
-                agentSettings: agentSettings,
+        agentSettingsProvider.overrideWithBuild(
+          (_, _) =>
+              agentSettings ?? const AgentSettingsState(initialized: true),
+        ),
+        agentChatNotifierProvider.overrideWithBuild((_, _) => state),
+      ],
+      child: MaterialApp(
+        theme: theme,
+        locale: const Locale('en'),
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: MediaQuery(
+          data: MediaQueryData(
+            size: Size(width, height),
+            textScaler: textScaler,
+            viewInsets: viewInsets,
+          ),
+          child: Scaffold(
+            resizeToAvoidBottomInset: true,
+            body: Align(
+              alignment: Alignment.bottomCenter,
+              child: InteractionPolicyScope(
+                initialPolicy: InteractionPolicy(
+                  modality: mobile
+                      ? InteractionModality.touch
+                      : InteractionModality.pointer,
+                  touchAvailable: mobile,
+                  precisePointerAvailable: !mobile,
+                ),
+                child: _ComposerHarness(
+                  state: state,
+                  width: width,
+                  height: height - viewInsets.bottom,
+                  controller: controller,
+                  onSend: onSend,
+                  onStop: onStop,
+                  onAttachCurrentCanvas: onAttachCurrentCanvas,
+                  onMoreAction: onMoreAction,
+                  onPasteClipboardImage: onPasteClipboardImage,
+                  onAttachImageFiles: onAttachImageFiles,
+                  currentCanvasReference: currentCanvasReference,
+                  config: config,
+                  agentSettings: agentSettings,
+                ),
               ),
             ),
           ),
@@ -1322,6 +1463,8 @@ class _ComposerHarness extends StatefulWidget {
     this.onStop,
     this.onAttachCurrentCanvas,
     this.onMoreAction,
+    this.onPasteClipboardImage,
+    this.onAttachImageFiles,
     this.currentCanvasReference,
     this.config,
     this.agentSettings,
@@ -1335,6 +1478,8 @@ class _ComposerHarness extends StatefulWidget {
   final VoidCallback? onStop;
   final Future<void> Function()? onAttachCurrentCanvas;
   final void Function(AgentChatMoreAction action)? onMoreAction;
+  final Future<bool> Function()? onPasteClipboardImage;
+  final Future<void> Function(List<DroppedFileData> files)? onAttachImageFiles;
   final AgentChatResourceReference? currentCanvasReference;
   final PromptAssistantConfigState? config;
   final AgentSettingsState? agentSettings;
@@ -1382,6 +1527,8 @@ class _ComposerHarnessState extends State<_ComposerHarness> {
       selectPermissionMode: (_) async {},
       setWebAccessEnabled: (_) async {},
       pickImages: () async {},
+      pasteClipboardImage: widget.onPasteClipboardImage ?? () async => false,
+      attachImageFiles: widget.onAttachImageFiles ?? (_) async {},
       attachCurrentCanvas: widget.onAttachCurrentCanvas ?? () async {},
       openReferenceGallery: () async {},
       openResourceLibrary: () async {},
@@ -1403,22 +1550,23 @@ class _ComposerHarnessState extends State<_ComposerHarness> {
       addPendingResource: (_) async {},
       removePendingResource: (_) async {},
     );
+    final viewData = AgentChatPanelViewData(
+      state: widget.state,
+      config: widget.config ?? PromptAssistantConfigState.defaults(),
+      agentSettings:
+          widget.agentSettings ?? const AgentSettingsState(initialized: true),
+      webAccess: const WebAccessConfigState(initialized: true),
+      fullScreen: true,
+      compactHeight: widget.height < 520,
+      width: widget.width,
+      height: widget.height,
+      onClose: null,
+      onOpenSettings: null,
+      headerWrapper: null,
+      currentCanvasReference: widget.currentCanvasReference,
+    );
     return AgentChatComposer(
-      viewData: AgentChatPanelViewData(
-        state: widget.state,
-        config: widget.config ?? PromptAssistantConfigState.defaults(),
-        agentSettings:
-            widget.agentSettings ?? const AgentSettingsState(initialized: true),
-        webAccess: const WebAccessConfigState(initialized: true),
-        fullScreen: true,
-        compactHeight: widget.height < 520,
-        width: widget.width,
-        height: widget.height,
-        onClose: null,
-        onOpenSettings: null,
-        mobileHeaderWrapper: null,
-        currentCanvasReference: widget.currentCanvasReference,
-      ),
+      viewData: viewData,
       commands: commands,
       controller: controller,
     );

@@ -80,6 +80,7 @@ class _VibeRenameForm extends StatefulWidget {
       context: context,
       title: context.l10n.shortcut_action_vibe_detail_rename,
       dialogWidth: 440,
+      headerScrollsWithContent: true,
       builder: (panelContext, scrollController) => _VibeRenameForm(
         initialValue: initialValue,
         scrollController: scrollController,
@@ -660,9 +661,8 @@ class _VibeDetailViewerState extends ConsumerState<VibeDetailViewer> {
 
     return ColoredBox(
       color: ImageViewportSurface.background,
-      child: ShortcutAwareWidget(
+      child: PageShortcuts(
         contextType: ShortcutContext.vibeDetail,
-        autofocus: true,
         shortcuts: {
           ShortcutIds.vibeDetailSendToGeneration: _sendToGeneration,
           ShortcutIds.vibeDetailExport: _export,

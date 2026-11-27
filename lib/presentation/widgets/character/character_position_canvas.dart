@@ -1,5 +1,4 @@
 import 'package:nai_launcher/presentation/widgets/common/horizontal_action_strip.dart';
-import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -7,15 +6,19 @@ import 'package:flutter/services.dart';
 import 'package:nai_launcher/l10n/app_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/cache/local_file_image.dart';
 import '../../../data/models/character/character_prompt.dart';
 import '../../adaptive/interaction_policy.dart';
 import '../../providers/character_position_canvas_provider.dart';
 import '../../providers/character_prompt_provider.dart';
 import '../../providers/composition_guide_provider.dart';
 import '../../providers/generation/generation_params_selectors.dart';
+import '../../providers/generation/image_generation_selectors.dart';
 import '../../providers/image_generation_provider.dart';
 import '../common/composition_guide.dart';
 import '../common/decoded_memory_image.dart';
+import '../common/drag_claim_notification.dart';
+import '../common/surface_ink_well.dart';
 import 'composition_guide_button.dart';
 
 /// 芯片显示信息：性别符号 + 显示名
@@ -158,14 +161,16 @@ class _CharacterPositionCanvasViewState
     CharacterPromptConfig config,
   ) {
     final colorScheme = theme.colorScheme;
-    final generationState = ref.watch(imageGenerationNotifierProvider);
+    final displayImages = ref.watch(
+      imageGenerationNotifierProvider.select(selectDisplayImages),
+    );
     final previewDimensions = ref.watch(
       generationParamsNotifierProvider.select(selectPreviewDimensionsViewData),
     );
     final guide = ref.watch(compositionGuideNotifierProvider);
 
-    final backgroundImage = generationState.displayImages.isNotEmpty
-        ? generationState.displayImages.first
+    final backgroundImage = displayImages.isNotEmpty
+        ? displayImages.first
         : null;
     // 锚点坐标用于下一次请求；历史预览只作背景，不能决定画布尺寸。
     final aspectRatio = previewDimensions.width / previewDimensions.height;
@@ -213,12 +218,12 @@ class _CharacterPositionCanvasViewState
                     ),
                   )
                 else
-                  for (var i = 0; i < config.characters.length; i++)
+                  for (final character in config.characters)
                     _buildAnchor(
                       context,
                       config,
-                      config.characters[i],
-                      i,
+                      character,
+                      _enabledOrdinal(config.characters, character),
                       size,
                     ),
                 // 参考线压在锚点之上，才看得清锚点落在哪条线的哪一侧
@@ -279,11 +284,12 @@ class _CharacterPositionCanvasViewState
     );
   }
 
+  /// 锚点。[displayNumber] 为 1 起的启用序号，未启用时为 null（不显示编号）。
   Widget _buildAnchor(
     BuildContext context,
     CharacterPromptConfig config,
     CharacterPrompt character,
-    int index,
+    int? displayNumber,
     Size canvasSize,
   ) {
     final selectedId = ref.watch(selectedCharacterIdProvider);
@@ -335,6 +341,7 @@ class _CharacterPositionCanvasViewState
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
             onPanStart: (_) {
+              const DragClaimNotification().dispatch(context);
               ref
                   .read(selectedCharacterIdProvider.notifier)
                   .select(character.id);
@@ -359,7 +366,7 @@ class _CharacterPositionCanvasViewState
             onPanCancel: () => _commitDrag(character),
             child: _AnchorDot(
               character: character,
-              index: index,
+              displayNumber: displayNumber,
               diameter: diameter,
               emphasized: isSelected || isDragging,
             ),
@@ -413,6 +420,23 @@ class _MoveAnchorIntent extends Intent {
 
   final double dx;
   final double dy;
+}
+
+/// 角色在「启用角色」序列中的 1 起序号；未启用返回 null。
+///
+/// 位置由 CharacterPromptConfig.resolvePosition 按启用角色的子序列计算
+/// （character_prompt.dart 的 enabledCharacters.indexWhere），编号必须用同一
+/// 口径：按原始下标编号的话，中间禁用一个角色后锚点位置正确、编号却与成图
+/// 对不上。禁用的角色仍然画出来并变暗，只是不显示编号。
+int? _enabledOrdinal(List<CharacterPrompt> characters, CharacterPrompt target) {
+  if (!target.enabled) return null;
+  var ordinal = 0;
+  for (final character in characters) {
+    if (!character.enabled) continue;
+    ordinal++;
+    if (character.id == target.id) return ordinal;
+  }
+  return null;
 }
 
 /// 位置模式分段（AI 选择 / 自定义 / 画布入口）
@@ -561,7 +585,8 @@ class _ChipBar extends ConsumerWidget {
             for (var i = 0; i < characters.length; i++) ...[
               _CharacterChip(
                 character: characters[i],
-                index: i,
+                // 与锚点同一套编号口径，见 _enabledOrdinal 的注释
+                displayNumber: _enabledOrdinal(characters, characters[i]),
                 selected: characters[i].id == selectedId,
                 onTap: () => ref
                     .read(selectedCharacterIdProvider.notifier)
@@ -579,13 +604,15 @@ class _ChipBar extends ConsumerWidget {
 /// 单个角色切换芯片：序号 + 性别符号（依提示词首 tag）+ 显示名
 class _CharacterChip extends StatelessWidget {
   final CharacterPrompt character;
-  final int index;
+
+  /// 1 起的启用序号；未启用为 null（不显示编号）
+  final int? displayNumber;
   final bool selected;
   final VoidCallback onTap;
 
   const _CharacterChip({
     required this.character,
-    required this.index,
+    required this.displayNumber,
     required this.selected,
     required this.onTap,
   });
@@ -599,30 +626,26 @@ class _CharacterChip extends StatelessWidget {
         ? colorScheme.primary
         : colorScheme.onSurfaceVariant;
 
-    return InkWell(
-      onTap: onTap,
+    return SurfaceInkWell(
       borderRadius: BorderRadius.circular(6),
-      child: AnimatedContainer(
-        duration: MediaQuery.disableAnimationsOf(context)
-            ? Duration.zero
-            : const Duration(milliseconds: 150),
+      color: selected
+          ? colorScheme.primary.withValues(alpha: 0.14)
+          : colorScheme.surfaceContainerLow,
+      duration: const Duration(milliseconds: 150),
+      onTap: onTap,
+      child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-        decoration: BoxDecoration(
-          color: selected
-              ? colorScheme.primary.withValues(alpha: 0.14)
-              : colorScheme.surfaceContainerLow,
-          borderRadius: BorderRadius.circular(6),
-        ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(
-              '${index + 1}',
-              style: theme.textTheme.labelMedium?.copyWith(
-                color: foreground,
-                fontWeight: FontWeight.w600,
+            if (displayNumber != null)
+              Text(
+                '$displayNumber',
+                style: theme.textTheme.labelMedium?.copyWith(
+                  color: foreground,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
-            ),
             if (display.genderIcon != null) ...[
               const SizedBox(width: 3),
               Icon(display.genderIcon, size: 14, color: foreground),
@@ -651,13 +674,15 @@ class _CharacterChip extends StatelessWidget {
 /// 锚点圆点：性别色填充（词库角色显示圆形缩略图）+ 序号 + 白描边
 class _AnchorDot extends StatelessWidget {
   final CharacterPrompt character;
-  final int index;
+
+  /// 1 起的启用序号；未启用为 null（不显示编号，见 _enabledOrdinal）
+  final int? displayNumber;
   final double diameter;
   final bool emphasized;
 
   const _AnchorDot({
     required this.character,
-    required this.index,
+    required this.displayNumber,
     required this.diameter,
     required this.emphasized,
   });
@@ -701,27 +726,30 @@ class _AnchorDot extends StatelessWidget {
         fit: StackFit.expand,
         children: [
           if (hasThumbnail)
-            Image.file(
-              File(character.thumbnailPath!),
-              fit: BoxFit.cover,
-              cacheWidth: DecodedMemoryImage.resolveCacheDimension(
-                logicalSize: math.max(diameter, 40),
-                constrainedSize: null,
-                pixelRatio: MediaQuery.devicePixelRatioOf(context),
+            Image(
+              image: LocalFileImage.withCacheSize(
+                character.thumbnailPath!,
+                cacheWidth: DecodedMemoryImage.resolveCacheDimension(
+                  logicalSize: math.max(diameter, 40),
+                  constrainedSize: null,
+                  pixelRatio: MediaQuery.devicePixelRatioOf(context),
+                ),
               ),
+              fit: BoxFit.cover,
               errorBuilder: (context, error, stack) => const SizedBox.shrink(),
             ),
-          Center(
-            child: Text(
-              '${index + 1}',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: diameter * 0.4,
-                fontWeight: FontWeight.w600,
-                shadows: const [Shadow(color: Colors.black87, blurRadius: 4)],
+          if (displayNumber != null)
+            Center(
+              child: Text(
+                '$displayNumber',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: diameter * 0.4,
+                  fontWeight: FontWeight.w600,
+                  shadows: const [Shadow(color: Colors.black87, blurRadius: 4)],
+                ),
               ),
             ),
-          ),
         ],
       ),
     );

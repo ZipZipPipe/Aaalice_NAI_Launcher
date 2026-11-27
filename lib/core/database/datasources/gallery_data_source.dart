@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import '../../../data/models/gallery/gallery_dashboard_snapshot.dart';
 import '../../../data/models/gallery/local_image_record.dart'
     show MetadataStatus;
@@ -8,6 +10,7 @@ import '../data_source.dart' show DataSourceHealth, DataSourceType;
 import 'gallery_album_repository.dart';
 import 'gallery_database_gateway.dart';
 import 'gallery_favorite_tag_repository.dart';
+import 'gallery_fts_index.dart';
 import 'gallery_image_repository.dart';
 import 'gallery_metadata_repository.dart';
 import 'gallery_query.dart';
@@ -35,7 +38,12 @@ class GalleryDataSource extends EnhancedBaseDataSource {
 
   GalleryDataSource._internal() {
     _gateway = EnhancedGalleryDatabaseGateway(this);
-    _schema = GallerySchema(gateway: _gateway, context: _context);
+    _ftsIndex = GalleryFtsIndex(gateway: _gateway, context: _context);
+    _schema = GallerySchema(
+      gateway: _gateway,
+      context: _context,
+      ftsIndex: _ftsIndex,
+    );
     _images = SqliteGalleryImageRepository(
       gateway: _gateway,
       context: _context,
@@ -44,6 +52,7 @@ class GalleryDataSource extends EnhancedBaseDataSource {
       gateway: _gateway,
       context: _context,
       images: _images,
+      ftsIndex: _ftsIndex,
     );
     _favoriteTags = SqliteGalleryFavoriteTagRepository(
       gateway: _gateway,
@@ -53,11 +62,16 @@ class GalleryDataSource extends EnhancedBaseDataSource {
       gateway: _gateway,
       context: _context,
     );
-    _query = SqliteGalleryQuery(gateway: _gateway, context: _context);
+    _query = SqliteGalleryQuery(
+      gateway: _gateway,
+      context: _context,
+      ftsIndex: _ftsIndex,
+    );
   }
 
   final GalleryStoreContext _context = GalleryStoreContext();
   late final GalleryDatabaseGateway _gateway;
+  late final GalleryFtsIndex _ftsIndex;
   late final GallerySchema _schema;
   late final GalleryImageRepository _images;
   late final GalleryMetadataRepository _metadata;
@@ -155,6 +169,9 @@ class GalleryDataSource extends EnhancedBaseDataSource {
       _images.countImages(includeDeleted: includeDeleted);
   Future<Map<String, int>> countImagesByMetadataStatus() =>
       _images.countImagesByMetadataStatus();
+  Future<({int total, int unparsed})> countImagesForPaths(
+    bool Function(String path) accepts,
+  ) => _images.countImagesForPaths(accepts);
 
   Future<void> upsertMetadata(int imageId, NaiImageMetadata metadata) =>
       _metadata.upsertMetadata(imageId, metadata);
@@ -167,6 +184,59 @@ class GalleryDataSource extends EnhancedBaseDataSource {
   Future<Map<int, GalleryMetadataRecord?>> getMetadataByImageIds(
     List<int> imageIds,
   ) => _metadata.getMetadataByImageIds(imageIds);
+
+  /// Writes the image row together with its parse result. The row is only
+  /// marked [MetadataStatus.success] after the metadata is stored, so an
+  /// interrupted write stays [MetadataStatus.transientFailure] and the next
+  /// ordinary scan parses the file again.
+  Future<int> upsertImageWithMetadata({
+    required String filePath,
+    required String fileName,
+    required int fileSize,
+    required DateTime createdAt,
+    required DateTime modifiedAt,
+    required NaiImageMetadata? metadata,
+    required MetadataStatus statusWithoutMetadata,
+    DateTime? lastScannedAt,
+  }) async {
+    if (statusWithoutMetadata == MetadataStatus.success) {
+      throw ArgumentError.value(
+        statusWithoutMetadata,
+        'statusWithoutMetadata',
+        'success requires stored metadata',
+      );
+    }
+
+    final storedMetadata = metadata?.hasData == true ? metadata : null;
+    final width = metadata?.width;
+    final height = metadata?.height;
+    final imageId = await _images.upsertImage(
+      filePath: filePath,
+      fileName: fileName,
+      fileSize: fileSize,
+      width: width,
+      height: height,
+      aspectRatio: width != null && height != null && height > 0
+          ? width / height
+          : null,
+      createdAt: createdAt,
+      modifiedAt: modifiedAt,
+      resolutionKey: width != null && height != null
+          ? '${width}x$height'
+          : null,
+      metadataStatus: storedMetadata == null
+          ? statusWithoutMetadata
+          : MetadataStatus.transientFailure,
+      lastScannedAt: lastScannedAt,
+    );
+    if (storedMetadata == null) return imageId;
+
+    // Separate statements instead of a transaction: every pooled connection
+    // shares one sqflite isolate, so a cross-message write lock stalls them.
+    await _metadata.upsertMetadata(imageId, storedMetadata);
+    await _images.updateMetadataStatus(imageId, MetadataStatus.success);
+    return imageId;
+  }
 
   Future<bool> toggleFavorite(int imageId) =>
       _favoriteTags.toggleFavorite(imageId);
@@ -255,11 +325,14 @@ class GalleryDataSource extends EnhancedBaseDataSource {
   Future<GalleryDashboardSnapshot> getDashboardStatistics() =>
       _query.getDashboardStatistics();
 
-  Future<void> deleteAllImages() => _images.deleteAllImages();
-  Future<void> deleteAllMetadata() => _metadata.deleteAllMetadata();
+  /// 全文索引的后台回填结束后完成；没有待回填时立即完成。
+  Future<void> whenFtsIndexSettled() => _ftsIndex.whenRebuildSettled();
 
   @override
-  Future<void> doInitialize() => _schema.initialize();
+  Future<void> doInitialize() async {
+    await _schema.initialize();
+    unawaited(_ftsIndex.resumePendingRebuild());
+  }
 
   @override
   Future<DataSourceHealth> doCheckHealth() => _schema.checkHealth();
@@ -272,6 +345,7 @@ class GalleryDataSource extends EnhancedBaseDataSource {
 
   @override
   Future<void> doDispose() async {
+    await _ftsIndex.stopRebuild();
     clearCache();
     AppLogger.i('Gallery data source disposed', 'GalleryDS');
   }

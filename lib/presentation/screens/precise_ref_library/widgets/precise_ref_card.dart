@@ -129,6 +129,7 @@ class _PreciseRefCardState extends ConsumerState<PreciseRefCard> {
       character: l10n.preciseRef_typeCharacter,
       style: l10n.preciseRef_typeStyle,
       characterAndStyle: l10n.preciseRef_typeCharacterAndStyle,
+      outfit: l10n.preciseRef_typeOutfit,
     );
   }
 
@@ -142,9 +143,6 @@ class _PreciseRefCardState extends ConsumerState<PreciseRefCard> {
     );
     if (previewSize.isEmpty) return;
 
-    _hoverImageFuture ??= ref
-        .read(preciseRefLibraryStorageServiceProvider)
-        .readImageBytes(widget.entry.id);
     final targetRect =
         renderObject.localToGlobal(Offset.zero) & renderObject.size;
     _hoverController.schedule(
@@ -153,6 +151,9 @@ class _PreciseRefCardState extends ConsumerState<PreciseRefCard> {
       layerLink: _layerLink,
       targetRect: targetRect,
       previewSize: previewSize,
+      // 滚动时卡片不断从静止的指针下经过，读原图必须等预览真正弹出
+      onIntent: _loadHoverImage,
+      onDismissIntent: _releaseHoverImage,
       builder: (_) => PreciseRefHoverPreview(
         entry: widget.entry,
         imageFuture: _hoverImageFuture!,
@@ -162,6 +163,15 @@ class _PreciseRefCardState extends ConsumerState<PreciseRefCard> {
       ),
     );
   }
+
+  void _loadHoverImage() {
+    _hoverImageFuture ??= ref
+        .read(preciseRefLibraryStorageServiceProvider)
+        .readImageBytes(widget.entry.id);
+  }
+
+  // 原图只服务于预览，关闭后不再随卡片常驻
+  void _releaseHoverImage() => _hoverImageFuture = null;
 
   void _onHoverExit(PointerEvent event) {
     setState(() => _hovering = false);

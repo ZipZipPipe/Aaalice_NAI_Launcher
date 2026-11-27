@@ -60,4 +60,74 @@ void main() {
     );
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('色面与色相条以滑块朗读，色值框只有一个具名输入节点', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ListView(
+            children: [
+              HSVColorPicker(
+                color: Colors.blue,
+                hexLabel: '颜色值',
+                saturationBrightnessLabel: '饱和度与亮度',
+                hueLabel: '色相',
+                onColorChanged: (_) {},
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    for (final label in const ['饱和度与亮度', '色相']) {
+      expect(
+        find.semantics.byPredicate(
+          (node) => node.flagsCollection.isSlider && node.label == label,
+        ),
+        findsOne,
+        reason: label,
+      );
+    }
+    final fields = find.semantics.byPredicate(
+      (node) => node.flagsCollection.isTextField,
+    );
+    expect(fields, findsOne);
+    final hex = fields.evaluate().single;
+    expect(hex.label, '颜色值');
+    expect(hex.value, isNotEmpty);
+  });
+
+  testWidgets('点按 SV 面板与色相条即取色，不需要拖动', (tester) async {
+    final changes = <Color>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ListView(
+            children: [
+              HSVColorPicker(
+                color: Colors.blue,
+                hexLabel: '颜色值',
+                saturationBrightnessLabel: '饱和度与亮度',
+                hueLabel: '色相',
+                onColorChanged: changes.add,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    final svPanel = find.byKey(const ValueKey('hsv-color-picker-sv-panel'));
+    await tester.tapAt(tester.getTopLeft(svPanel) + const Offset(8, 8));
+    await tester.pump();
+    expect(changes, hasLength(1));
+
+    final hueSlider = find.byKey(const ValueKey('hsv-color-picker-hue-slider'));
+    await tester.tapAt(
+      tester.getRect(hueSlider).centerLeft + const Offset(8, 0),
+    );
+    await tester.pump();
+    expect(changes, hasLength(2));
+  });
 }

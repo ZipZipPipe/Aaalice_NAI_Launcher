@@ -18,20 +18,21 @@ class VibeFolderSync {
   final VibeFileRepositoryProtocol _repository;
 
   Future<VibeFolderSyncResult> syncFolderToHive({
-    required List<VibeLibraryEntry> existingEntries,
+    required Map<String, String> existingFilePathsById,
+    required Future<VibeLibraryEntry?> Function(String id) loadExistingEntry,
     required Future<void> Function(VibeLibraryEntry entry) onUpsertEntry,
-    Future<void> Function(VibeLibraryEntry entry)? onDeleteEntry,
+    Future<void> Function(VibeLibraryEntry entry)? onUnchangedEntry,
+    Future<void> Function(String id)? onDeleteEntry,
   }) async {
     final errors = <String>[];
     var scannedCount = 0;
     var upsertedCount = 0;
+    var unchangedCount = 0;
     var deletedCount = 0;
-    var failedCount = 0;
 
-    final existingPathMap = <String, VibeLibraryEntry>{
-      for (final entry in existingEntries)
-        if (entry.filePath != null && entry.filePath!.isNotEmpty)
-          _normalizePath(entry.filePath!): entry,
+    final existingIdsByPath = <String, String>{
+      for (final entry in existingFilePathsById.entries)
+        _normalizePath(entry.value): entry.key,
     };
 
     final currentPathSet = <String>{};
@@ -54,22 +55,30 @@ class VibeFolderSync {
           final normalizedPath = _normalizePath(filePath);
 
           try {
-            final existingEntry = existingPathMap[normalizedPath];
-            final discovered = await _buildEntryFromFile(
-              filePath,
-              existingEntry,
-            );
+            final listedId = existingIdsByPath[normalizedPath];
+            final existingEntry = listedId == null
+                ? null
+                : await loadExistingEntry(listedId);
+            final discovered = listedId == null || existingEntry != null
+                ? await _buildEntryFromFile(filePath, existingEntry)
+                : null;
 
             return (
               path: normalizedPath,
               entry: discovered,
-              error: discovered == null ? '解析失败: $filePath' : null,
+              // 刷新原本会把每个条目整条重写回主表，并清掉它的缩略图缓存
+              unchanged:
+                  discovered != null &&
+                  existingEntry != null &&
+                  discovered.hasSameStoredContent(existingEntry),
+              error: discovered == null ? '读取或解析失败: $filePath' : null,
             );
           } catch (e, stackTrace) {
             AppLogger.e('同步文件到 Hive 条目失败: $filePath', e, stackTrace, _tag);
             return (
               path: normalizedPath,
               entry: null,
+              unchanged: false,
               error: '同步失败: $filePath, error: $e',
             );
           }
@@ -82,8 +91,10 @@ class VibeFolderSync {
         currentPathSet.add(result.path);
 
         if (result.error != null) {
-          failedCount++;
           errors.add(result.error!);
+        } else if (result.unchanged) {
+          await onUnchangedEntry?.call(result.entry!);
+          unchangedCount++;
         } else if (result.entry != null) {
           await onUpsertEntry(result.entry!);
           upsertedCount++;
@@ -93,18 +104,15 @@ class VibeFolderSync {
 
     // 删除已不存在的条目
     if (onDeleteEntry != null) {
-      for (final entry in existingEntries) {
-        final filePath = entry.filePath;
-        if (filePath == null || filePath.isEmpty) continue;
-
+      for (final entry in existingFilePathsById.entries) {
+        final filePath = entry.value;
         final normalizedPath = _normalizePath(filePath);
         if (currentPathSet.contains(normalizedPath)) continue;
 
         try {
-          await onDeleteEntry(entry);
+          await onDeleteEntry(entry.key);
           deletedCount++;
         } catch (e, stackTrace) {
-          failedCount++;
           errors.add('删除失效条目失败: $filePath, error: $e');
           AppLogger.e('删除失效条目失败: $filePath', e, stackTrace, _tag);
         }
@@ -114,8 +122,8 @@ class VibeFolderSync {
     return VibeFolderSyncResult(
       scannedCount: scannedCount,
       upsertedCount: upsertedCount,
+      unchangedCount: unchangedCount,
       deletedCount: deletedCount,
-      failedCount: failedCount,
       errors: errors,
     );
   }
@@ -140,9 +148,10 @@ class VibeFolderSync {
       if (vibe == null) return null;
 
       return _mergeWithExistingEntry(
-        generatedEntry: _buildSingleEntry(filePath, fallbackName, vibe),
+        fileVibe: vibe,
         existingEntry: existingEntry,
         filePath: filePath,
+        fileName: fallbackName,
       );
     } catch (e, stackTrace) {
       AppLogger.e('构建条目失败: $filePath', e, stackTrace, _tag);
@@ -157,13 +166,16 @@ class VibeFolderSync {
   ) async {
     final file = File(filePath);
     final bytes = await file.readAsBytes();
-    final vibes = await VibeFileParser.fromBundle(p.basename(filePath), bytes);
+    final read = await VibeFileParser.readBundle(p.basename(filePath), bytes);
+    if (existingEntry != null &&
+        read.dropsKnownEntries(existingEntry.bundledVibeCount)) {
+      return null;
+    }
+    final vibes = read.vibes;
     if (vibes.isEmpty) return null;
 
     final previews = await _repository.extractPreviewsFromBundle(filePath);
     final names = vibes.map((item) => item.displayName).toList(growable: false);
-    final generatedEntry = _buildBundleEntry(filePath, fallbackName, vibes);
-
     final encodings = vibes.map((v) => v.vibeEncoding).toList(growable: false);
     final strengths = vibes.map((v) => v.strength).toList(growable: false);
     final infoExtracted = vibes
@@ -174,9 +186,10 @@ class VibeFolderSync {
         .toList(growable: false);
 
     return _mergeWithExistingEntry(
-      generatedEntry: generatedEntry,
+      fileVibe: vibes.first,
       existingEntry: existingEntry,
       filePath: filePath,
+      fileName: fallbackName,
     ).copyWith(
       bundleId: p.basenameWithoutExtension(filePath),
       bundledVibeNames: names,
@@ -188,44 +201,19 @@ class VibeFolderSync {
     );
   }
 
-  VibeLibraryEntry _buildBundleEntry(
-    String filePath,
-    String fileName,
-    List<VibeReference> references,
-  ) {
-    final firstVibe = references.first;
-
-    return VibeLibraryEntry.fromVibeReference(
-      name: fileName,
-      vibeData: firstVibe,
-      thumbnail: firstVibe.thumbnail,
-      filePath: filePath,
-      isFavorite: false,
-    );
-  }
-
-  VibeLibraryEntry _buildSingleEntry(
-    String filePath,
-    String fileName,
-    VibeReference reference,
-  ) {
-    return VibeLibraryEntry.fromVibeReference(
-      name: fileName,
-      vibeData: reference,
-      thumbnail: reference.thumbnail,
-      filePath: filePath,
-      isFavorite: false,
-    );
-  }
-
   VibeLibraryEntry _mergeWithExistingEntry({
-    required VibeLibraryEntry generatedEntry,
+    required VibeReference fileVibe,
     required VibeLibraryEntry? existingEntry,
     required String filePath,
+    required String fileName,
   }) {
-    if (existingEntry == null) {
-      return generatedEntry.copyWith(filePath: filePath);
-    }
+    final generatedEntry = VibeLibraryEntry.fromVibeReference(
+      name: fileName,
+      vibeData: existingEntry?.mergeFileVibeData(fileVibe) ?? fileVibe,
+      thumbnail: fileVibe.thumbnail,
+      filePath: filePath,
+    );
+    if (existingEntry == null) return generatedEntry;
 
     // 保留用户设置的元数据，但 name 保持与文件名一致（用户可以通过重命名文件来重命名条目）
     return generatedEntry.copyWith(
@@ -237,7 +225,6 @@ class VibeFolderSync {
       lastUsedAt: existingEntry.lastUsedAt,
       createdAt: existingEntry.createdAt,
       thumbnail: existingEntry.thumbnail,
-      filePath: filePath,
     );
   }
 

@@ -6,6 +6,7 @@ import '../utils/app_logger.dart';
 import 'connection_lease.dart';
 import 'connection_pool_holder.dart';
 import 'data_source.dart' as ds;
+import 'database_error_summary.dart';
 
 class DataSourceOperationException implements Exception {
   final String message;
@@ -32,7 +33,6 @@ class DatabaseOperation<T> {
 abstract class EnhancedBaseDataSource extends ds.BaseDataSource {
   // 默认超时配置
   static const Duration _defaultOperationTimeout = Duration(seconds: 30);
-  static const Duration _defaultTransactionTimeout = Duration(seconds: 60);
   static const Duration _defaultAcquireTimeout = Duration(seconds: 5);
   static const int _defaultMaxRetries = 3;
   static const int _defaultBatchSize = 50;
@@ -84,7 +84,7 @@ abstract class EnhancedBaseDataSource extends ds.BaseDataSource {
           await Future.delayed(Duration(milliseconds: delayMs));
         } else {
           throw DataSourceOperationException(
-            message: 'Operation failed: $e',
+            message: 'Operation failed: ${databaseErrorSummary(e)}',
             operationName: operationId,
             originalError: e,
           );
@@ -134,18 +134,6 @@ abstract class EnhancedBaseDataSource extends ds.BaseDataSource {
       await Future.delayed(const Duration(milliseconds: 10));
       batchIndex++;
     }
-  }
-
-  Future<T> executeTransaction<T>(
-    String operationName,
-    Future<T> Function(Transaction txn) operation, {
-    Duration? timeout,
-  }) async {
-    return execute(
-      '$operationName.txn',
-      (db) async => db.transaction((txn) async => operation(txn)),
-      timeout: timeout ?? _defaultTransactionTimeout,
-    );
   }
 
   Stream<Map<String, dynamic>> executeQueryStream(
@@ -228,7 +216,11 @@ abstract class EnhancedBaseDataSource extends ds.BaseDataSource {
   }
 
   void _logRetry(String operationId, int attempt, int maxRetries, String reason, dynamic error) {
-    AppLogger.w('[$operationId] $reason, retrying ($attempt/$maxRetries): $error', name);
+    AppLogger.w(
+      '[$operationId] $reason, retrying ($attempt/$maxRetries): '
+      '${databaseErrorSummary(error)}',
+      name,
+    );
   }
 
   void _logOperationDuration(String operationId, int durationMs) {

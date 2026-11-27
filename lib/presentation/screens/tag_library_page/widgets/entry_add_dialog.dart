@@ -9,6 +9,8 @@ import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../../../core/autocomplete/autocomplete_settings.dart'
+    show replaceUnderscoresPreferenceProvider;
 import '../../../../core/constants/api_constants.dart';
 import '../../../../core/utils/thumbnail_image_normalizer.dart';
 import '../../../../data/models/tag_library/tag_library_category.dart';
@@ -152,7 +154,7 @@ class _EntryAddDialogState extends ConsumerState<EntryAddDialog> {
 
   bool get _isEditing => widget.entry != null;
 
-  void _syncSyntaxHighlightSettings() {
+  void _syncSyntaxSettings() {
     _contentController.highlightEnabled = ref.watch(
       highlightEmphasisSettingsProvider,
     );
@@ -160,6 +162,9 @@ class _EntryAddDialogState extends ConsumerState<EntryAddDialog> {
       ref.watch(
         generationParamsNotifierProvider.select((params) => params.model),
       ),
+    );
+    _contentController.separateNumericWeightClosing = ref.watch(
+      separateNumericWeightClosingSettingsProvider,
     );
   }
 
@@ -207,7 +212,9 @@ class _EntryAddDialogState extends ConsumerState<EntryAddDialog> {
   /// 统一转换为 PNG，避免 TIFF、TGA 等格式无法由 Flutter 直接预览。
   Future<void> _saveImageBytesToTemp(Uint8List bytes) async {
     final importRevision = ++_thumbnailImportRevision;
-    final normalizedBytes = await compute(normalizeThumbnailImageToPng, bytes);
+    final normalizedBytes = await normalizeThumbnailImageToPngInBackground(
+      bytes,
+    );
     final tempDir = await getTemporaryDirectory();
     final fileName = 'temp_${const Uuid().v4()}.png';
     final file = File(path.join(tempDir.path, fileName));
@@ -275,7 +282,7 @@ class _EntryAddDialogState extends ConsumerState<EntryAddDialog> {
 
   @override
   Widget build(BuildContext context) {
-    _syncSyntaxHighlightSettings();
+    _syncSyntaxSettings();
     return _buildContent(Theme.of(context));
   }
 
@@ -341,19 +348,7 @@ class _EntryAddDialogState extends ConsumerState<EntryAddDialog> {
                       sessionId: _modeId,
                       fitContent: true,
                       showModeSwitch: false,
-                      assistant: Positioned.fill(
-                        child: PromptAssistantOverlay(
-                          placement: PromptAssistantPlacement.viewport,
-                          sessionId: _assistantSessionId,
-                          controller: _contentController,
-                          iconOnly: true,
-                          tagModeSessionId: _modeId,
-                          supportsTagMode: true,
-                          stripFixedTagsFromInput: false,
-                          onOpenSettings: () =>
-                              PromptAssistantQuickSettings.show(context),
-                        ),
-                      ),
+                      bottomPadding: 12,
                       controller: _contentController,
                       sourceFocusNode: _contentFocusNode,
                       child: PromptFormatterWrapper(
@@ -361,6 +356,12 @@ class _EntryAddDialogState extends ConsumerState<EntryAddDialog> {
                         focusNode: _contentFocusNode,
                         enableAutoFormat: ref.watch(
                           autoFormatPromptSettingsProvider,
+                        ),
+                        separateNumericWeightClosing: ref.watch(
+                          separateNumericWeightClosingSettingsProvider,
+                        ),
+                        replaceUnderscores: ref.watch(
+                          replaceUnderscoresPreferenceProvider,
                         ),
                         child: AutocompleteWrapper.withAlias(
                           controller: _contentController.displayController,
@@ -380,12 +381,7 @@ class _EntryAddDialogState extends ConsumerState<EntryAddDialog> {
                             focusNode: _contentFocusNode,
                             decoration: InputDecoration(
                               hintText: context.l10n.tagLibrary_contentHint,
-                              contentPadding: const EdgeInsets.fromLTRB(
-                                12,
-                                12,
-                                12,
-                                60,
-                              ),
+                              contentPadding: const EdgeInsets.all(12),
                             ),
                             maxLines: null,
                             minLines: 4,
@@ -449,6 +445,16 @@ class _EntryAddDialogState extends ConsumerState<EntryAddDialog> {
     ),
     child: PromptEditorControlRow(
       sessionId: _modeId,
+      assistant: PromptAssistantOverlay(
+        placement: PromptAssistantPlacement.inline,
+        sessionId: _assistantSessionId,
+        controller: _contentController,
+        iconOnly: true,
+        tagModeSessionId: _modeId,
+        supportsTagMode: true,
+        stripFixedTagsFromInput: false,
+        onOpenSettings: () => PromptAssistantQuickSettings.show(context),
+      ),
       leading: Text(
         context.l10n.tagLibrary_characterNegativeSyntaxHelp,
         maxLines: 1,

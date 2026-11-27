@@ -12,7 +12,7 @@ import '../gallery_album_provider.dart';
 import '../generation/generation_settings_notifiers.dart';
 import '../history_click_behavior_provider.dart';
 import '../image_save_settings_provider.dart';
-import '../locale_provider.dart';
+import '../../../core/utils/locale_provider.dart';
 import '../notification_settings_provider.dart';
 import '../online_gallery_blacklist_provider.dart';
 import '../online_gallery_local_favorites_provider.dart';
@@ -37,7 +37,7 @@ import '../watermark_settings_provider.dart';
 
 Future<void> refreshCloudSyncRuntime(Ref ref, Set<String> adapterIds) async {
   if (adapterIds.contains('portable-settings')) {
-    if (ref.exists(dlssProvider)) {
+    if (ref.read(dlssProvider.exists)) {
       ref.read(dlssProvider).refreshPreferences();
     }
     ref.read(fixedTagsNotifierProvider.notifier).refresh();
@@ -60,7 +60,9 @@ Future<void> refreshCloudSyncRuntime(Ref ref, Set<String> adapterIds) async {
     ref.invalidate(autoFormatPromptSettingsProvider);
     ref.invalidate(highlightEmphasisSettingsProvider);
     ref.invalidate(sdSyntaxAutoConvertSettingsProvider);
+    ref.invalidate(separateNumericWeightClosingSettingsProvider);
     ref.invalidate(resolveAliasOnCopySettingsProvider);
+    ref.invalidate(detectMultiCharacterOnPasteSettingsProvider);
     ref.invalidate(promptWeightScrollSettingsProvider);
     ref.invalidate(cooccurrenceSettingsProvider);
     ref.invalidate(randomPromptModeProvider);

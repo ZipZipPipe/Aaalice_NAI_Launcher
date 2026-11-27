@@ -24,7 +24,6 @@ import '../../save_as_preset_dialog.dart';
 import '../../save_vibe_dialog.dart';
 import '../../themed_divider.dart';
 import '../../model_family_icon.dart';
-import '../file_image_detail_data.dart';
 import '../image_detail_data.dart';
 import 'prompt_copy_dialog.dart';
 import 'prompt_section.dart';
@@ -71,9 +70,11 @@ class DetailMetadataPanel extends ConsumerStatefulWidget {
 
 class _DetailMetadataPanelState extends ConsumerState<DetailMetadataPanel> {
   late bool _isExpanded;
-  Future<NaiImageMetadata?>? _metadataFuture;
+  int _metadataRequest = 0;
+  bool _isLoadingMetadata = false;
   NaiImageMetadata? _loadedMetadata;
   (int, int)? _actualImageSize;
+  FileInfo? _fileInfo;
 
   @override
   void initState() {
@@ -91,20 +92,15 @@ class _DetailMetadataPanelState extends ConsumerState<DetailMetadataPanel> {
     }
   }
 
-  /// 启动元数据加载（双通道架构）
-  ///
-  /// **前台高优先级通道**：
-  /// - 用户主动打开详情页时触发
-  /// - 立即开始解析，不受后台预加载队列影响
-  /// - 从后台队列中移除重复任务（避免重复解析）
-  ///
-  /// **支持的数据源**：
-  /// - [FileImageDetailData]: 从 PNG 文件解析（已保存的图像）
-  /// - [GeneratedImageDetailData]: 从内存字节解析（未保存的图像）
+  /// 同步读到有内容的元数据就直接用，否则交给数据源前台高优先级解析
   void _startMetadataLoading() {
+    final request = ++_metadataRequest;
     final image = widget.currentImage;
     if (image == null) {
       _actualImageSize = null;
+      _fileInfo = null;
+      _loadedMetadata = null;
+      _isLoadingMetadata = false;
       AppLogger.w(
         '[MetadataFlow] _startMetadataLoading: image is null',
         'DetailMetadataPanel',
@@ -113,14 +109,15 @@ class _DetailMetadataPanelState extends ConsumerState<DetailMetadataPanel> {
     }
 
     _actualImageSize = null;
+    _fileInfo = image.fileInfo;
     unawaited(_loadActualImageSize(image));
+    unawaited(_loadFileInfo(image));
 
     AppLogger.i(
       '[MetadataFlow] _startMetadataLoading: identifier=${image.identifier}, type=${image.runtimeType}',
       'DetailMetadataPanel',
     );
 
-    // 1. 先检查同步可用的元数据
     final syncMetadata = image.metadata;
     AppLogger.d(
       '[MetadataFlow] syncMetadata check: hasData=${syncMetadata?.hasData}, has prompt="${syncMetadata?.fullPrompt.isNotEmpty == true}"',
@@ -133,75 +130,66 @@ class _DetailMetadataPanelState extends ConsumerState<DetailMetadataPanel> {
         'DetailMetadataPanel',
       );
       _loadedMetadata = syncMetadata;
-      _metadataFuture = null;
+      _isLoadingMetadata = false;
       return;
     }
 
-    // 2. 异步加载元数据（支持所有数据源）
     AppLogger.i(
       '[MetadataFlow] Cache miss, starting async load...',
       'DetailMetadataPanel',
     );
-    Future<NaiImageMetadata?>? future;
-    if (image is FileImageDetailData) {
-      AppLogger.d(
-        '[MetadataFlow] Using FileImageDetailData.getMetadataAsync()',
-        'DetailMetadataPanel',
-      );
-      future = image.getMetadataAsync();
-    } else if (image is GeneratedImageDetailData) {
-      AppLogger.d(
-        '[MetadataFlow] Using GeneratedImageDetailData.getMetadataAsync()',
-        'DetailMetadataPanel',
-      );
-      future = image.getMetadataAsync();
-    } else if (image is LocalImageDetailData) {
-      AppLogger.d(
-        '[MetadataFlow] Using LocalImageDetailData.getMetadataAsync()',
-        'DetailMetadataPanel',
-      );
-      future = image.getMetadataAsync();
-    } else {
-      AppLogger.w(
-        '[MetadataFlow] Unknown image type: ${image.runtimeType}',
-        'DetailMetadataPanel',
-      );
-    }
+    // 切图后加载期间不能沿用上一张的元数据，上一张晚到的结果也不能盖掉这一张
+    _loadedMetadata = null;
+    _isLoadingMetadata = true;
+    unawaited(_loadMetadataAsync(image, request));
+  }
 
-    if (future != null) {
-      _metadataFuture = future
-          .then((metadata) {
-            AppLogger.i(
-              '[MetadataFlow] Async load completed: hasData=${metadata?.hasData}, prompt length=${metadata?.fullPrompt.length ?? 0}',
-              'DetailMetadataPanel',
-            );
-            if (mounted) {
-              setState(() => _loadedMetadata = metadata);
-            }
-            return metadata;
-          })
-          .catchError((e, stack) {
-            AppLogger.e(
-              '[MetadataFlow] Async load failed',
-              e,
-              stack,
-              'DetailMetadataPanel',
-            );
-            throw e;
-          });
-    } else {
-      _metadataFuture = null;
-      _loadedMetadata = null;
+  // 无元数据的图片解析结果就是 null，读取失败也按无元数据收尾
+  Future<void> _loadMetadataAsync(ImageDetailData image, int request) async {
+    NaiImageMetadata? metadata;
+    try {
+      metadata = await image.getMetadataAsync();
+      AppLogger.i(
+        '[MetadataFlow] Async load completed: hasData=${metadata?.hasData}, prompt length=${metadata?.fullPrompt.length ?? 0}',
+        'DetailMetadataPanel',
+      );
+    } catch (error, stack) {
+      AppLogger.e(
+        '[MetadataFlow] Async load failed',
+        error,
+        stack,
+        'DetailMetadataPanel',
+      );
     }
+    if (!mounted || request != _metadataRequest) return;
+    setState(() {
+      _loadedMetadata = metadata;
+      _isLoadingMetadata = false;
+    });
+  }
+
+  Future<void> _loadFileInfo(ImageDetailData image) async {
+    final FileInfo? info;
+    try {
+      info = await image.getFileInfoAsync();
+    } catch (error) {
+      AppLogger.w(
+        '[MetadataFlow] Failed to read file info: $error',
+        'DetailMetadataPanel',
+      );
+      return;
+    }
+    if (info == null ||
+        !mounted ||
+        widget.currentImage?.identifier != image.identifier) {
+      return;
+    }
+    setState(() => _fileInfo = info);
   }
 
   Future<void> _loadActualImageSize(ImageDetailData image) async {
     try {
-      final filePath = switch (image) {
-        FileImageDetailData() => image.filePath,
-        LocalImageDetailData() => image.record.path,
-        _ => null,
-      };
+      final filePath = image.fileInfo?.path;
       final headerSize = filePath == null
           ? null
           : await _tryReadImageHeaderSize(filePath);
@@ -232,7 +220,7 @@ class _DetailMetadataPanelState extends ConsumerState<DetailMetadataPanel> {
     const headerByteLimit = 64 * 1024;
     final handle = await File(path).open();
     try {
-      return handle.read(headerByteLimit);
+      return await handle.read(headerByteLimit);
     } finally {
       await handle.close();
     }
@@ -304,8 +292,10 @@ class _DetailMetadataPanelState extends ConsumerState<DetailMetadataPanel> {
   Widget _buildExpandedPanel(ThemeData theme) {
     final l10n = context.l10n;
     final metadata = _currentMetadata;
-    final fixedTagsState = ref.watch(fixedTagsNotifierProvider);
-    final isLoading = _metadataFuture != null && _loadedMetadata == null;
+    final displayedMetadata =
+        !_isLoadingMetadata && metadata != null && metadata.hasData
+        ? metadata
+        : null;
     final colorScheme = theme.colorScheme;
 
     return Column(
@@ -322,29 +312,56 @@ class _DetailMetadataPanelState extends ConsumerState<DetailMetadataPanel> {
                     style: TextStyle(color: colorScheme.onSurfaceVariant),
                   ),
                 )
-              : isLoading
-              ? _buildLoadingState(theme)
-              : metadata != null && metadata.hasData
-              ? SingleChildScrollView(
-                  padding: const EdgeInsets.all(16),
-                  child: _MetadataContent(
-                    metadata: metadata,
-                    positiveFixedTagEntries: fixedTagsState.positiveEntries,
-                    negativeFixedTagEntries: fixedTagsState.negativeEntries,
-                    fileInfo: widget.currentImage!.fileInfo,
-                    actualImageSize: _actualImageSize,
-                  ),
-                )
-              : _buildNoMetadataState(theme),
+              : _buildImageDetails(theme, displayedMetadata),
         ),
         // 只在有元数据时显示操作按钮
-        if (metadata != null && metadata.hasData)
+        if (displayedMetadata != null)
           Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               const ThemedDivider(height: 1),
-              _ActionButtons(metadata: metadata),
+              _ActionButtons(metadata: displayedMetadata),
             ],
+          ),
+      ],
+    );
+  }
+
+  /// 基本信息不依赖元数据，解析中和无元数据时同样展示
+  Widget _buildImageDetails(ThemeData theme, NaiImageMetadata? metadata) {
+    final fixedTagsState = ref.watch(fixedTagsNotifierProvider);
+    final basicInfo = _BasicInfoSection(
+      fileInfo: _fileInfo,
+      // 有元数据时分辨率归在生成参数里
+      resolution: metadata == null ? _encodedSizeLabel(_actualImageSize) : null,
+    );
+
+    return CustomScrollView(
+      slivers: [
+        if (basicInfo.hasContent)
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+            sliver: SliverToBoxAdapter(child: basicInfo),
+          ),
+        if (metadata != null)
+          SliverPadding(
+            padding: const EdgeInsets.all(16),
+            sliver: SliverToBoxAdapter(
+              child: _MetadataContent(
+                metadata: metadata,
+                positiveFixedTagEntries: fixedTagsState.positiveEntries,
+                negativeFixedTagEntries: fixedTagsState.negativeEntries,
+                actualImageSize: _actualImageSize,
+              ),
+            ),
+          )
+        else
+          // 状态块要被量 intrinsic 高度，内部不能用 LayoutBuilder
+          SliverFillRemaining(
+            hasScrollBody: false,
+            child: _isLoadingMetadata
+                ? _buildLoadingState(theme)
+                : _buildNoMetadataState(theme),
           ),
       ],
     );
@@ -379,31 +396,24 @@ class _DetailMetadataPanelState extends ConsumerState<DetailMetadataPanel> {
   /// 构建无元数据状态
   Widget _buildNoMetadataState(ThemeData theme) {
     final colorScheme = theme.colorScheme;
-    return LayoutBuilder(
-      builder: (context, constraints) => SingleChildScrollView(
-        child: ConstrainedBox(
-          constraints: BoxConstraints(minHeight: constraints.maxHeight),
-          child: Center(
-            child: Padding(
-              padding: const EdgeInsets.all(32),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    Icons.info_outline,
-                    size: 48,
-                    color: colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    context.l10n.detail_noMetadata,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: colorScheme.onSurfaceVariant),
-                  ),
-                ],
-              ),
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.info_outline,
+              size: 48,
+              color: colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
             ),
-          ),
+            const SizedBox(height: 16),
+            Text(
+              context.l10n.detail_noMetadata,
+              textAlign: TextAlign.center,
+              style: TextStyle(color: colorScheme.onSurfaceVariant),
+            ),
+          ],
         ),
       ),
     );
@@ -486,54 +496,86 @@ class _PanelHeader extends StatelessWidget {
   }
 }
 
+/// 编码后的实际像素尺寸，未读到时返回 null
+String? _encodedSizeLabel((int, int)? size) =>
+    size == null ? null : '${size.$1} × ${size.$2}';
+
+/// 文件基本信息
+class _BasicInfoSection extends StatelessWidget {
+  final FileInfo? fileInfo;
+  final String? resolution;
+
+  const _BasicInfoSection({this.fileInfo, this.resolution});
+
+  bool get hasContent =>
+      fileInfo != null || (resolution != null && resolution!.isNotEmpty);
+
+  @override
+  Widget build(BuildContext context) {
+    final info = fileInfo;
+    final modifiedAt = info?.modifiedAt;
+    final size = info?.size;
+
+    return _InfoSection(
+      title: context.l10n.detail_basicInfo,
+      icon: Icons.insert_drive_file_outlined,
+      children: [
+        if (info != null)
+          _InfoRow(label: context.l10n.detail_fileName, value: info.fileName),
+        if (modifiedAt != null)
+          _InfoRow(
+            label: context.l10n.detail_modifiedTime,
+            value: _formatTime(context, modifiedAt),
+          ),
+        if (size != null)
+          _InfoRow(
+            label: context.l10n.detail_fileSize,
+            value: _formatSize(size),
+          ),
+        if (resolution != null)
+          _InfoRow(
+            label: context.l10n.gallery_metaResolution,
+            value: resolution!,
+          ),
+      ],
+    );
+  }
+
+  String _formatTime(BuildContext context, DateTime time) {
+    final locale = context.timeagoLocaleCode;
+    return '${timeago.format(time, locale: locale)} (${time.toString().substring(0, 16)})';
+  }
+
+  String _formatSize(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(2)} MB';
+  }
+}
+
 /// 元数据内容
 class _MetadataContent extends StatelessWidget {
   final NaiImageMetadata metadata;
   final List<FixedTagEntry> positiveFixedTagEntries;
   final List<FixedTagEntry> negativeFixedTagEntries;
-  final FileInfo? fileInfo;
   final (int, int)? actualImageSize;
 
   const _MetadataContent({
     required this.metadata,
     this.positiveFixedTagEntries = const [],
     this.negativeFixedTagEntries = const [],
-    this.fileInfo,
     this.actualImageSize,
   });
 
   @override
   Widget build(BuildContext context) {
     final displayModel = metadata.effectiveModel ?? metadata.source;
-    final resolution = actualImageSize == null
-        ? metadata.sizeString
-        : '${actualImageSize!.$1} × ${actualImageSize!.$2}';
+    final resolution =
+        _encodedSizeLabel(actualImageSize) ?? metadata.sizeString;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // 基本信息（仅在有文件信息时显示）
-        if (fileInfo != null) ...[
-          _InfoSection(
-            title: context.l10n.detail_basicInfo,
-            icon: Icons.insert_drive_file_outlined,
-            children: [
-              _InfoRow(
-                label: context.l10n.detail_fileName,
-                value: fileInfo!.fileName,
-              ),
-              _InfoRow(
-                label: context.l10n.detail_modifiedTime,
-                value: _formatTime(context, fileInfo!.modifiedAt),
-              ),
-              _InfoRow(
-                label: context.l10n.detail_fileSize,
-                value: _formatSize(fileInfo!.size),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-        ],
         // 生成参数
         _InfoSection(
           title: context.l10n.gallery_generationParams,
@@ -631,6 +673,9 @@ class _MetadataContent extends StatelessWidget {
       promptTags: mainNegativeTags,
       prefixEntries: resolvedMetadata.fixedNegativePrefixTags,
       suffixEntries: resolvedMetadata.fixedNegativeSuffixTags,
+      leadingTagCount: _extractTags(
+        resolvedMetadata.negativePresetSplit.preset,
+      ).length,
     );
     final characterPositiveIndexes = {
       for (
@@ -743,17 +788,6 @@ class _MetadataContent extends StatelessWidget {
       vibe: vibe,
       defaultName: vibe.displayName,
     );
-  }
-
-  String _formatTime(BuildContext context, DateTime time) {
-    final locale = context.timeagoLocaleCode;
-    return '${timeago.format(time, locale: locale)} (${time.toString().substring(0, 16)})';
-  }
-
-  String _formatSize(int bytes) {
-    if (bytes < 1024) return '$bytes B';
-    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    return '${(bytes / (1024 * 1024)).toStringAsFixed(2)} MB';
   }
 }
 

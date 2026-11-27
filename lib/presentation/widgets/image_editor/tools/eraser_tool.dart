@@ -4,10 +4,11 @@ import 'package:flutter/services.dart';
 import '../../../../core/utils/localization_extension.dart';
 import '../core/editor_state.dart';
 import '../core/history_manager.dart';
+import '../core/mask_paint_style.dart';
 import 'color_picker_tool.dart';
 import 'tool_base.dart';
+import 'tool_setting_rows.dart';
 import '../../../widgets/common/themed_divider.dart';
-import 'package:nai_launcher/presentation/widgets/common/themed_input.dart';
 
 /// 橡皮擦工具
 class EraserTool extends EditorTool {
@@ -20,6 +21,9 @@ class EraserTool extends EditorTool {
 
   @override
   String get id => 'eraser';
+
+  @override
+  bool get followsLayerRole => true;
 
   @override
   String get name => 'Eraser';
@@ -42,6 +46,10 @@ class EraserTool extends EditorTool {
   void setHardness(double hardness) {
     _hardness = hardness.clamp(0.0, 1.0);
   }
+
+  /// 导出时残留的半透明像素仍算蒙版，软边擦不干净，蒙版层上固定硬边
+  double hardnessFor(EditorState state) =>
+      state.isMaskLayerActive ? MaskPaintStyle.hardness : _hardness;
 
   @override
   void onPointerDown(PointerDownEvent event, EditorState state) {
@@ -83,23 +91,27 @@ class EraserTool extends EditorTool {
     }
   }
 
+  /// 当前图层上由 [points] 构成的一笔，提交与涂抹中的实时擦除共用
+  StrokeData strokeFor(EditorState state, List<Offset> points) {
+    return StrokeData(
+      points: List.of(points),
+      size: _size,
+      color: Colors.transparent,
+      opacity: 1.0,
+      hardness: hardnessFor(state),
+      isEraser: true,
+    );
+  }
+
   /// 提交当前笔画（抽取公共逻辑，供 onPointerDown 和 onPointerUp 调用）
   void _commitCurrentStroke(EditorState state) {
     final activeLayer = state.layerManager.activeLayer;
     if (activeLayer != null && !activeLayer.locked) {
-      // 创建橡皮擦笔画数据
-      final stroke = StrokeData(
-        points: List.from(state.currentStrokePoints),
-        size: _size,
-        color: Colors.transparent,
-        opacity: 1.0,
-        hardness: _hardness,
-        isEraser: true,
-      );
-
-      // 执行添加笔画操作
       state.historyManager.execute(
-        AddStrokeAction(layerId: activeLayer.id, stroke: stroke),
+        AddStrokeAction(
+          layerId: activeLayer.id,
+          stroke: strokeFor(state, state.currentStrokePoints),
+        ),
         state,
       );
     }
@@ -109,6 +121,7 @@ class EraserTool extends EditorTool {
   /// Alt 模式下取色并应用
   Future<void> _pickColorAndApply(Offset canvasPoint, EditorState state) async {
     final color = await ColorPickerTool.pickColorAt(canvasPoint, state);
+    if (state.isDisposed) return;
     if (color != null) {
       state.setForegroundColor(color);
     }
@@ -119,21 +132,26 @@ class EraserTool extends EditorTool {
 
   @override
   Widget buildSettingsPanel(BuildContext context, EditorState state) {
-    return _EraserSettingsPanel(
-      tool: this,
-      onSettingsChanged: () {
-        state.requestUiUpdate();
-      },
+    // 切换图层时硬度一行随之显隐
+    return ValueListenableBuilder<String?>(
+      valueListenable: state.layerManager.activeLayerNotifier,
+      builder: (context, _, _) => _EraserSettingsPanel(
+        tool: this,
+        state: state,
+        onSettingsChanged: state.requestUiUpdate,
+      ),
     );
   }
 }
 
 class _EraserSettingsPanel extends StatefulWidget {
   final EraserTool tool;
+  final EditorState state;
   final VoidCallback onSettingsChanged;
 
   const _EraserSettingsPanel({
     required this.tool,
+    required this.state,
     required this.onSettingsChanged,
   });
 
@@ -177,119 +195,39 @@ class _EraserSettingsPanelState extends State<_EraserSettingsPanel> {
         ),
         const ThemedDivider(height: 1),
 
-        // 大小
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-          child: Row(
-            children: [
-              SizedBox(
-                width: 60,
-                child: Text(
-                  context.l10n.editor_size,
-                  style: theme.textTheme.bodySmall,
-                ),
-              ),
-              Expanded(
-                child: SliderTheme(
-                  data: SliderTheme.of(context).copyWith(
-                    trackHeight: 2,
-                    thumbShape: const RoundSliderThumbShape(
-                      enabledThumbRadius: 6,
-                    ),
-                    overlayShape: const RoundSliderOverlayShape(
-                      overlayRadius: 12,
-                    ),
-                  ),
-                  child: Slider(
-                    value: widget.tool.size,
-                    min: 1,
-                    max: 500,
-                    onChanged: (value) {
-                      setState(() {
-                        widget.tool.setSize(value);
-                        _sizeController.text = value.round().toString();
-                      });
-                      widget.onSettingsChanged();
-                    },
-                  ),
-                ),
-              ),
-              SizedBox(
-                width: 50,
-                child: ThemedInput(
-                  controller: _sizeController,
-                  style: theme.textTheme.bodySmall,
-                  textAlign: TextAlign.center,
-                  decoration: const InputDecoration(
-                    isDense: true,
-                    contentPadding: EdgeInsets.symmetric(
-                      horizontal: 4,
-                      vertical: 4,
-                    ),
-                    border: OutlineInputBorder(),
-                  ),
-                  keyboardType: TextInputType.number,
-                  onSubmitted: (text) {
-                    final parsed = double.tryParse(text);
-                    if (parsed != null) {
-                      setState(() {
-                        widget.tool.setSize(parsed);
-                      });
-                      widget.onSettingsChanged();
-                    }
-                  },
-                ),
-              ),
-            ],
-          ),
-        ),
+        ToolSettingRows(
+          rows: [
+            // 大小
+            ToolSettingRow.slider(
+              label: context.l10n.editor_size,
+              value: widget.tool.size,
+              min: 1,
+              max: 500,
+              controller: _sizeController,
+              onChanged: (value) {
+                setState(() {
+                  widget.tool.setSize(value);
+                  _sizeController.text = value.round().toString();
+                });
+                widget.onSettingsChanged();
+              },
+            ),
 
-        // 硬度
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-          child: Row(
-            children: [
-              SizedBox(
-                width: 60,
-                child: Text(
-                  context.l10n.editor_hardness,
-                  style: theme.textTheme.bodySmall,
-                ),
+            if (!widget.state.isMaskLayerActive)
+              ToolSettingRow.slider(
+                label: context.l10n.editor_hardness,
+                value: widget.tool.hardness * 100,
+                min: 0,
+                max: 100,
+                suffix: '%',
+                onChanged: (value) {
+                  setState(() {
+                    widget.tool.setHardness(value / 100);
+                  });
+                  widget.onSettingsChanged();
+                },
               ),
-              Expanded(
-                child: SliderTheme(
-                  data: SliderTheme.of(context).copyWith(
-                    trackHeight: 2,
-                    thumbShape: const RoundSliderThumbShape(
-                      enabledThumbRadius: 6,
-                    ),
-                    overlayShape: const RoundSliderOverlayShape(
-                      overlayRadius: 12,
-                    ),
-                  ),
-                  child: Slider(
-                    value: widget.tool.hardness * 100,
-                    min: 0,
-                    max: 100,
-                    onChanged: (value) {
-                      setState(() {
-                        widget.tool.setHardness(value / 100);
-                      });
-                      widget.onSettingsChanged();
-                    },
-                  ),
-                ),
-              ),
-              SizedBox(
-                width: 50,
-                child: Text(
-                  '${(widget.tool.hardness * 100).round()}%',
-                  style: theme.textTheme.bodySmall,
-                  textAlign: TextAlign.center,
-                ),
-              ),
-            ],
-          ),
+          ],
         ),
       ],
     );

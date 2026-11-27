@@ -2,16 +2,19 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:image/image.dart' as img;
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../../core/constants/api_constants.dart';
+import '../../../core/network/browser_multipart_body.dart';
 import '../../../core/network/dio_client.dart';
 import '../../../core/network/critical_network_activity.dart';
+import '../../../core/network/js_compatible_json.dart';
 import '../../../core/network/nai_api_endpoint_service.dart';
 import '../../../core/utils/app_logger.dart';
+import '../../../core/utils/decoded_image_size.dart';
+import '../../../core/utils/exif_orientation.dart';
 import '../../../core/utils/zip_utils.dart';
+import '../../models/director/director_tool_output.dart';
 
 part 'nai_image_enhancement_api_service.g.dart';
 
@@ -59,39 +62,28 @@ class NAIImageEnhancementApiService {
     int scale = 2,
     void Function(int, int)? onProgress,
   }) async {
+    final upload = await ExifOrientation.bakeToPngAsync(image);
     final activity = _networkActivity.acquire(
       CriticalNetworkActivityType.cloudUpscale,
     );
     try {
-      final request = jsonEncode({
+      final body = _buildImageToolMultipart(upload, <String, dynamic>{
         'image': 'image',
         'model': _upscaleModel,
         'declared_blur_sigma': _upscaleDeclaredBlurSigma,
       });
-      final formData = FormData.fromMap({
-        'image': MultipartFile.fromBytes(
-          image,
-          filename: 'blob',
-          contentType: DioMediaType('image', 'png'),
-        ),
-        'request': MultipartFile.fromBytes(
-          utf8.encode(request),
-          filename: 'blob',
-          contentType: DioMediaType('application', 'json'),
-        ),
-      });
 
       final response = await _dio.post(
         _endpointService.imageUrl(ApiConstants.upscaleEndpoint),
-        data: formData,
+        data: body.bytes,
         options: Options(
           responseType: ResponseType.bytes,
-          headers: {'Accept': 'application/x-zip-compressed'},
+          contentType: body.contentType,
         ),
         onReceiveProgress: onProgress,
       );
 
-      return _extractUpscaleResult(response.data as Uint8List);
+      return await _extractUpscaleResult(response.data as Uint8List);
     } on DioException catch (e) {
       final status = e.response?.statusCode;
       const legacyFallbackStatuses = {400, 404, 405, 422};
@@ -103,7 +95,12 @@ class NAIImageEnhancementApiService {
         'Upscale v2 rejected with $status, falling back to legacy format',
         'NAIEnhancement',
       );
-      return _upscaleImageLegacy(image, scale: scale, onProgress: onProgress);
+      // 不 await 时 finally 会在回退请求完成前释放租约
+      return await _upscaleImageLegacy(
+        upload,
+        scale: scale,
+        onProgress: onProgress,
+      );
     } finally {
       activity.release();
     }
@@ -115,18 +112,15 @@ class NAIImageEnhancementApiService {
     void Function(int, int)? onProgress,
   }) async {
     try {
-      final decoded = img.decodeImage(image);
-      if (decoded == null) {
-        throw Exception('无法解析图像尺寸');
-      }
+      final (width, height) = await _readImageSize(image);
 
       final response = await _dio.post(
         _endpointService.mainUrl(ApiConstants.upscaleEndpoint),
         data: {
           'image': base64Encode(image),
           'scale': scale,
-          'width': decoded.width,
-          'height': decoded.height,
+          'width': width,
+          'height': height,
         },
         options: Options(
           responseType: ResponseType.bytes,
@@ -135,17 +129,48 @@ class NAIImageEnhancementApiService {
         onReceiveProgress: onProgress,
       );
 
-      return _extractUpscaleResult(response.data as Uint8List);
+      return await _extractUpscaleResult(response.data as Uint8List);
     } on DioException catch (e) {
       AppLogger.w('Legacy upscale failed: ${e.message}', 'NAIEnhancement');
       throw Exception('图像放大失败: ${_mapDioError(e)}');
     }
   }
 
-  Uint8List _extractUpscaleResult(Uint8List raw) {
-    final images = ZipUtils.extractAllImages(raw);
+  static Future<(int, int)> _readImageSize(Uint8List image) async {
+    final size = await DecodedImageSize.read(image);
+    if (size == null) {
+      throw Exception('无法解析图像尺寸');
+    }
+    return size;
+  }
+
+  Future<Uint8List> _extractUpscaleResult(Uint8List raw) async {
+    final images = await ZipUtils.extractAllImagesAsync(raw);
     if (images.isNotEmpty) return images.first;
     return raw;
+  }
+
+  /// 官网图像端点共用的 multipart 布局：图片分块在前，`request` JSON 在后。
+  ///
+  /// JSON 里对应的图片字段写成分块名，字节只在分块里出现一次。
+  static BrowserMultipartBody _buildImageToolMultipart(
+    Uint8List image,
+    Map<String, dynamic> request,
+  ) {
+    return BrowserMultipartBody.encode([
+      BrowserMultipartPart(
+        name: 'image',
+        bytes: image,
+        filename: 'blob',
+        contentType: 'image/png',
+      ),
+      BrowserMultipartPart(
+        name: 'request',
+        bytes: utf8.encode(encodeJsCompatibleJson(request)),
+        filename: 'blob',
+        contentType: 'application/json',
+      ),
+    ]);
   }
 
   // ==================== Vibe Transfer API ====================
@@ -154,18 +179,24 @@ class NAIImageEnhancementApiService {
     required String model,
     double informationExtracted = 1.0,
   }) async {
+    final upload = await ExifOrientation.bakeToPngAsync(image);
     final activity = _networkActivity.acquire(
       CriticalNetworkActivityType.vibeEncoding,
     );
     try {
+      final body = _buildImageToolMultipart(upload, <String, dynamic>{
+        'image': 'image',
+        'information_extracted': informationExtracted,
+        'model': model,
+      });
+
       final response = await _dio.post(
         _endpointService.imageUrl(ApiConstants.encodeVibeEndpoint),
-        data: {
-          'image': base64Encode(image),
-          'model': model,
-          'information_extracted': informationExtracted,
-        },
-        options: Options(responseType: ResponseType.bytes),
+        data: body.bytes,
+        options: Options(
+          responseType: ResponseType.bytes,
+          contentType: body.contentType,
+        ),
       );
 
       return base64Encode(response.data as Uint8List);
@@ -178,45 +209,70 @@ class NAIImageEnhancementApiService {
   }
 
   // ==================== 图像增强 API ====================
-  Future<Uint8List> augmentImage(
+
+  /// 只有背景移除返回多张命名结果；不在表里的工具只取第一张。
+  static const Map<String, List<DirectorResultVariant>>
+  _resultVariantsByReqType = {
+    _reqTypeBgRemoval: [
+      DirectorResultVariant.masked,
+      DirectorResultVariant.generated,
+      DirectorResultVariant.blend,
+    ],
+  };
+
+  Future<DirectorToolOutput> augmentImage(
     Uint8List image, {
     required String reqType,
     String? prompt,
     int defry = 0,
   }) async {
+    final upload = await ExifOrientation.bakeToPngAsync(image);
     final activity = _networkActivity.acquire(
       CriticalNetworkActivityType.directorTool,
     );
     try {
-      final decoded = img.decodeImage(image);
-      if (decoded == null) {
-        throw Exception('无法解析图像尺寸');
-      }
+      final (width, height) = await _readImageSize(upload);
 
-      final requestData = <String, dynamic>{
-        'image': base64Encode(image),
+      // 官网只有上色与表情工具带提示词和 defry，上色的空提示词也照发。
+      final hasPromptControls =
+          reqType == _reqTypeColorize || reqType == _reqTypeEmotion;
+      final body = _buildImageToolMultipart(upload, <String, dynamic>{
         'req_type': reqType,
-        'width': decoded.width,
-        'height': decoded.height,
-        'defry': defry.clamp(0, 5),
-        if (prompt != null && prompt.isNotEmpty) 'prompt': prompt,
-      };
+        'use_new_shared_trial': true,
+        if (hasPromptControls) 'prompt': prompt ?? '',
+        if (hasPromptControls) 'defry': defry.clamp(0, 5),
+        'width': width,
+        'height': height,
+        'image': 'image',
+      });
 
       final response = await _dio.post(
         _endpointService.imageUrl(ApiConstants.augmentImageEndpoint),
-        data: requestData,
+        data: body.bytes,
         options: Options(
           responseType: ResponseType.bytes,
-          headers: {'Accept': 'application/x-zip-compressed'},
+          contentType: body.contentType,
         ),
       );
 
-      final images = ZipUtils.extractAllImages(response.data as Uint8List);
+      final images = await ZipUtils.extractAllImagesAsync(
+        response.data as Uint8List,
+      );
       if (images.isEmpty) {
         throw Exception('No images found in augment response');
       }
 
-      return images.first;
+      final variants = _resultVariantsByReqType[reqType];
+      final expectedCount = variants?.length ?? 1;
+      if (images.length != expectedCount) {
+        AppLogger.w(
+          'Augment $reqType returned ${images.length} images, '
+              'expected $expectedCount',
+          'NAIEnhancement',
+        );
+      }
+      if (variants == null) return DirectorToolOutput.single(images.first);
+      return DirectorToolOutput.labelled(images, variants: variants);
     } on DioException catch (e) {
       AppLogger.w('Augment image failed: ${e.message}', 'NAIEnhancement');
       throw Exception('图像增强失败: ${_mapDioError(e)}');
@@ -225,7 +281,7 @@ class NAIImageEnhancementApiService {
     }
   }
 
-  Future<Uint8List> fixEmotion(
+  Future<DirectorToolOutput> fixEmotion(
     Uint8List image, {
     required String prompt,
     int defry = 0,
@@ -236,10 +292,10 @@ class NAIImageEnhancementApiService {
     defry: defry,
   );
 
-  Future<Uint8List> removeBackground(Uint8List image) =>
+  Future<DirectorToolOutput> removeBackground(Uint8List image) =>
       augmentImage(image, reqType: _reqTypeBgRemoval);
 
-  Future<Uint8List> colorize(
+  Future<DirectorToolOutput> colorize(
     Uint8List image, {
     String? prompt,
     int defry = 0,
@@ -250,13 +306,13 @@ class NAIImageEnhancementApiService {
     defry: defry,
   );
 
-  Future<Uint8List> declutter(Uint8List image) =>
+  Future<DirectorToolOutput> declutter(Uint8List image) =>
       augmentImage(image, reqType: _reqTypeDeclutter);
 
-  Future<Uint8List> extractLineArt(Uint8List image) =>
+  Future<DirectorToolOutput> extractLineArt(Uint8List image) =>
       augmentImage(image, reqType: _reqTypeLineArt);
 
-  Future<Uint8List> toSketch(Uint8List image) =>
+  Future<DirectorToolOutput> toSketch(Uint8List image) =>
       augmentImage(image, reqType: _reqTypeSketch);
 
   // ==================== 图像标注 API ====================

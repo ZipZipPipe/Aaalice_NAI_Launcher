@@ -1,18 +1,12 @@
-import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
-import 'package:path/path.dart' as p;
-
-import '../../data/models/gallery/nai_image_metadata.dart';
 import '../../data/models/mosaic/mosaic_settings.dart';
-import '../../data/services/metadata/unified_metadata_parser.dart';
+import '../derivatives/derivative_metadata_transfer.dart';
+import '../derivatives/derivative_registry.dart';
+import '../derivatives/derivative_render.dart';
 import '../utils/image_share_sanitizer.dart';
-
-class MosaicCancelledException implements Exception {
-  const MosaicCancelledException();
-}
 
 class MosaicRenderException implements Exception {
   const MosaicRenderException(this.message, [this.cause]);
@@ -22,18 +16,6 @@ class MosaicRenderException implements Exception {
 
   @override
   String toString() => message;
-}
-
-class MosaicCancellationToken {
-  bool _cancelled = false;
-
-  bool get isCancelled => _cancelled;
-
-  void cancel() => _cancelled = true;
-
-  void throwIfCancelled() {
-    if (_cancelled) throw const MosaicCancelledException();
-  }
 }
 
 class MosaicRenderRequest {
@@ -52,7 +34,7 @@ class MosaicRenderRequest {
   final String sourceFileName;
 }
 
-class MosaicRenderResult {
+class MosaicRenderResult implements DerivativeRenderedCopy {
   const MosaicRenderResult({
     required this.bytes,
     required this.fileName,
@@ -61,7 +43,9 @@ class MosaicRenderResult {
     required this.metadataPreserved,
   });
 
+  @override
   final Uint8List bytes;
+  @override
   final String fileName;
   final int width;
   final int height;
@@ -71,7 +55,7 @@ class MosaicRenderResult {
 typedef MosaicRenderOperation =
     Future<MosaicRenderResult> Function(
       MosaicRenderRequest request, {
-      MosaicCancellationToken? cancellationToken,
+      DerivativeRenderCancellationToken? cancellationToken,
     });
 
 /// Full-resolution redaction renderer shared by the editor and export flow.
@@ -259,9 +243,9 @@ class MosaicRenderService {
 
   static Future<MosaicRenderResult> render(
     MosaicRenderRequest request, {
-    MosaicCancellationToken? cancellationToken,
+    DerivativeRenderCancellationToken? cancellationToken,
   }) async {
-    final token = cancellationToken ?? MosaicCancellationToken();
+    final token = cancellationToken ?? DerivativeRenderCancellationToken();
     token.throwIfCancelled();
     if (!request.regions.any((region) => region.isUsable)) {
       throw const MosaicRenderException(
@@ -298,6 +282,8 @@ class MosaicRenderService {
       if (byteData == null) {
         throw const MosaicRenderException('PNG encoding failed.');
       }
+      // 下一步要排 ComputeGate，已取消就不再占槽位
+      token.throwIfCancelled();
       final sanitized =
           await ImageShareSanitizer.prepareForCopyOrDragInBackground(
             byteData.buffer.asUint8List(),
@@ -309,9 +295,9 @@ class MosaicRenderService {
 
       var metadataPreserved = false;
       if (request.preserveMetadata) {
-        final transfer = _preserveSupportedMetadata(
-          source: request.sourceBytes,
-          targetPng: outputBytes,
+        final transfer = await _preserveMetadata(
+          request.sourceBytes,
+          outputBytes,
         );
         outputBytes = transfer.bytes;
         metadataPreserved = transfer.preserved;
@@ -320,12 +306,12 @@ class MosaicRenderService {
 
       return MosaicRenderResult(
         bytes: outputBytes,
-        fileName: buildOutputFileName(request.sourceFileName),
+        fileName: DerivativeKind.mosaic.outputFileName(request.sourceFileName),
         width: width,
         height: height,
         metadataPreserved: metadataPreserved,
       );
-    } on MosaicCancelledException {
+    } on DerivativeRenderCancelledException {
       rethrow;
     } on MosaicRenderException {
       rethrow;
@@ -434,102 +420,20 @@ class MosaicRenderService {
     }
   }
 
-  static String buildOutputFileName(String sourceFileName) {
-    final leaf = p.basename(sourceFileName.trim());
-    final base = p.basenameWithoutExtension(leaf);
-    final safeBase = base
-        .replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1F]'), '_')
-        .trim();
-    return '${safeBase.isEmpty ? 'image' : safeBase}_redacted.png';
-  }
-
-  static _MetadataTransfer _preserveSupportedMetadata({
-    required Uint8List source,
-    required Uint8List targetPng,
-  }) {
-    final isPng = UnifiedMetadataParser.isPngHeader(source);
-    final textData = isPng
-        ? UnifiedMetadataParser.extractPngTextData(source)
-        : const <String, String>{};
-    final parsed = UnifiedMetadataParser.parseFromImage(source);
-    if (textData.containsKey('Comment') && !parsed.success) {
-      throw MosaicRenderException(
-        'The source metadata is damaged or cannot be parsed: '
-        '${parsed.errorMessage ?? 'unknown metadata format'}',
-      );
-    }
-
-    var output = targetPng;
+  static Future<DerivativeMetadataTransfer> _preserveMetadata(
+    Uint8List source,
+    Uint8List targetPng,
+  ) async {
     try {
-      output = UnifiedMetadataParser.copySupportedMetadata(
+      return await DerivativeMetadataTransfer.preserveInBackground(
         source: source,
-        targetPng: output,
+        targetPng: targetPng,
       );
-    } on FormatException catch (error) {
-      throw MosaicRenderException(
-        'The source metadata is damaged and cannot be preserved safely.',
-        error,
+    } on DerivativeMetadataException catch (error, stackTrace) {
+      Error.throwWithStackTrace(
+        MosaicRenderException(error.message, error.cause),
+        stackTrace,
       );
     }
-    if (parsed.success && parsed.metadata != null) {
-      final metadata = parsed.metadata!;
-      if (!textData.containsKey('Comment')) {
-        output = UnifiedMetadataParser.embedTextChunkOnly(
-          output,
-          'Comment',
-          _commentFor(metadata),
-        );
-      }
-      if (!textData.containsKey('Software') && metadata.software != null) {
-        output = UnifiedMetadataParser.embedTextChunkOnly(
-          output,
-          'Software',
-          metadata.software!,
-        );
-      }
-      if (!textData.containsKey('Source') && metadata.source != null) {
-        output = UnifiedMetadataParser.embedTextChunkOnly(
-          output,
-          'Source',
-          metadata.source!,
-        );
-      }
-      if (!textData.containsKey('Description') && metadata.prompt.isNotEmpty) {
-        output = UnifiedMetadataParser.embedTextChunkOnly(
-          output,
-          'Description',
-          metadata.prompt,
-        );
-      }
-    }
-    return _MetadataTransfer(
-      bytes: output,
-      preserved: textData.isNotEmpty || parsed.success,
-    );
   }
-
-  static String _commentFor(NaiImageMetadata metadata) {
-    final raw = metadata.rawJson;
-    if (raw != null && raw.trim().isNotEmpty) return raw;
-    return jsonEncode({
-      if (metadata.prompt.isNotEmpty) 'prompt': metadata.prompt,
-      if (metadata.negativePrompt.isNotEmpty) 'uc': metadata.negativePrompt,
-      if (metadata.seed != null) 'seed': metadata.seed,
-      if (metadata.steps != null) 'steps': metadata.steps,
-      if (metadata.width != null) 'width': metadata.width,
-      if (metadata.height != null) 'height': metadata.height,
-      if (metadata.scale != null) 'scale': metadata.scale,
-      if (metadata.sampler != null) 'sampler': metadata.sampler,
-      if (metadata.model != null) 'model': metadata.model,
-      if (metadata.noiseSchedule != null)
-        'noise_schedule': metadata.noiseSchedule,
-    });
-  }
-}
-
-class _MetadataTransfer {
-  const _MetadataTransfer({required this.bytes, required this.preserved});
-
-  final Uint8List bytes;
-  final bool preserved;
 }

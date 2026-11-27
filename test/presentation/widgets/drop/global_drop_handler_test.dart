@@ -5,20 +5,25 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hive_flutter/hive_flutter.dart';
+import 'package:hive_ce_flutter/hive_ce_flutter.dart';
 import 'package:nai_launcher/core/constants/storage_keys.dart';
 import 'package:nai_launcher/core/enums/precise_ref_type.dart';
 import 'package:nai_launcher/data/models/vibe/vibe_reference.dart';
 import 'package:nai_launcher/data/services/metadata/unified_metadata_parser.dart';
+import 'package:nai_launcher/data/services/vibe_library_storage_protocol.dart';
+import 'package:nai_launcher/data/services/vibe_library_storage_service.dart';
 import 'package:nai_launcher/l10n/app_localizations.dart';
 import 'package:nai_launcher/presentation/providers/image_generation_provider.dart';
 import 'package:nai_launcher/presentation/utils/internal_drag_protocol.dart';
 import 'package:nai_launcher/presentation/widgets/drop/global_drop_action_coordinator.dart';
 import 'package:nai_launcher/presentation/widgets/drop/global_drop_handler.dart';
 import 'package:nai_launcher/presentation/widgets/drop/image_destination_dialog.dart';
-import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../../helpers/adaptive_panel_expectations.dart';
+import '../../../helpers/novelai_exif_fixture.dart';
+import '../../../helpers/novelai_jpeg_layout_fixture.dart';
+import '../../../helpers/novelai_webp_layout_fixture.dart';
 import '../../../helpers/webp_metadata_fixture.dart';
 
 void main() {
@@ -30,18 +35,14 @@ void main() {
     hiveTempDir = await Directory.systemTemp.createTemp(
       'nai_launcher_global_drop_hive_',
     );
-    final appSupportDir = await Directory(
-      '${hiveTempDir.path}${Platform.pathSeparator}app_support',
-    ).create();
-    PathProviderPlatform.instance = _TestPathProviderPlatform(
-      appSupportDir.path,
-    );
     Hive.init(hiveTempDir.path);
-    await Hive.openBox(StorageKeys.settingsBox);
+    // 内存后端：落盘写一旦从 widget test 的 FakeAsync 时钟发起就不会完成，会锁死 box
+    await Hive.openBox(StorageKeys.settingsBox, bytes: Uint8List(0));
   });
 
   tearDownAll(() async {
-    await Hive.close();
+    // 有界等待：box 被锁死时快速失败，不把整个测试分片拖到看门狗超时
+    await Hive.close().timeout(const Duration(seconds: 10));
     if (await hiveTempDir.exists()) {
       await hiveTempDir.delete(recursive: true);
     }
@@ -53,7 +54,18 @@ void main() {
     setUp(() async {
       await Hive.box(StorageKeys.settingsBox).clear();
       SharedPreferences.setMockInitialValues({});
-      container = ProviderContainer();
+      container = ProviderContainer(
+        overrides: [
+          // 生成状态保存不随用例等待：落盘会在删临时目录时占住句柄，也会被下个用例的恢复读到
+          vibeLibraryStorageServiceProvider.overrideWith((ref) {
+            final service = VibeLibraryStorageService(
+              generationStateRepository: _MemoryGenerationStateRepository(),
+            );
+            ref.onDispose(service.close);
+            return service;
+          }),
+        ],
+      );
     });
 
     tearDown(() {
@@ -114,6 +126,7 @@ void main() {
         findsOneWidget,
       );
       expect(find.byType(AlertDialog), findsNothing);
+      expectPanelHeaderScrollsWithContent(tester);
       await tester.enterText(
         find.byKey(const ValueKey('drop-vibe-library-name-field')),
         '新名称',
@@ -160,6 +173,32 @@ void main() {
 
       expect(detection.metadata, isNull);
       expect(detection.parseError, contains('from 1 fields'));
+    });
+
+    test('an incomplete PNG prefix keeps the text diagnosis', () async {
+      Future<String?> prefixParseError(String keyword, String text) async {
+        final png = UnifiedMetadataParser.embedTextChunkOnly(
+          Uint8List.fromList(_transparentPngBytes),
+          keyword,
+          text,
+        );
+        final idatTypeOffset = _indexOfBytes(png, ascii.encode('IDAT'));
+        final detection = await detectDroppedImageMetadata(
+          'opened_discord_image.webp',
+          Uint8List.fromList(const [0x52, 0x49, 0x46, 0x46]),
+          metadataBytes: Uint8List.fromList(png.sublist(0, idatTypeOffset - 4)),
+        );
+        return detection.parseError;
+      }
+
+      expect(
+        await prefixParseError('Software', 'Example image editor'),
+        isNull,
+      );
+      expect(
+        await prefixParseError('Comment', 'unparseable payload'),
+        contains('from 1 fields'),
+      );
     });
 
     test(
@@ -216,13 +255,102 @@ void main() {
         final metadata = await detectImportableDroppedImageMetadata(
           'discord_image.webp',
           base64Decode(_losslessStealthWebpBase64),
-          inspectNonPngStealth: true,
+          inspectOtherContainerStealth: true,
         );
 
         expect(metadata, isNotNull);
         expect(metadata!.prompt, 'discord stealth prompt');
         expect(metadata.negativePrompt, 'bad hands');
         expect(metadata.seed, 987654321);
+      },
+    );
+
+    test(
+      'a local WebP whose EXIF was rewritten falls back to the stealth payload',
+      () async {
+        final detection = await detectDroppedImageMetadata(
+          'local_original.webp',
+          novelAiLayoutWebp(exif: rewrittenCameraExif()),
+        );
+
+        expect(detection.parseError, isNull);
+        expect(detection.metadata?.prompt, novelAiStealthPrompt);
+        expect(detection.metadata?.source, novelAiV45FullSource);
+      },
+    );
+
+    test('a PNG prefix that carries only eXIf still yields metadata', () async {
+      final derived = UnifiedMetadataParser.copySupportedMetadata(
+        source: novelAiLayoutJpeg(
+          exifTiffs: [
+            novelAiExif(
+              userComment: asciiUserComment(
+                novelAiEnvelopeJson(prompt: 'derived png prompt', seed: 77),
+              ),
+            ),
+          ],
+        ),
+        targetPng: Uint8List.fromList(_transparentPngBytes),
+      );
+      final idatTypeOffset = _indexOfBytes(derived, const [
+        0x49,
+        0x44,
+        0x41,
+        0x54,
+      ]);
+
+      final metadata = await detectImportableDroppedImageMetadata(
+        'opened_discord_image.webp',
+        Uint8List.fromList(const [0x52, 0x49, 0x46, 0x46]),
+        metadataBytes: Uint8List.fromList(
+          derived.sublist(0, idatTypeOffset - 4),
+        ),
+      );
+
+      expect(metadata?.prompt, 'derived png prompt');
+      expect(metadata?.seed, 77);
+    });
+
+    test('a dropped JPEG reads the NovelAI EXIF UserComment', () async {
+      final detection = await detectDroppedImageMetadata(
+        'discord_original.jpg',
+        novelAiLayoutJpeg(
+          exifTiffs: [
+            novelAiExif(
+              userComment: asciiUserComment(
+                novelAiEnvelopeJson(prompt: 'jpeg drop prompt', seed: 41),
+              ),
+            ),
+          ],
+        ),
+        inspectOtherContainerStealth: true,
+      );
+
+      expect(detection.parseError, isNull);
+      expect(detection.metadata?.prompt, 'jpeg drop prompt');
+      expect(detection.metadata?.seed, 41);
+      expect(detection.metadata?.source, novelAiV45FullSource);
+    });
+
+    test(
+      'a complete remote WebP original is parsed beside preview bytes',
+      () async {
+        final original = novelAiLayoutWebp(
+          exif: novelAiExif(
+            userComment: asciiUserComment(
+              novelAiEnvelopeJson(prompt: 'remote exif prompt', seed: 31),
+            ),
+          ),
+        );
+
+        final metadata = await detectImportableDroppedImageMetadata(
+          'discord_original.webp',
+          buildNovelAiWebpFixture(),
+          metadataBytes: original,
+        );
+
+        expect(metadata?.prompt, 'remote exif prompt');
+        expect(metadata?.seed, 31);
       },
     );
 
@@ -448,11 +576,20 @@ const _transparentPngBytes = [
   0x82,
 ];
 
-class _TestPathProviderPlatform extends PathProviderPlatform {
-  _TestPathProviderPlatform(this.appSupportPath);
-
-  final String appSupportPath;
+class _MemoryGenerationStateRepository
+    implements VibeGenerationStateRepositoryProtocol {
+  String? _stateJson;
 
   @override
-  Future<String?> getApplicationSupportPath() async => appSupportPath;
+  Future<void> saveUtf8Json(Uint8List stateJson) async {
+    _stateJson = utf8.decode(stateJson);
+  }
+
+  @override
+  Future<String?> loadJson() async => _stateJson;
+
+  @override
+  Future<void> clear() async {
+    _stateJson = null;
+  }
 }

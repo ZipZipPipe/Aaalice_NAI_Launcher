@@ -15,7 +15,7 @@ part 'random_category.g.dart';
 /// 表示随机提示词中的一个大类别（如发色、瞳色等），
 /// 每个类别包含多个标签分组。
 @freezed
-class RandomCategory with _$RandomCategory {
+abstract class RandomCategory with _$RandomCategory {
   const RandomCategory._();
 
   const factory RandomCategory({
@@ -107,14 +107,6 @@ class RandomCategory with _$RandomCategory {
           .where((g) => g.enabled)
           .fold(0, (sum, group) => sum + group.tagCount)
       : 0;
-
-  /// 深拷贝类别（生成新的ID）
-  RandomCategory deepCopy() {
-    return copyWith(
-      id: const Uuid().v4(),
-      groups: groups.map((g) => g.deepCopy()).toList(),
-    );
-  }
 
   /// 添加分组
   RandomCategory addGroup(RandomTagGroup group) {

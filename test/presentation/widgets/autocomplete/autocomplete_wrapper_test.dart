@@ -7,18 +7,22 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
-import 'package:hive_flutter/hive_flutter.dart';
+import 'package:hive_ce_flutter/hive_ce_flutter.dart';
 import 'package:nai_launcher/core/autocomplete/autocomplete_cache_database.dart';
 import 'package:nai_launcher/core/autocomplete/autocomplete_providers.dart';
+import 'package:nai_launcher/presentation/providers/autocomplete_services_provider.dart';
 import 'package:nai_launcher/core/autocomplete/autocomplete_settings.dart';
 import 'package:nai_launcher/core/autocomplete/completion_models.dart';
 import 'package:nai_launcher/core/autocomplete/danbooru_completion_source.dart';
+import 'package:nai_launcher/core/autocomplete/zh_dictionary_service.dart';
+import 'package:nai_launcher/core/database/datasources/translation_data_source.dart';
 import 'package:nai_launcher/core/constants/storage_keys.dart';
-import 'package:nai_launcher/core/storage/local_storage_service.dart';
 import 'package:nai_launcher/l10n/app_localizations.dart';
 import 'package:nai_launcher/presentation/adaptive/interaction_policy.dart';
+import 'package:nai_launcher/presentation/providers/local_gallery_provider.dart';
 import 'package:nai_launcher/presentation/widgets/autocomplete/autocomplete_config.dart';
 import 'package:nai_launcher/presentation/widgets/autocomplete/autocomplete_wrapper.dart';
+import 'package:nai_launcher/presentation/widgets/gallery/local_gallery_toolbar.dart';
 import 'package:nai_launcher/presentation/providers/generation/generation_settings_notifiers.dart'
     as generation_settings;
 import 'package:nai_launcher/presentation/widgets/prompt/nai_syntax_controller.dart';
@@ -38,6 +42,54 @@ Future<void> _typeCurrentText(
   await tester.pump(const Duration(milliseconds: 30));
 }
 
+Future<TextEditingController> _pumpFixedSettingsField(
+  WidgetTester tester,
+  AutocompleteConfig config,
+) async {
+  final controller = TextEditingController(text: 'blu');
+  controller.selection = const TextSelection.collapsed(offset: 3);
+  final focusNode = FocusNode();
+  addTearDown(() {
+    controller.dispose();
+    focusNode.dispose();
+  });
+
+  await tester.pumpWidget(
+    ProviderScope(
+      overrides: [
+        autocompleteSettingsProvider.overrideWith(
+          _FixedAutocompleteSettingsNotifier.new,
+        ),
+        autocompleteServicesProvider.overrideWithValue(
+          AutocompleteServices(
+            localSources: [_TranslatedBaseSource()],
+            dictionaryTranslations: const _NoTranslations(),
+            llmTranslations: const _NoTranslations(),
+            danbooru: _NoDanbooru(),
+          ),
+        ),
+      ],
+      child: MaterialApp(
+        locale: const Locale('en'),
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: Scaffold(
+          body: AutocompleteWrapper(
+            controller: controller,
+            focusNode: focusNode,
+            config: config,
+            child: TextField(controller: controller, focusNode: focusNode),
+          ),
+        ),
+      ),
+    ),
+  );
+  focusNode.requestFocus();
+  await tester.pump();
+  await _typeCurrentText(tester, controller);
+  return controller;
+}
+
 void main() {
   late String hivePath;
 
@@ -45,13 +97,13 @@ void main() {
     hivePath =
         '${Directory.systemTemp.path}/autocomplete_widget_${DateTime.now().microsecondsSinceEpoch}';
     Hive.init(hivePath);
-    await Hive.openBox(StorageKeys.settingsBox);
-    await Hive.openBox(StorageKeys.historyBox);
+    // Memory backend: writes under FakeAsync never finish and lock the box
+    await Hive.openBox(StorageKeys.settingsBox, bytes: Uint8List(0));
   });
 
   tearDown(() async {
-    await Hive.close();
-    await Hive.deleteFromDisk();
+    // Bounded wait: a locked box fails fast instead of hitting the watchdog
+    await Hive.close().timeout(const Duration(seconds: 10));
   });
 
   testWidgets('shows local BASE results and inserts by keyboard', (
@@ -179,7 +231,7 @@ void main() {
         ProviderScope(
           overrides: [
             autocompleteSettingsProvider.overrideWith(
-              (ref) => _DisabledAutocompleteSettingsNotifier(),
+              _DisabledAutocompleteSettingsNotifier.new,
             ),
             autocompleteServicesProvider.overrideWithValue(
               AutocompleteServices(
@@ -384,7 +436,7 @@ void main() {
       ProviderScope(
         overrides: [
           autocompleteSettingsProvider.overrideWith(
-            (ref) => _OpenOnTagClickSettingsNotifier(),
+            _OpenOnTagClickSettingsNotifier.new,
           ),
           autocompleteServicesProvider.overrideWithValue(
             AutocompleteServices(
@@ -441,7 +493,7 @@ void main() {
         ProviderScope(
           overrides: [
             autocompleteSettingsProvider.overrideWith(
-              (ref) => _OpenOnTagClickSettingsNotifier(),
+              _OpenOnTagClickSettingsNotifier.new,
             ),
             autocompleteServicesProvider.overrideWithValue(
               AutocompleteServices(
@@ -501,7 +553,7 @@ void main() {
         ProviderScope(
           overrides: [
             autocompleteSettingsProvider.overrideWith(
-              (ref) => _OpenOnTagClickSettingsNotifier(),
+              _OpenOnTagClickSettingsNotifier.new,
             ),
             autocompleteServicesProvider.overrideWithValue(
               AutocompleteServices(
@@ -730,7 +782,7 @@ void main() {
         ProviderScope(
           overrides: [
             autocompleteSettingsProvider.overrideWith(
-              (ref) => _OpenOnTagClickSettingsNotifier(),
+              _OpenOnTagClickSettingsNotifier.new,
             ),
             autocompleteServicesProvider.overrideWithValue(
               AutocompleteServices(
@@ -796,19 +848,52 @@ void main() {
   testWidgets('global insertion and translation settings remain effective', (
     tester,
   ) async {
-    final controller = TextEditingController(text: 'blu');
-    controller.selection = const TextSelection.collapsed(offset: 3);
-    final focusNode = FocusNode();
-    addTearDown(() {
-      controller.dispose();
-      focusNode.dispose();
-    });
+    final controller = await _pumpFixedSettingsField(
+      tester,
+      const AutocompleteConfig(showTranslation: true, autoInsertComma: true),
+    );
 
+    expect(find.text('蓝眼睛'), findsNothing);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+
+    expect(controller.text, 'blue eyes');
+  });
+
+  testWidgets(
+    'space-separated fields keep canonical tags under the space preference',
+    (tester) async {
+      final controller = await _pumpFixedSettingsField(
+        tester,
+        const AutocompleteConfig(
+          autoInsertComma: false,
+          treatSpacesAsSeparators: true,
+        ),
+      );
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+
+      expect(controller.text, 'blue_eyes');
+    },
+  );
+
+  testWidgets('local gallery completes words or comma segments as typed', (
+    tester,
+  ) async {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          localGalleryNotifierProvider.overrideWith(
+            _AutocompleteGalleryNotifier.new,
+          ),
           autocompleteSettingsProvider.overrideWith(
-            (ref) => _FixedAutocompleteSettingsNotifier(),
+            _FixedAutocompleteSettingsNotifier.new,
+          ),
+          zhDictionaryServiceProvider.overrideWith(
+            () => ZhDictionaryNotifier(
+              ZhDictionaryService(translations: TranslationDataSource()),
+            ),
           ),
           autocompleteServicesProvider.overrideWithValue(
             AutocompleteServices(
@@ -819,34 +904,37 @@ void main() {
             ),
           ),
         ],
-        child: MaterialApp(
-          locale: const Locale('en'),
+        child: const MaterialApp(
+          locale: Locale('en'),
           localizationsDelegates: AppLocalizations.localizationsDelegates,
           supportedLocales: AppLocalizations.supportedLocales,
-          home: Scaffold(
-            body: AutocompleteWrapper(
-              controller: controller,
-              focusNode: focusNode,
-              config: const AutocompleteConfig(
-                showTranslation: true,
-                autoInsertComma: true,
-                replaceUnderscoreWithSpace: false,
-              ),
-              child: TextField(controller: controller, focusNode: focusNode),
-            ),
-          ),
+          home: Scaffold(body: LocalGalleryToolbar()),
         ),
       ),
     );
-    focusNode.requestFocus();
-    await tester.pump();
-    await _typeCurrentText(tester, controller);
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(LocalGalleryToolbar)),
+    );
+    final field = find.byType(TextField);
+    for (final (partial, expected) in [
+      ('blu', 'blue_eyes'),
+      ('solo blu', 'solo blue_eyes'),
+      ('solo　blu', 'solo　blue_eyes'),
+      ('solo, blue ey', 'solo, blue eyes'),
+      ('solo，blue ey', 'solo，blue eyes'),
+    ]) {
+      await tester.enterText(field, partial);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 30));
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
 
-    expect(find.text('蓝眼睛'), findsNothing);
-    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
-    await tester.pump();
-
-    expect(controller.text, 'blue eyes');
+      expect(tester.widget<TextField>(field).controller!.text, expected);
+      expect(
+        container.read(localGalleryNotifierProvider).filterCriteria.searchQuery,
+        expected,
+      );
+    }
   });
 
   testWidgets('does not query while an IME composition is active', (
@@ -864,7 +952,7 @@ void main() {
       ProviderScope(
         overrides: [
           autocompleteSettingsProvider.overrideWith(
-            (ref) => _FixedAutocompleteSettingsNotifier(),
+            _FixedAutocompleteSettingsNotifier.new,
           ),
           autocompleteServicesProvider.overrideWithValue(
             AutocompleteServices(
@@ -1265,7 +1353,7 @@ void main() {
       ProviderScope(
         overrides: [
           autocompleteSettingsProvider.overrideWith(
-            (ref) => _OpenOnTagClickSettingsNotifier(),
+            _OpenOnTagClickSettingsNotifier.new,
           ),
           autocompleteServicesProvider.overrideWithValue(
             AutocompleteServices(
@@ -1329,7 +1417,7 @@ void main() {
         ProviderScope(
           overrides: [
             autocompleteSettingsProvider.overrideWith(
-              (ref) => _OpenOnTagClickSettingsNotifier(),
+              _OpenOnTagClickSettingsNotifier.new,
             ),
             autocompleteServicesProvider.overrideWithValue(
               AutocompleteServices(
@@ -1859,13 +1947,12 @@ class _RelatedSource implements CompletionSource {
 
 class _DisabledAutocompleteSettingsNotifier
     extends AutocompleteSettingsNotifier {
-  _DisabledAutocompleteSettingsNotifier() : super(LocalStorageService()) {
-    state = const AutocompleteSettings(
-      enabled: false,
-      danbooruEnabled: false,
-      zhInstallPromptDismissed: true,
-    );
-  }
+  @override
+  AutocompleteSettings build() => const AutocompleteSettings(
+    enabled: false,
+    danbooruEnabled: false,
+    zhInstallPromptDismissed: true,
+  );
 
   @override
   Future<void> setEnabled(bool value) async {
@@ -1874,25 +1961,35 @@ class _DisabledAutocompleteSettingsNotifier
 }
 
 class _OpenOnTagClickSettingsNotifier extends AutocompleteSettingsNotifier {
-  _OpenOnTagClickSettingsNotifier() : super(LocalStorageService()) {
-    state = const AutocompleteSettings(
-      openOnTagClick: true,
-      danbooruEnabled: false,
-      zhInstallPromptDismissed: true,
+  @override
+  AutocompleteSettings build() => const AutocompleteSettings(
+    openOnTagClick: true,
+    danbooruEnabled: false,
+    zhInstallPromptDismissed: true,
+  );
+}
+
+class _AutocompleteGalleryNotifier extends LocalGalleryNotifier {
+  @override
+  LocalGalleryState build() => const LocalGalleryState(isInitialized: true);
+
+  @override
+  Future<void> setSearchQuery(String query) async {
+    state = state.copyWith(
+      filterCriteria: state.filterCriteria.copyWith(searchQuery: query),
     );
   }
 }
 
 class _FixedAutocompleteSettingsNotifier extends AutocompleteSettingsNotifier {
-  _FixedAutocompleteSettingsNotifier() : super(LocalStorageService()) {
-    state = const AutocompleteSettings(
-      showTranslations: false,
-      autoInsertComma: false,
-      replaceUnderscores: true,
-      danbooruEnabled: false,
-      zhInstallPromptDismissed: true,
-    );
-  }
+  @override
+  AutocompleteSettings build() => const AutocompleteSettings(
+    showTranslations: false,
+    autoInsertComma: false,
+    replaceUnderscores: true,
+    danbooruEnabled: false,
+    zhInstallPromptDismissed: true,
+  );
 }
 
 class _NoTranslations implements TranslationResolver {

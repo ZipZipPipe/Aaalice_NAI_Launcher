@@ -29,7 +29,7 @@ class ShortcutConfigNotifier extends _$ShortcutConfigNotifier {
 
   /// 获取当前状态（用于同步访问）
   ShortcutConfig get currentState {
-    return state.valueOrNull ?? ShortcutConfig.createDefault();
+    return state.value ?? ShortcutConfig.createDefault();
   }
 
   /// 初始化存储（在main.dart中调用）
@@ -130,6 +130,19 @@ class ShortcutConfigNotifier extends _$ShortcutConfigNotifier {
     if (_storage == null) return;
     await _storage!.saveConfig(currentState);
   }
+}
+
+final ShortcutConfig _defaultDispatchConfig = ShortcutConfig.createDefault();
+
+/// 按键分派使用的配置：加载中或加载出错时回退默认绑定
+ShortcutConfig resolveDispatchShortcutConfig(
+  AsyncValue<ShortcutConfig> configAsync,
+) {
+  return configAsync.when(
+    data: (config) => config,
+    loading: () => _defaultDispatchConfig,
+    error: (_, __) => _defaultDispatchConfig,
+  );
 }
 
 /// 快捷键绑定编辑状态

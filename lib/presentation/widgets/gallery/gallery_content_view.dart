@@ -1,21 +1,15 @@
-import 'dart:ui' as ui;
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
-import 'package:visibility_detector/visibility_detector.dart';
 
-import '../../../core/utils/app_logger.dart';
+import '../../../core/cache/gallery_aspect_ratio_cache.dart';
 import '../../../core/platform/platform_capabilities.dart';
 import '../../../core/utils/localization_extension.dart';
 import '../../../data/models/gallery/local_image_record.dart';
+import '../../../data/services/image_metadata_service.dart';
 import '../../providers/krita/krita_bridge_notifier.dart';
 import '../../providers/local_gallery_provider.dart';
-import '../../providers/reverse_prompt_provider.dart';
-import '../../router/app_routes.dart';
-import '../../services/image_workflow_launcher.dart';
+import '../../services/local_gallery_deletion.dart';
 import '../../providers/selection_mode_provider.dart';
-import '../common/app_toast.dart';
 import '../../widgets/grouped_grid_view.dart';
 import '../../utils/image_detail_opener.dart';
 import 'local_image_card_3d.dart';
@@ -24,39 +18,9 @@ import '../common/image_detail/image_detail_data.dart';
 import '../common/shimmer_skeleton.dart';
 import 'gallery_grid.dart';
 import 'gallery_state_views.dart';
+import 'grouped_gallery_card.dart';
+import '../common/image_card_action.dart';
 import 'local_image_context_menu.dart';
-
-/// 画廊项目构建函数类型
-typedef GalleryItemBuilder<T> =
-    Widget Function(
-      BuildContext context,
-      T item,
-      int index,
-      GalleryItemConfig config,
-    );
-
-/// 画廊项目配置
-class GalleryItemConfig {
-  final bool selectionMode;
-  final bool isSelected;
-  final double itemWidth;
-  final double aspectRatio;
-  final bool isVisible;
-  final VoidCallback? onTap;
-  final VoidCallback? onSelectionToggle;
-  final VoidCallback? onLongPress;
-
-  const GalleryItemConfig({
-    required this.selectionMode,
-    required this.isSelected,
-    required this.itemWidth,
-    required this.aspectRatio,
-    this.isVisible = false,
-    this.onTap,
-    this.onSelectionToggle,
-    this.onLongPress,
-  });
-}
 
 /// 通用画廊状态接口
 abstract class GalleryState<T> {
@@ -65,7 +29,6 @@ abstract class GalleryState<T> {
   bool get isGroupedView;
   bool get isPageLoading;
   bool get isGroupedLoading;
-  int get currentPage;
   bool get hasFilters;
   List<T> get filteredFiles;
 }
@@ -78,12 +41,10 @@ abstract class SelectionState {
 
 /// 画廊内容视图（含分组/3D/瀑布流切换）- 泛型版本
 class GenericGalleryContentView<T> extends ConsumerStatefulWidget {
-  final bool use3DCardView;
   final int columns;
   final double itemWidth;
   final GalleryState<T> state;
   final SelectionState selectionState;
-  final GalleryItemBuilder<T> itemBuilder;
   final String Function(T item) idExtractor;
   final void Function(T item, int index)? onTap;
   final void Function(T item, int index)? onDoubleTap;
@@ -92,10 +53,7 @@ class GenericGalleryContentView<T> extends ConsumerStatefulWidget {
   final void Function(T item)? onFavoriteToggle;
   final void Function(T item)? onSelectionToggle;
   final void Function(T item)? onEnterSelection;
-  final VoidCallback? onDeleted;
   final VoidCallback? onClearFilters;
-  final VoidCallback? onRefresh;
-  final void Function(int page)? onLoadPage;
   final GlobalKey<GroupedGridViewState>? groupedGridViewKey;
   final Gallery3DViewConfig<T>? view3DConfig;
   final Future<void> Function(
@@ -108,14 +66,15 @@ class GenericGalleryContentView<T> extends ConsumerStatefulWidget {
   final String? emptySubtitle;
   final IconData? emptyIcon;
 
+  /// 当前是否在某个普通相簿里浏览；传给卡片决定右键菜单是否显示「移出相簿」
+  final bool inAlbum;
+
   const GenericGalleryContentView({
     super.key,
-    this.use3DCardView = true,
     required this.columns,
     required this.itemWidth,
     required this.state,
     required this.selectionState,
-    required this.itemBuilder,
     required this.idExtractor,
     this.onTap,
     this.onDoubleTap,
@@ -124,10 +83,7 @@ class GenericGalleryContentView<T> extends ConsumerStatefulWidget {
     this.onFavoriteToggle,
     this.onSelectionToggle,
     this.onEnterSelection,
-    this.onDeleted,
     this.onClearFilters,
-    this.onRefresh,
-    this.onLoadPage,
     this.groupedGridViewKey,
     this.view3DConfig,
     this.onSendAction,
@@ -135,6 +91,7 @@ class GenericGalleryContentView<T> extends ConsumerStatefulWidget {
     this.emptyTitle,
     this.emptySubtitle,
     this.emptyIcon,
+    this.inAlbum = false,
   });
 
   @override
@@ -156,9 +113,8 @@ class Gallery3DViewConfig<T> {
 class _GenericGalleryContentViewState<T>
     extends ConsumerState<GenericGalleryContentView<T>>
     with TickerProviderStateMixin {
-  final Map<String, double> _aspectRatioCache = {};
+  final GalleryAspectRatioCache _aspectRatios = GalleryAspectRatioCache();
   bool _showSkeleton = false;
-  final Set<int> _visibleIndices = {};
   late final AnimationController _emptyStateController;
   late final Animation<double> _emptyStateAnimation;
   bool _motionPreferenceInitialized = false;
@@ -292,99 +248,41 @@ class _GenericGalleryContentViewState<T>
       images: state.groupedImages,
       columns: widget.columns,
       itemWidth: widget.itemWidth,
-      buildCard: (record) {
-        final isSelected = selectionState.selectedIds.contains(record.path);
-        final aspectRatio = _getCachedAspectRatio(record);
-        final index = state.groupedImages.indexOf(record);
-        final isVisible = _visibleIndices.contains(index);
-
-        return VisibilityDetector(
-          key: ValueKey('grouped_visibility_${record.path}_$index'),
-          onVisibilityChanged: (visibilityInfo) {
-            final isNowVisible = visibilityInfo.visibleFraction > 0.05;
-            final wasVisible = _visibleIndices.contains(index);
-
-            if (isNowVisible != wasVisible && mounted) {
-              setState(() {
-                if (isNowVisible) {
-                  _visibleIndices.add(index);
-                } else {
-                  _visibleIndices.remove(index);
-                }
-              });
+      buildCard: (record) => GroupedGalleryCard(
+        key: ValueKey(record.path),
+        record: record,
+        aspectRatios: _aspectRatios,
+        builder: (context, aspectRatio) => LocalImageCard3D(
+          record: record,
+          width: widget.itemWidth,
+          height: widget.itemWidth / aspectRatio,
+          isSelected: selectionState.selectedIds.contains(record.path),
+          onTap: () {
+            if (selectionState.isActive) {
+              widget.onSelectionToggle?.call(record as T);
             }
           },
-          child: LocalImageCard3D(
-            record: record,
-            width: widget.itemWidth,
-            height: widget.itemWidth / aspectRatio,
-            isSelected: isSelected,
-            isVisible: isVisible,
-            priority: isVisible ? 1 : 5,
-            onTap: () {
-              if (selectionState.isActive) {
-                widget.onSelectionToggle?.call(record as T);
-              }
-            },
-            onLongPress: () {
-              if (!selectionState.isActive) {
-                widget.onEnterSelection?.call(record as T);
-              }
-            },
-            onSecondaryTapUp: widget.onContextMenu != null
-                ? (details) =>
-                      widget.onContextMenu!(record as T, details.globalPosition)
-                : null,
-            onFavoriteToggle: () {
-              widget.onFavoriteToggle?.call(record as T);
-            },
-            onSendAction: widget.onSendAction != null
-                ? (action) => widget.onSendAction!(record, action)
-                : null,
-            enableAddToAgent: !selectionState.isActive,
-            isKritaConnected: widget.isKritaConnected,
-          ),
-        );
-      },
+          onLongPress: () {
+            if (!selectionState.isActive) {
+              widget.onEnterSelection?.call(record as T);
+            }
+          },
+          onSecondaryTapUp: widget.onContextMenu != null
+              ? (details) =>
+                    widget.onContextMenu!(record as T, details.globalPosition)
+              : null,
+          onFavoriteToggle: () {
+            widget.onFavoriteToggle?.call(record as T);
+          },
+          onSendAction: widget.onSendAction != null
+              ? (action) => widget.onSendAction!(record, action)
+              : null,
+          enableAddToAgent: !selectionState.isActive,
+          isKritaConnected: widget.isKritaConnected,
+          inAlbum: widget.inAlbum,
+        ),
+      ),
     );
-  }
-
-  double _getCachedAspectRatio(LocalImageRecord record) {
-    if (_aspectRatioCache.containsKey(record.path)) {
-      return _aspectRatioCache[record.path]!;
-    }
-
-    _calculateAspectRatioForRecord(record).then((value) {
-      if (mounted && value != _aspectRatioCache[record.path]) {
-        setState(() => _aspectRatioCache[record.path] = value);
-      }
-    });
-
-    return 1.0;
-  }
-
-  Future<double> _calculateAspectRatioForRecord(LocalImageRecord record) async {
-    final metadata = record.metadata;
-    if (metadata?.width != null && metadata?.height != null) {
-      final width = metadata!.width!;
-      final height = metadata.height!;
-      if (width > 0 && height > 0) return width / height;
-    }
-
-    try {
-      final buffer = await ui.ImmutableBuffer.fromFilePath(record.path);
-      final descriptor = await ui.ImageDescriptor.encoded(buffer);
-      if (descriptor.width > 0 && descriptor.height > 0) {
-        return descriptor.width / descriptor.height;
-      }
-    } catch (e) {
-      AppLogger.d(
-        'Failed to read gallery image aspect ratio: $e',
-        'GalleryContent',
-      );
-    }
-
-    return 1.0;
   }
 
   Widget _buildLoadingSkeleton() {
@@ -474,6 +372,7 @@ class _GenericGalleryContentViewState<T>
           ? (record, index, action) => widget.onSendAction!(record, action)
           : null,
       isKritaConnected: widget.isKritaConnected,
+      inAlbum: widget.inAlbum,
     );
   }
 
@@ -505,10 +404,7 @@ class _LocalGalleryStateAdapter implements GalleryState<LocalImageRecord> {
   bool get isGroupedLoading => _state.isGroupedLoading;
 
   @override
-  int get currentPage => _state.currentPage;
-
-  @override
-  bool get hasFilters => _state.hasFilters;
+  bool get hasFilters => _state.filterCriteria.hasClearableFilters;
 
   @override
   List<LocalImageRecord> get filteredFiles =>
@@ -528,31 +424,47 @@ class _LocalSelectionStateAdapter implements SelectionState {
   Set<String> get selectedIds => _state.selectedIds;
 }
 
+// 大图查看器里的右键菜单：这些操作会离开画廊页
+const _leavesGallery = {
+  LocalImageContextAction.sendToTextToImage,
+  LocalImageContextAction.importMetadata,
+  LocalImageContextAction.sendToImg2Img,
+  LocalImageContextAction.sendToReversePrompt,
+  LocalImageContextAction.sendToStyleTransfer,
+  LocalImageContextAction.sendToPreciseReference,
+  LocalImageContextAction.upscale,
+};
+
+// 这些操作会移动或删除文件，查看器里的图片列表不会跟着更新，所以右键菜单不提供
+const _hiddenInViewer = {ImageCardActionId.classify, ImageCardActionId.delete};
+
 /// 本地画廊内容视图
 class LocalGalleryContentView extends ConsumerWidget {
-  final bool use3DCardView;
   final int columns;
   final double itemWidth;
   final void Function(LocalImageRecord record)? onReuseMetadata;
+  final Future<GalleryImageDeleteResult> Function(LocalImageRecord record)?
+  onDelete;
   final void Function(LocalImageRecord record, Offset position)? onContextMenu;
   final Future<void> Function(
     LocalImageRecord record,
-    LocalImageContextAction action,
-  )?
+    LocalImageContextAction action, {
+    VoidCallback? onSent,
+  })?
   onSendAction;
-  final VoidCallback? onDeleted;
   final GlobalKey<GroupedGridViewState>? groupedGridViewKey;
+  final bool inAlbum;
 
   const LocalGalleryContentView({
     super.key,
-    this.use3DCardView = true,
     required this.columns,
     required this.itemWidth,
     this.onReuseMetadata,
+    this.onDelete,
     this.onContextMenu,
     this.onSendAction,
-    this.onDeleted,
     this.groupedGridViewKey,
+    this.inAlbum = false,
   });
 
   @override
@@ -571,97 +483,143 @@ class LocalGalleryContentView extends ConsumerWidget {
       List<LocalImageRecord> images,
       int initialIndex,
     ) {
+      final container = ProviderScope.containerOf(context, listen: false);
+      final gallery = container.read(localGalleryNotifierProvider.notifier);
+      final l10n = context.l10n;
+      var pageNumber = state.currentPage;
       bool getFavoriteStatus(String path) {
-        final providerState = ref.read(localGalleryNotifierProvider);
+        final providerState = container.read(localGalleryNotifierProvider);
         final image = providerState.currentImages
             .cast<LocalImageRecord?>()
             .firstWhere((img) => img?.path == path, orElse: () => null);
         return image?.isFavorite ?? false;
       }
 
+      final metadataService = ref.read(imageMetadataServiceProvider);
+      LocalImageDetailData detailFor(LocalImageRecord record) =>
+          LocalImageDetailData(
+            record,
+            getFavoriteStatus: getFavoriteStatus,
+            metadataService: metadataService,
+          );
+      Future<ImageDetailDeleteResult> pageAfterDelete() async {
+        final page = await gallery.settledPage();
+        if (page.pageNeedsRetry) {
+          return ImageDetailDeletePageError(
+            l10n.localGallery_loadFailed(
+              page.error?.localized(l10n) ?? l10n.localGallery_unknownError,
+            ),
+            retry: () async {
+              await gallery.loadPage(page.currentPage);
+              return pageAfterDelete();
+            },
+          );
+        }
+        final previousPage = page.currentPage < pageNumber;
+        pageNumber = page.currentPage;
+        return ImageDetailDeletePage(
+          page.currentImages.map(detailFor).toList(),
+          previousPage: previousPage,
+        );
+      }
+
+      // 查看器翻到头尾时换成相邻一页；画廊列表同步翻页，关掉查看器后停在同一页
+      Future<List<ImageDetailData>?> loadAdjacentPage(bool forward) async {
+        final notifier = container.read(localGalleryNotifierProvider.notifier);
+        final before = container.read(localGalleryNotifierProvider).currentPage;
+        await (forward ? notifier.loadNextPage() : notifier.loadPreviousPage());
+        final after = container.read(localGalleryNotifierProvider);
+        return after.currentPage == before
+            ? null
+            : after.currentImages.map(detailFor).toList();
+      }
+
+      bool hasAdjacentPage(bool forward) {
+        final galleryState = container.read(localGalleryNotifierProvider);
+        return !galleryState.isGroupedView &&
+            !(forward ? galleryState.isLastPage : galleryState.isFirstPage);
+      }
+
+      final send = onSendAction;
       ImageDetailOpener.showMultipleImmediate(
         context,
-        images: images
-            .map(
-              (r) =>
-                  LocalImageDetailData(r, getFavoriteStatus: getFavoriteStatus),
-            )
-            .toList(),
+        images: images.map(detailFor).toList(),
         initialIndex: initialIndex,
         showMetadataPanel: true,
-        showThumbnails: images.length > 1,
+        pageNavigator: ImageDetailPageNavigator(
+          hasMore: hasAdjacentPage,
+          load: loadAdjacentPage,
+        ),
         callbacks: ImageDetailCallbacks(
+          onDelete: onDelete == null
+              ? null
+              : (data) async {
+                  final result = await onDelete!(
+                    (data as LocalImageDetailData).record,
+                  );
+                  if (!result.fileIsGone) return null;
+                  return pageAfterDelete();
+                },
+          onAddToAlbum: send == null
+              ? null
+              : (data) => send(
+                  (data as LocalImageDetailData).record,
+                  LocalImageContextAction.addToAlbum,
+                ),
+          contextMenuActions: send == null
+              ? null
+              : (menuContext, data) {
+                  final record = (data as LocalImageDetailData).record;
+                  final metadata = record.metadata;
+                  return LocalImageContextMenu.buildActions(
+                        menuContext,
+                        onAction: (action) async {
+                          // 这些操作会离开画廊（跳到生成页），先关掉查看器
+                          if (_leavesGallery.contains(action) &&
+                              menuContext.mounted) {
+                            Navigator.of(menuContext).pop();
+                          }
+                          await send(record, action);
+                        },
+                        hasImportableMetadata: metadata?.hasData == true,
+                        hasPrompt: metadata?.prompt.isNotEmpty == true,
+                        hasSeed: metadata?.seed != null,
+                        isKritaConnected: isKritaConnected,
+                      )
+                      .where((action) => !_hiddenInViewer.contains(action.id))
+                      .toList();
+                },
           onReuseMetadata: onReuseMetadata != null
               ? (data) async =>
                     onReuseMetadata?.call((data as LocalImageDetailData).record)
               : null,
-          onFavoriteToggle: (data) => ref
+          onFavoriteToggle: (data) => container
               .read(localGalleryNotifierProvider.notifier)
               .toggleFavorite((data as LocalImageDetailData).record.path),
-          onSendToImg2Img: (data) async {
-            try {
-              final bytes = await data.getImageBytes();
-              ImageWorkflowLauncher.openImageToImage(ref, bytes);
-              if (!context.mounted) return;
-              Navigator.of(context).pop();
-              context.go(AppRoutes.home);
-              AppToast.success(context, context.l10n.gallery_sentToImg2Img);
-            } catch (e) {
-              if (context.mounted) {
-                AppToast.error(context, context.l10n.gallery_sendFailed('$e'));
-              }
-            }
-          },
-          onSendToReversePrompt: (data) async {
-            try {
-              await ref
-                  .read(reversePromptProvider.notifier)
-                  .addImage(
-                    await data.getImageBytes(),
-                    name: data.fileInfo?.fileName ?? 'gallery-image',
-                  );
-              if (!context.mounted) return;
-              Navigator.of(context).pop();
-              context.go(AppRoutes.home);
-              AppToast.success(
-                context,
-                context.l10n.gallery_sentToReversePrompt,
-              );
-            } catch (e) {
-              if (context.mounted) {
-                AppToast.error(context, context.l10n.gallery_sendFailed('$e'));
-              }
-            }
-          },
+          onSendToImg2Img: send == null
+              ? null
+              : (data, closeViewer) => send(
+                  (data as LocalImageDetailData).record,
+                  LocalImageContextAction.sendToImg2Img,
+                  onSent: closeViewer,
+                ),
+          onSendToReversePrompt: send == null
+              ? null
+              : (data, closeViewer) => send(
+                  (data as LocalImageDetailData).record,
+                  LocalImageContextAction.sendToReversePrompt,
+                  onSent: closeViewer,
+                ),
         ),
       );
     }
 
     return GenericGalleryContentView<LocalImageRecord>(
-      use3DCardView: use3DCardView,
       columns: columns,
       itemWidth: itemWidth,
       state: _LocalGalleryStateAdapter(state),
       selectionState: _LocalSelectionStateAdapter(selectionState),
       idExtractor: (record) => record.path,
-      itemBuilder: (context, record, index, config) => LocalImageCard3D(
-        record: record,
-        width: config.itemWidth,
-        height: config.itemWidth / config.aspectRatio,
-        isSelected: config.isSelected,
-        isVisible: config.isVisible,
-        priority: config.isVisible ? 1 : 5,
-        onTap: config.selectionMode ? config.onSelectionToggle : config.onTap,
-        onLongPress: config.onLongPress,
-        onFavoriteToggle: () => ref
-            .read(localGalleryNotifierProvider.notifier)
-            .toggleFavorite(record.path),
-        onSendAction: onSendAction != null
-            ? (action) => onSendAction!(record, action)
-            : null,
-        enableAddToAgent: !config.selectionMode,
-        isKritaConnected: isKritaConnected,
-      ),
       onSelectionToggle: (record) => ref
           .read(localGallerySelectionNotifierProvider.notifier)
           .toggle(record.path),
@@ -672,13 +630,9 @@ class LocalGalleryContentView extends ConsumerWidget {
           .read(localGalleryNotifierProvider.notifier)
           .toggleFavorite(record.path),
       onContextMenu: onContextMenu,
-      onDeleted: onDeleted,
-      onClearFilters: () =>
-          ref.read(localGalleryNotifierProvider.notifier).clearAllFilters(),
-      onRefresh: () =>
-          ref.read(localGalleryNotifierProvider.notifier).refresh(),
-      onLoadPage: (page) =>
-          ref.read(localGalleryNotifierProvider.notifier).loadPage(page),
+      onClearFilters: () => ref
+          .read(localGalleryNotifierProvider.notifier)
+          .clearFiltersWithinScope(),
       groupedGridViewKey: groupedGridViewKey,
       view3DConfig: Gallery3DViewConfig<LocalImageRecord>(
         images: state.currentImages,
@@ -686,6 +640,7 @@ class LocalGalleryContentView extends ConsumerWidget {
       ),
       onSendAction: onSendAction,
       isKritaConnected: isKritaConnected,
+      inAlbum: inAlbum,
     );
   }
 }

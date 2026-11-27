@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../../../data/models/character/character_prompt.dart';
+import '../comfyui_import_wrapper.dart';
 import '../unified/unified_prompt_config.dart';
 import '../unified/unified_prompt_input.dart';
 import 'prompt_editor_toolbar.dart';
@@ -43,8 +43,11 @@ class PromptEditorWithToolbar extends ConsumerStatefulWidget {
   /// 提示词助手的稳定会话标识
   final String? sessionId;
 
-  /// Whether the input owns its default bottom-right assistant entry.
+  /// Whether the input enables assistant shortcuts and its built-in entry.
   final bool enableAssistant;
+
+  /// Whether the built-in bottom-right entry is mounted inside the input.
+  final bool showAssistantEntry;
   final bool showTagModeSwitch;
   final Object? assistantTapRegionGroupId;
 
@@ -81,8 +84,7 @@ class PromptEditorWithToolbar extends ConsumerStatefulWidget {
   /// ComfyUI 多角色导入回调
   ///
   /// 当用户确认导入 ComfyUI 格式的多角色提示词时触发。
-  final void Function(String globalPrompt, List<CharacterPrompt> characters)?
-  onComfyuiImport;
+  final ComfyuiImportCallback? onComfyuiImport;
 
   const PromptEditorWithToolbar({
     super.key,
@@ -94,6 +96,7 @@ class PromptEditorWithToolbar extends ConsumerStatefulWidget {
     this.onChanged,
     this.sessionId,
     this.enableAssistant = true,
+    this.showAssistantEntry = true,
     this.showTagModeSwitch = true,
     this.assistantTapRegionGroupId,
     this.onRandomPressed,
@@ -203,6 +206,7 @@ class _PromptEditorWithToolbarState
             onChanged: widget.onChanged,
             sessionId: widget.sessionId,
             enableAssistant: widget.enableAssistant,
+            showAssistantEntry: widget.showAssistantEntry,
             showTagModeSwitch: widget.showTagModeSwitch,
             assistantTapRegionGroupId: widget.assistantTapRegionGroupId,
             maxLines: widget.maxLines,

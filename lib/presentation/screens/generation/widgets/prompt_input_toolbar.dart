@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -15,6 +17,7 @@ import '../../../widgets/prompt/regex_rules_dialog.dart';
 import '../../../widgets/prompt/toolbar/toolbar.dart';
 import '../../../widgets/prompt/uc_preset_selector.dart';
 import 'prompt_input_controller.dart';
+import 'prompt_input_editor.dart';
 import 'prompt_input_models.dart';
 import '../../../widgets/prompt/prompt_footer_style.dart';
 import 'prompt_type_switch.dart';
@@ -220,98 +223,142 @@ class PromptInputToolbar extends ConsumerWidget {
   ) async {
     final position = PromptEditorToolbar.getSettingsButtonPosition(context);
     if (position == null) return;
-    final theme = Theme.of(context);
-    final autocomplete = ref.read(autocompleteSettingsProvider);
-    final autoFormat = ref.read(autoFormatPromptSettingsProvider);
-    final highlight = ref.read(highlightEmphasisSettingsProvider);
-    final sdConvert = ref.read(sdSyntaxAutoConvertSettingsProvider);
-    final resolveAlias = ref.read(resolveAliasOnCopySettingsProvider);
-    final cooccurrence = ref
-        .read(completion_settings.autocompleteSettingsProvider)
-        .relatedTagsEnabled;
-    final regexCount = ref.read(promptRegexRulesProvider).length;
     final value = await showMenu<String>(
       context: context,
       position: position,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
-      items: [
-        _toggleItem(
-          context,
-          theme,
-          'autocomplete',
-          autocomplete,
-          context.l10n.prompt_smartAutocomplete,
-          context.l10n.prompt_smartAutocompleteSubtitle,
-        ),
-        _toggleItem(
-          context,
-          theme,
-          'auto_format',
-          autoFormat,
-          context.l10n.prompt_autoFormat,
-          context.l10n.prompt_autoFormatSubtitle,
-        ),
-        _toggleItem(
-          context,
-          theme,
-          'highlight',
-          highlight,
-          context.l10n.prompt_highlightEmphasis,
-          context.l10n.prompt_highlightEmphasisSubtitle,
-        ),
-        _toggleItem(
-          context,
-          theme,
-          'sd_syntax_convert',
-          sdConvert,
-          context.l10n.prompt_sdSyntaxAutoConvert,
-          context.l10n.prompt_sdSyntaxAutoConvertSubtitle,
-        ),
-        _actionItem(
-          theme,
-          'regex_rules',
-          Icons.find_replace,
-          context.l10n.prompt_regexRulesManage,
-          context.l10n.prompt_regexRulesCount(regexCount),
-        ),
-        _toggleItem(
-          context,
-          theme,
-          'resolve_alias_on_copy',
-          resolveAlias,
-          context.l10n.prompt_resolveAliasOnCopy,
-          context.l10n.prompt_resolveAliasOnCopySubtitle,
-        ),
-        _toggleItem(
-          context,
-          theme,
-          'cooccurrence',
-          cooccurrence,
-          context.l10n.prompt_cooccurrenceRecommendation,
-          context.l10n.prompt_cooccurrenceRecommendationSubtitle,
-        ),
-      ],
+      items: _settingsMenuItems(context, ref),
     );
-    if (!context.mounted) return;
+    if (value == null || !context.mounted) return;
+    _applySettingsSelection(context, ref, value);
+  }
+
+  static List<PopupMenuEntry<String>> _settingsMenuItems(
+    BuildContext context,
+    WidgetRef ref,
+  ) {
+    final theme = Theme.of(context);
+    final l10n = context.l10n;
+    return [
+      _toggleItem(
+        context,
+        theme,
+        'autocomplete',
+        ref.read(autocompleteSettingsProvider),
+        l10n.prompt_smartAutocomplete,
+        l10n.prompt_smartAutocompleteSubtitle,
+      ),
+      _toggleItem(
+        context,
+        theme,
+        'auto_format',
+        ref.read(autoFormatPromptSettingsProvider),
+        l10n.prompt_autoFormat,
+        l10n.prompt_autoFormatSubtitle,
+      ),
+      _toggleItem(
+        context,
+        theme,
+        'replace_underscores',
+        ref.read(completion_settings.replaceUnderscoresPreferenceProvider),
+        l10n.prompt_replaceUnderscores,
+        l10n.prompt_replaceUnderscoresSubtitle,
+      ),
+      _toggleItem(
+        context,
+        theme,
+        'highlight',
+        ref.read(highlightEmphasisSettingsProvider),
+        l10n.prompt_highlightEmphasis,
+        l10n.prompt_highlightEmphasisSubtitle,
+      ),
+      _toggleItem(
+        context,
+        theme,
+        'sd_syntax_convert',
+        ref.read(sdSyntaxAutoConvertSettingsProvider),
+        l10n.prompt_sdSyntaxAutoConvert,
+        l10n.prompt_sdSyntaxAutoConvertSubtitle,
+      ),
+      _toggleItem(
+        context,
+        theme,
+        'separate_numeric_weight_closing',
+        ref.read(separateNumericWeightClosingSettingsProvider),
+        l10n.prompt_separateNumericWeightClosing,
+        l10n.prompt_separateNumericWeightClosingSubtitle,
+      ),
+      _actionItem(
+        theme,
+        'regex_rules',
+        Icons.find_replace,
+        l10n.prompt_regexRulesManage,
+        l10n.prompt_regexRulesCount(ref.read(promptRegexRulesProvider).length),
+      ),
+      _toggleItem(
+        context,
+        theme,
+        'resolve_alias_on_copy',
+        ref.read(resolveAliasOnCopySettingsProvider),
+        l10n.prompt_resolveAliasOnCopy,
+        l10n.prompt_resolveAliasOnCopySubtitle,
+      ),
+      _toggleItem(
+        context,
+        theme,
+        'detect_multi_character_on_paste',
+        ref.read(detectMultiCharacterOnPasteSettingsProvider),
+        l10n.prompt_detectMultiCharacterOnPaste,
+        l10n.prompt_detectMultiCharacterOnPasteSubtitle,
+      ),
+      _toggleItem(
+        context,
+        theme,
+        'cooccurrence',
+        ref
+            .read(completion_settings.autocompleteSettingsProvider)
+            .relatedTagsEnabled,
+        l10n.prompt_cooccurrenceRecommendation,
+        l10n.prompt_cooccurrenceRecommendationSubtitle,
+      ),
+    ];
+  }
+
+  static void _applySettingsSelection(
+    BuildContext context,
+    WidgetRef ref,
+    String value,
+  ) {
     switch (value) {
       case 'autocomplete':
         ref.read(autocompleteSettingsProvider.notifier).toggle();
       case 'auto_format':
         ref.read(autoFormatPromptSettingsProvider.notifier).toggle();
+      case 'replace_underscores':
+        final current = ref.read(
+          completion_settings.replaceUnderscoresPreferenceProvider,
+        );
+        ref
+            .read(completion_settings.autocompleteSettingsProvider.notifier)
+            .setReplaceUnderscores(!current);
       case 'highlight':
         ref.read(highlightEmphasisSettingsProvider.notifier).toggle();
       case 'sd_syntax_convert':
         ref.read(sdSyntaxAutoConvertSettingsProvider.notifier).toggle();
+      case 'separate_numeric_weight_closing':
+        ref
+            .read(separateNumericWeightClosingSettingsProvider.notifier)
+            .toggle();
       case 'regex_rules':
         RegexRulesDialog.show(context);
       case 'resolve_alias_on_copy':
         ref.read(resolveAliasOnCopySettingsProvider.notifier).toggle();
+      case 'detect_multi_character_on_paste':
+        ref.read(detectMultiCharacterOnPasteSettingsProvider.notifier).toggle();
       case 'cooccurrence':
         final provider = completion_settings.autocompleteSettingsProvider;
         final current = ref.read(provider).relatedTagsEnabled;
         ref.read(provider.notifier).setRelatedTagsEnabled(!current);
-      case null:
-        return;
     }
   }
 
@@ -435,12 +482,12 @@ class _MobileFullscreenToolbar extends StatelessWidget {
           expand: true,
           compact: true,
         );
-        Widget buildWorkbench() => Column(
+        Widget buildWorkbench(Widget editorArea) => Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             typeSwitch,
             const SizedBox(height: 8),
-            Expanded(child: editor),
+            editorArea,
             footer,
             const SizedBox(height: 8),
             SizedBox(
@@ -528,11 +575,19 @@ class _MobileFullscreenToolbar extends StatelessWidget {
           ],
         );
 
-        if (constraints.maxHeight >= 240) return buildWorkbench();
-        final textScale = MediaQuery.textScalerOf(context).scale(1);
-        final scrollableHeight = 140 * textScale.clamp(1, 3).toDouble();
+        if (constraints.maxHeight >= 240) {
+          return buildWorkbench(Expanded(child: editor));
+        }
         return SingleChildScrollView(
-          child: SizedBox(height: scrollableHeight, child: buildWorkbench()),
+          child: buildWorkbench(
+            SizedBox(
+              height: math.max(
+                constraints.maxHeight,
+                PromptInputEditor.minimumHeight(context),
+              ),
+              child: editor,
+            ),
+          ),
         );
       },
     );

@@ -1,15 +1,16 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hive_flutter/hive_flutter.dart';
+import 'package:hive_ce_flutter/hive_ce_flutter.dart';
 import 'package:nai_launcher/core/constants/storage_keys.dart';
 import 'package:nai_launcher/core/platform/platform_capabilities.dart';
 import 'package:nai_launcher/core/storage/local_storage_service.dart';
 import 'package:nai_launcher/data/models/user/user_subscription.dart';
 import 'package:nai_launcher/l10n/app_localizations.dart';
-import 'package:nai_launcher/presentation/providers/auth_provider.dart';
+import 'package:nai_launcher/data/services/auth_provider.dart';
 import 'package:nai_launcher/presentation/providers/cost_estimate_provider.dart';
 import 'package:nai_launcher/presentation/providers/krita/krita_bridge_notifier.dart';
 import 'package:nai_launcher/presentation/providers/queue_execution_provider.dart';
@@ -30,8 +31,8 @@ void main() {
       'web_left_panel_test_',
     );
     Hive.init(hiveDirectory.path);
-    await Hive.openBox(StorageKeys.settingsBox);
-    await Hive.openBox(StorageKeys.historyBox);
+    // 内存后端：落盘写一旦从 widget test 的 FakeAsync 时钟发起就不会完成，会锁死 box
+    await Hive.openBox(StorageKeys.settingsBox, bytes: Uint8List(0));
   });
 
   setUp(() async {
@@ -40,7 +41,6 @@ void main() {
     );
     SharedPreferences.setMockInitialValues({});
     await Hive.box(StorageKeys.settingsBox).clear();
-    await Hive.box(StorageKeys.historyBox).clear();
   });
 
   tearDown(() {
@@ -48,7 +48,8 @@ void main() {
   });
 
   tearDownAll(() async {
-    await Hive.close();
+    // 有界等待：box 被锁死时快速失败，不把整个测试分片拖到看门狗超时
+    await Hive.close().timeout(const Duration(seconds: 10));
     if (await hiveDirectory.exists()) {
       await hiveDirectory.delete(recursive: true);
     }
@@ -222,7 +223,7 @@ Future<void> _pumpPanel(
         authNotifierProvider.overrideWith(_AuthenticatedAuthNotifier.new),
         localStorageServiceProvider.overrideWithValue(effectiveStorage),
         kritaBridgeNotifierProvider.overrideWith(
-          (ref) => _TestKritaBridgeNotifier(),
+          _TestKritaBridgeNotifier.new,
         ),
         replicationQueueNotifierProvider.overrideWith(
           _TestReplicationQueueNotifier.new,

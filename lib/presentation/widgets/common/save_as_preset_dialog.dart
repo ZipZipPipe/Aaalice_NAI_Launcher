@@ -40,6 +40,7 @@ class SaveAsPresetDialog extends ConsumerStatefulWidget {
     final result = await AdaptivePresenter.showForm<bool>(
       context: context,
       dialogWidth: 460,
+      headerScrollsWithContent: true,
       titleBuilder: (panelContext) => Row(
         children: [
           Icon(
@@ -174,7 +175,7 @@ class _SaveAsPresetDialogState extends ConsumerState<SaveAsPresetDialog> {
     if (_includeNegativePrompt) {
       addCategory(
         l10n.prompt_negativePrompt,
-        _extractTags(metadata.displayNegativePrompt),
+        _extractTags(metadata.mainNegativePrompt),
       );
     }
     return categories;

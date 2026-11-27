@@ -1,11 +1,19 @@
 /// Windows 平台应用内更新的辅助脚本生成器。
 ///
-/// 更新在应用完全退出后执行。脚本记录日志与结构化结果，安装失败会
-/// 重新启动旧版本；便携版通过同卷目录切换和备份实现可回滚更新。
+/// 更新在应用完全退出后执行。脚本先写启动标记供主应用确认接管，再记录
+/// 日志与结构化结果；便携版通过同卷目录切换和备份实现可回滚更新。
 library;
+
+import 'dart:convert';
+import 'dart:typed_data';
 
 class WindowsUpdateScript {
   WindowsUpdateScript._();
+
+  // Windows PowerShell 5.1 按系统 ANSI 代码页读取无 BOM 的脚本，非 ASCII 路径和注释会被解错。
+  static Uint8List encode(String script) => utf8.encode('$_utf8Bom$script');
+
+  static const String _utf8Bom = '\uFEFF';
 
   static String buildInstallerScript({
     required int appPid,
@@ -14,6 +22,7 @@ class WindowsUpdateScript {
     required String executablePath,
     required String resultPath,
     required String pendingMetadataPath,
+    required String startedMarkerPath,
     required String logPath,
   }) {
     return '''
@@ -24,10 +33,14 @@ class WindowsUpdateScript {
 \$ExePath = '${_escape(executablePath)}'
 \$ResultPath = '${_escape(resultPath)}'
 \$PendingMetadataPath = '${_escape(pendingMetadataPath)}'
+\$StartedPath = '${_escape(startedMarkerPath)}'
 \$LogPath = '${_escape(logPath)}'
 \$ScriptPath = \$MyInvocation.MyCommand.Path
 
 ${_commonFunctions()}
+
+Set-SafeWorkingDirectory
+Write-UpdateStarted
 
 try {
   Write-UpdateLog "Waiting for application process \$AppPid to exit."
@@ -42,13 +55,13 @@ try {
   Remove-Item -LiteralPath \$PendingMetadataPath -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath \$InstallerPath -Force -ErrorAction SilentlyContinue
   Write-UpdateLog 'Installer update completed successfully.'
-  Start-Process -FilePath \$ExePath
+  Start-Process -FilePath \$ExePath -WorkingDirectory ([System.IO.Path]::GetDirectoryName(\$ExePath))
 } catch {
   \$FailureMessage = \$_.Exception.Message
   Write-UpdateLog "Installer update failed: \$FailureMessage"
   Write-UpdateResult -Success \$false -Message \$FailureMessage
   if (Test-Path -LiteralPath \$ExePath) {
-    Start-Process -FilePath \$ExePath -ErrorAction SilentlyContinue
+    Start-Process -FilePath \$ExePath -WorkingDirectory ([System.IO.Path]::GetDirectoryName(\$ExePath)) -ErrorAction SilentlyContinue
   }
   exit 1
 } finally {
@@ -63,10 +76,12 @@ try {
     required String zipPath,
     required String appDirectory,
     required String executableName,
+    required String proxyExecutableName,
     required String extractDirectory,
     required String backupDirectory,
     required String resultPath,
     required String pendingMetadataPath,
+    required String startedMarkerPath,
     required String logPath,
   }) {
     return '''
@@ -76,15 +91,21 @@ try {
 \$ZipPath = '${_escape(zipPath)}'
 \$AppDir = '${_escape(appDirectory)}'
 \$ExeName = '${_escape(executableName)}'
+\$ProxyExeName = '${_escape(proxyExecutableName)}'
 \$ExtractDir = '${_escape(extractDirectory)}'
 \$BackupDir = '${_escape(backupDirectory)}'
 \$ResultPath = '${_escape(resultPath)}'
 \$PendingMetadataPath = '${_escape(pendingMetadataPath)}'
+\$StartedPath = '${_escape(startedMarkerPath)}'
 \$LogPath = '${_escape(logPath)}'
 \$ScriptPath = \$MyInvocation.MyCommand.Path
 \$Swapped = \$false
 
 ${_commonFunctions()}
+${_stopBundledProxiesFunction()}
+
+Set-SafeWorkingDirectory
+Write-UpdateStarted
 
 try {
   Write-UpdateLog "Waiting for application process \$AppPid to exit."
@@ -110,7 +131,7 @@ try {
   \$CanPreserveUserFiles = \$false
   \$OldManifestPath = Join-Path \$AppDir 'app_files_manifest.json'
   if (Test-Path -LiteralPath \$OldManifestPath) {
-    \$OldManifest = Get-Content -LiteralPath \$OldManifestPath -Raw | ConvertFrom-Json
+    \$OldManifest = Get-Content -LiteralPath \$OldManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
     if (\$null -eq \$OldManifest.files) {
       throw 'The existing application file manifest is invalid.'
     }
@@ -123,16 +144,29 @@ try {
     Write-UpdateLog 'No existing file manifest; skipping user-file migration for this update.'
   }
 
+  Stop-BundledProxies
+
   Write-UpdateLog "Moving current application to backup: \$BackupDir"
   Move-Item -LiteralPath \$AppDir -Destination \$BackupDir
   Move-Item -LiteralPath \$SourceDir -Destination \$AppDir
   \$Swapped = \$true
 
   if (\$CanPreserveUserFiles) {
-    Get-ChildItem -LiteralPath \$BackupDir -File -Recurse | ForEach-Object {
-      \$RelativePath = \$_.FullName.Substring(\$BackupDir.Length).TrimStart('\\')
-      if (!\$ManagedFiles.ContainsKey(\$RelativePath.ToLowerInvariant())) {
-        \$Destination = Join-Path \$AppDir \$RelativePath
+    # 相对路径按文件名逐级拼接。Get-ChildItem 会把 8.3 短路径展开成长路径，
+    # 按 \$BackupDir 的长度截取 FullName 会错位，把文件复制到错误位置。
+    function Get-BackupFiles([string]\$Directory, [string]\$RelativeDirectory) {
+      foreach (\$Item in @(Get-ChildItem -LiteralPath \$Directory)) {
+        \$RelativePath = if (\$RelativeDirectory) { Join-Path \$RelativeDirectory \$Item.Name } else { \$Item.Name }
+        if (\$Item.PSIsContainer) {
+          Get-BackupFiles \$Item.FullName \$RelativePath
+        } else {
+          [pscustomobject]@{ FullName = \$Item.FullName; RelativePath = \$RelativePath }
+        }
+      }
+    }
+    Get-BackupFiles \$BackupDir '' | ForEach-Object {
+      if (!\$ManagedFiles.ContainsKey(\$_.RelativePath.ToLowerInvariant())) {
+        \$Destination = Join-Path \$AppDir \$_.RelativePath
         \$DestinationDir = Split-Path -Parent \$Destination
         New-Item -ItemType Directory -Path \$DestinationDir -Force | Out-Null
         Copy-Item -LiteralPath \$_.FullName -Destination \$Destination -Force
@@ -143,7 +177,7 @@ try {
   \$NewExePath = Join-Path \$AppDir \$ExeName
   Write-UpdateResult -Success \$true -Message 'Update installed successfully.'
   Write-UpdateLog "Starting updated application: \$NewExePath"
-  \$NewProcess = Start-Process -FilePath \$NewExePath -PassThru
+  \$NewProcess = Start-Process -FilePath \$NewExePath -WorkingDirectory \$AppDir -PassThru
   Start-Sleep -Seconds 3
   if (\$NewProcess.HasExited) {
     throw "Updated application exited immediately with code \$(\$NewProcess.ExitCode)."
@@ -170,7 +204,7 @@ try {
   Write-UpdateResult -Success \$false -Message \$FailureMessage
   \$RestoredExePath = Join-Path \$AppDir \$ExeName
   if (Test-Path -LiteralPath \$RestoredExePath) {
-    Start-Process -FilePath \$RestoredExePath -ErrorAction SilentlyContinue
+    Start-Process -FilePath \$RestoredExePath -WorkingDirectory \$AppDir -ErrorAction SilentlyContinue
   }
   exit 1
 } finally {
@@ -185,10 +219,32 @@ try {
 
   static String _commonFunctions() {
     return '''
+# 主应用在 Windows 下通常以应用目录为工作目录启动；若更新脚本继承该目录，
+# PowerShell 5.1 的 Move-Item 会报目录正在使用中。必须同时切换 \$PWD 与 Win32 CWD。
+function Set-SafeWorkingDirectory {
+  \$SafeDir = [System.IO.Path]::GetTempPath()
+  Set-Location -LiteralPath \$SafeDir
+  [System.Environment]::CurrentDirectory = \$SafeDir
+}
+
 function Write-UpdateLog {
   param([string]\$Message)
   \$Timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff'
   Add-Content -LiteralPath \$LogPath -Value "[\$Timestamp] \$Message" -Encoding UTF8
+}
+
+# 主应用据此确认脚本真的开始执行；标记迟迟不出现说明脚本没能运行。
+function Write-UpdateStarted {
+  \$Started = [ordered]@{
+    version = \$Version
+    appPid = \$AppPid
+  } | ConvertTo-Json -Compress
+  [System.IO.File]::WriteAllText(
+    \$StartedPath,
+    \$Started,
+    (New-Object System.Text.UTF8Encoding(\$false))
+  )
+  Write-UpdateLog "Updater script started for version \$Version."
 }
 
 function Write-UpdateResult {
@@ -204,6 +260,8 @@ function Write-UpdateResult {
     \$Result,
     (New-Object System.Text.UTF8Encoding(\$false))
   )
+  # 有了结果就不再需要启动标记，留着会让下次启动误判成安装被中断。
+  Remove-Item -LiteralPath \$StartedPath -Force -ErrorAction SilentlyContinue
 }
 
 function Wait-ApplicationExit {
@@ -220,5 +278,42 @@ function Wait-ApplicationExit {
 ''';
   }
 
-  static String _escape(String value) => value.replaceAll("'", "''");
+  static String _stopBundledProxiesFunction() {
+    return '''
+# 目录整体切换要求 AppDir 内没有运行中的映像，而每个 MCP 客户端各起一个代理。
+function Stop-BundledProxies {
+  \$ProxyPath = [System.IO.Path]::GetFullPath((Join-Path \$AppDir \$ProxyExeName))
+  \$Deadline = [DateTime]::UtcNow.AddSeconds(15)
+  while (\$true) {
+    \$Running = @(
+      Get-CimInstance -ClassName Win32_Process |
+        Where-Object {
+          \$_.ExecutablePath -and [string]::Equals(
+            \$_.ExecutablePath,
+            \$ProxyPath,
+            [System.StringComparison]::OrdinalIgnoreCase
+          )
+        }
+    )
+    if (\$Running.Count -eq 0) {
+      return
+    }
+    if ([DateTime]::UtcNow -ge \$Deadline) {
+      throw "Stdio proxy processes in \$AppDir did not exit within 15 seconds."
+    }
+    foreach (\$Proxy in \$Running) {
+      Write-UpdateLog "Stopping stdio proxy process \$(\$Proxy.ProcessId)."
+      Stop-Process -Id \$Proxy.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+    Start-Sleep -Milliseconds 250
+  }
+}
+''';
+  }
+
+  // PowerShell 把 ‘ ’ ‚ ‛ 也当作单引号，单引号字符串里每一个都要重复一次。
+  static String _escape(String value) =>
+      value.replaceAllMapped(_singleQuotes, (match) => match[0]! * 2);
+
+  static final RegExp _singleQuotes = RegExp("['\u2018\u2019\u201A\u201B]");
 }

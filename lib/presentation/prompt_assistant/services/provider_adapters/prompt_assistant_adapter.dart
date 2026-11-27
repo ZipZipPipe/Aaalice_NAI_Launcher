@@ -1,13 +1,14 @@
 import 'dart:convert';
-import 'dart:isolate';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:image/image.dart' as img;
 
+import '../../../../core/utils/exif_orientation.dart';
 import '../../models/agent_protocol.dart';
-import '../../models/prompt_assistant_models.dart';
+import '../../../../core/utils/isolate_pool.dart';
+import '../../../../data/models/prompt_assistant/prompt_assistant_models.dart';
 
 const int promptAssistantImageUploadMaxBytes = 5 * 1024 * 1024;
 const String promptAssistantCompressedImageMimeType = 'image/jpeg';
@@ -177,7 +178,7 @@ Future<PromptAssistantImagePart> optimizePromptAssistantImagePartForUpload(
   }
 
   try {
-    final result = await Isolate.run(
+    final result = await ComputeGate().runIsolate(
       () => _optimizePromptAssistantImageBytes(
         _PromptAssistantImageOptimizationJob(
           bytes: part.bytes,
@@ -218,20 +219,6 @@ String contentToText(dynamic content) {
     );
   }
   return '';
-}
-
-String? extractErrorMessage(Map<String, dynamic> obj) {
-  final error = obj['error'];
-  if (error is String && error.trim().isNotEmpty) {
-    return error.trim();
-  }
-  if (error is Map<String, dynamic>) {
-    final message = error['message'] ?? error['error'] ?? error['type'];
-    if (message is String && message.trim().isNotEmpty) {
-      return message.trim();
-    }
-  }
-  return null;
 }
 
 List<String> extractModelNames(dynamic raw) {
@@ -332,7 +319,7 @@ String? detectImageMime(Uint8List bytes) {
 _OptimizedPromptAssistantImage? _optimizePromptAssistantImageBytes(
   _PromptAssistantImageOptimizationJob job,
 ) {
-  final source = img.decodeImage(job.bytes);
+  final source = ExifOrientation.decodeUpright(job.bytes);
   if (source == null || source.width <= 0 || source.height <= 0) {
     return null;
   }

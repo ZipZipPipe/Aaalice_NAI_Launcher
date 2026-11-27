@@ -9,7 +9,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/cache/local_gallery_thumbnail_provider.dart';
 import '../../../core/platform/platform_capabilities.dart';
-import '../../../core/shortcuts/default_shortcuts.dart';
 import '../../../core/utils/localization_extension.dart';
 import '../../providers/bulk_operation_provider.dart';
 import '../../providers/gallery_album_provider.dart';
@@ -24,9 +23,9 @@ import '../../widgets/gallery/gallery_sidebar.dart';
 import '../../widgets/gallery/gallery_state_views.dart';
 import '../../widgets/gallery/local_gallery_toolbar.dart';
 import '../../widgets/grouped_grid_view.dart' show GroupedGridViewState;
-import '../../widgets/shortcuts/shortcut_aware_widget.dart';
 import 'local_gallery_action_coordinator.dart';
 import 'local_gallery_screen_controller.dart';
+import 'local_gallery_shortcuts.dart';
 import 'local_gallery_view_model.dart';
 
 /// Stable shell for the local gallery route.
@@ -116,45 +115,39 @@ class _LocalGalleryScreenState extends ConsumerState<LocalGalleryScreen> {
                     : galleryState.currentImages)
                 .map((e) => e.path)
                 .toList(),
-        child: CardSelectionShortcuts(
-          child: AnimatedBuilder(
-            animation: _controller,
-            builder: (context, _) => PopScope<void>(
-              canPop: !isSelectionMode,
-              onPopInvokedWithResult: (didPop, _) {
-                if (!didPop && isSelectionMode) {
-                  ref
-                      .read(localGallerySelectionNotifierProvider.notifier)
-                      .exit();
-                }
-              },
-              child: PageShortcuts(
-                contextType: ShortcutContext.gallery,
-                shortcuts: _controller.shortcuts,
-                child: KeyboardListener(
-                  focusNode: _controller.shortcutsFocusNode,
-                  autofocus: true,
-                  onKeyEvent: _controller.handleKeyEvent,
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      final viewModel = LocalGalleryViewModel.fromStates(
-                        gallery: galleryState,
-                        bulkOperation: bulkOperation,
-                        categories: categoryState,
-                        isSelectionMode: isSelectionMode,
-                        categoryPanelRequested: _controller.showCategoryPanel,
-                        isPackingImages: _controller.isPackingImages,
-                        maxWidth: constraints.maxWidth,
-                      );
-                      return _LocalGalleryShell(
-                        viewModel: viewModel,
-                        controller: _controller,
-                        actions: _actions,
-                        groupedGridViewKey: _groupedGridViewKey,
-                      );
-                    },
-                  ),
-                ),
+        child: AnimatedBuilder(
+          animation: _controller,
+          builder: (context, _) => PopScope<void>(
+            canPop: !isSelectionMode,
+            onPopInvokedWithResult: (didPop, _) {
+              if (!didPop && isSelectionMode) {
+                ref.read(localGallerySelectionNotifierProvider.notifier).exit();
+              }
+            },
+            child: LocalGalleryShortcuts(
+              shortcuts: _controller.shortcuts,
+              canUndo: bulkOperation.canUndo,
+              canRedo: bulkOperation.canRedo,
+              onUndo: _actions.undo,
+              onRedo: _actions.redo,
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final viewModel = LocalGalleryViewModel.fromStates(
+                    gallery: galleryState,
+                    bulkOperation: bulkOperation,
+                    categories: categoryState,
+                    isSelectionMode: isSelectionMode,
+                    categoryPanelRequested: _controller.showCategoryPanel,
+                    isPackingImages: _controller.isPackingImages,
+                    maxWidth: constraints.maxWidth,
+                  );
+                  return _LocalGalleryShell(
+                    viewModel: viewModel,
+                    controller: _controller,
+                    actions: _actions,
+                    groupedGridViewKey: _groupedGridViewKey,
+                  );
+                },
               ),
             ),
           ),
@@ -252,7 +245,8 @@ class _LocalGalleryShell extends ConsumerWidget {
             : null,
         body: _buildBody(context, ref),
         footer:
-            !gallery.isIndexing &&
+            !gallery.isGroupedView &&
+                !gallery.isIndexing &&
                 gallery.currentImages.isNotEmpty &&
                 gallery.totalPages > 0
             ? PaginationBar(
@@ -280,8 +274,8 @@ class _LocalGalleryShell extends ConsumerWidget {
     final bulk = viewModel.bulkOperation;
     return LocalGalleryToolbar(
       showPageTitle: true,
-      onRefresh: () =>
-          ref.read(localGalleryNotifierProvider.notifier).refresh(),
+      searchFocusNode: controller.searchFocusNode,
+      onRefresh: controller.refreshGallery,
       onEnterSelectionMode: () =>
           ref.read(localGallerySelectionNotifierProvider.notifier).enter(),
       canUndo: bulk.canUndo,
@@ -301,32 +295,59 @@ class _LocalGalleryShell extends ConsumerWidget {
 
   Widget _buildBody(BuildContext context, WidgetRef ref) {
     final gallery = viewModel.gallery;
-    if (gallery.error != null) {
+    final error = gallery.error;
+    if (error != null || (!gallery.isGroupedView && gallery.pageNeedsRetry)) {
       return GalleryErrorView(
-        error: gallery.error!.localized(context.l10n),
-        onRetry: () =>
-            ref.read(localGalleryNotifierProvider.notifier).refresh(),
+        error: error?.localized(context.l10n),
+        onRetry: () {
+          final notifier = ref.read(localGalleryNotifierProvider.notifier);
+          if (!gallery.isGroupedView &&
+              (error == null ||
+                  (error.code == LocalGalleryErrorCode.databaseFailed &&
+                      gallery.isInitialized))) {
+            notifier.loadPage(gallery.currentPage);
+          } else {
+            notifier.refresh();
+          }
+        },
       );
     }
-    if (gallery.isLoading && gallery.currentImages.isEmpty) {
+    final images = gallery.isGroupedView
+        ? gallery.groupedImages
+        : gallery.currentImages;
+    final loading = gallery.isGroupedView
+        ? gallery.isGroupedLoading
+        : gallery.isLoading;
+    if (loading && images.isEmpty) {
       return const GalleryLoadingView();
     }
-    if (gallery.currentImages.isEmpty) {
-      return gallery.hasFilters
-          ? const GalleryNoResultsView()
-          : const GalleryEmptyView();
+    if (images.isEmpty) {
+      if (gallery.filterCriteria.hasClearableFilters) {
+        return const GalleryNoResultsView();
+      }
+      if (gallery.filterCriteria.hasBrowsingScope) {
+        return GalleryEmptyView(
+          title: context.l10n.localGallery_emptyScopeTitle,
+          subtitle: '',
+        );
+      }
+      return const GalleryEmptyView();
     }
 
     return LocalGalleryContentView(
-      use3DCardView: true,
       columns: viewModel.columns,
       itemWidth: viewModel.itemWidth,
       groupedGridViewKey: groupedGridViewKey,
       onReuseMetadata: actions.importImageMetadata,
-      onSendAction: (record, action) => actions.routeImageAction(
+      onDelete: actions.confirmDeleteImage,
+      onSendAction: (record, action, {onSent}) => actions.routeImageAction(
         LocalGalleryImageAction(record: record, action: action),
+        onSent: onSent,
       ),
       onContextMenu: actions.showImageContextMenu,
+      inAlbum: ref.watch(
+        galleryAlbumNotifierProvider.select((s) => s.isInRegularAlbum),
+      ),
     );
   }
 }

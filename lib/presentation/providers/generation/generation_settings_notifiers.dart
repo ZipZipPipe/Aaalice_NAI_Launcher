@@ -1,9 +1,11 @@
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../../core/autocomplete/autocomplete_settings.dart'
     as completion_settings;
 import '../../../core/storage/local_storage_service.dart';
 import '../../../core/utils/app_logger.dart';
+import '../../../data/models/metadata/metadata_import_options.dart';
 
 part 'generation_settings_notifiers.g.dart';
 
@@ -76,6 +78,23 @@ class SdSyntaxAutoConvertSettings extends _$SdSyntaxAutoConvertSettings {
   }
 }
 
+/// 数字结尾的数值权重闭合补空格设置 Notifier
+@Riverpod(keepAlive: true)
+class SeparateNumericWeightClosingSettings
+    extends _$SeparateNumericWeightClosingSettings {
+  LocalStorageService get _storage => ref.read(localStorageServiceProvider);
+
+  @override
+  bool build() => _storage.getSeparateNumericWeightClosing();
+
+  void toggle() => set(!state);
+
+  void set(bool value) {
+    state = value;
+    _storage.setSeparateNumericWeightClosing(value);
+  }
+}
+
 /// 复制时展开词库别名设置 Notifier
 @Riverpod(keepAlive: true)
 class ResolveAliasOnCopySettings extends _$ResolveAliasOnCopySettings {
@@ -89,6 +108,45 @@ class ResolveAliasOnCopySettings extends _$ResolveAliasOnCopySettings {
   void set(bool value) {
     state = value;
     _storage.setResolveAliasOnCopy(value);
+  }
+}
+
+/// 粘贴时识别多角色提示词设置 Notifier
+@Riverpod(keepAlive: true)
+class DetectMultiCharacterOnPasteSettings
+    extends _$DetectMultiCharacterOnPasteSettings {
+  LocalStorageService get _storage => ref.read(localStorageServiceProvider);
+
+  @override
+  bool build() => _storage.getDetectMultiCharacterOnPaste();
+
+  void toggle() => set(!state);
+
+  void set(bool value) {
+    state = value;
+    _storage.setDetectMultiCharacterOnPaste(value);
+  }
+}
+
+/// 粘贴多角色提示词时上次确认的角色导入方式，仅保存在本机。
+///
+/// 与图片元数据导入框各记各的：那边的「全选」会把方式重置为覆盖，
+/// 不应连带改掉这里的记忆。
+@Riverpod(keepAlive: true)
+class PasteCharacterImportModeSettings
+    extends _$PasteCharacterImportModeSettings {
+  LocalStorageService get _storage => ref.read(localStorageServiceProvider);
+
+  @override
+  CharacterImportMode build() =>
+      CharacterImportMode.values.asNameMap()[_storage
+          .getPasteCharacterImportMode()] ??
+      CharacterImportMode.replace;
+
+  void set(CharacterImportMode value) {
+    if (state == value) return;
+    state = value;
+    _storage.setPasteCharacterImportMode(value.name);
   }
 }
 

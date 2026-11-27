@@ -4,12 +4,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../core/constants/api_constants.dart';
 import '../../../../core/platform/platform_capabilities.dart';
 import '../../dlss/dlss_enhancement_panel.dart';
-import '../../../../core/utils/focused_inpaint_utils.dart';
 import '../../../../core/utils/localization_extension.dart';
 import '../../../../data/models/image/image_params.dart';
 import '../../../providers/cost_estimate_provider.dart';
 import '../../../providers/generation/generation_params_notifier.dart';
+import '../../../providers/generation/generation_request_resolution.dart';
 import '../../../providers/generation/image_workflow_controller.dart';
+import '../../../widgets/common/ink_host.dart';
+import '../../../widgets/common/themed_slider.dart';
 import 'img2img_panel_data.dart';
 
 class Img2ImgAdjustmentSection extends ConsumerWidget {
@@ -50,29 +52,34 @@ class _InpaintPanel extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final workflow = data.workflow;
-    final generationSize = ref.watch(
-      generationParamsNotifierProvider.select(
-        (value) => (value.width, value.height),
-      ),
-    );
-    final selection = workflow.focusedSelectionRect;
-    final geometry = selection == null
-        ? null
-        : FocusedInpaintUtils.resolveGeometryForSelection(
-            sourceWidth:
-                workflow.sourceImageWidth ??
-                workflow.sourceWidth ??
-                generationSize.$1,
-            sourceHeight:
-                workflow.sourceImageHeight ??
-                workflow.sourceHeight ??
-                generationSize.$2,
-            selectionRect: selection,
-            minContextMegaPixels: workflow.minimumContextMegaPixels,
-          );
-    final focusedCost = geometry == null
-        ? null
-        : ref.watch(estimatedCostProvider);
+    final geometry = ref
+        .watch(generationPageRequestGeometryProvider)
+        .unwrapPrevious()
+        .asData
+        ?.value;
+    final contextCrop = workflow.focusedContextCrop;
+    final l10n = context.l10n;
+    var hint = !workflow.focusedInpaintEnabled
+        ? l10n.img2img_focusedInpaintDisabledHint
+        : contextCrop != null
+        ? l10n.img2img_focusOutpaintHint
+        : l10n.img2img_focusedInpaintEnabledHint;
+    if (geometry != null) {
+      final cost = ref.watch(estimatedCostProvider);
+      final request = cost == null
+          ? l10n.editor_requestedSize(
+              geometry.requestWidth,
+              geometry.requestHeight,
+            )
+          : l10n.editor_focusRequestSummary(
+              geometry.contextCrop.width,
+              geometry.contextCrop.height,
+              geometry.requestWidth,
+              geometry.requestHeight,
+              cost,
+            );
+      hint = '$hint\n$request';
+    }
     return _SubPanel(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -93,11 +100,7 @@ class _InpaintPanel extends ConsumerWidget {
               style: theme.textTheme.bodyMedium,
             ),
             subtitle: Text(
-              workflow.focusedInpaintEnabled && geometry != null
-                  ? '${context.l10n.img2img_focusedInpaintEnabledHint}\n${context.l10n.editor_focusRequestSummary(geometry.contextCrop.width, geometry.contextCrop.height, geometry.requestWidth, geometry.requestHeight, focusedCost ?? 0)}'
-                  : workflow.focusedInpaintEnabled
-                  ? context.l10n.img2img_focusedInpaintEnabledHint
-                  : context.l10n.img2img_focusedInpaintDisabledHint,
+              hint,
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
                 height: 1.4,
@@ -227,17 +230,14 @@ class _EnhancePanelState extends ConsumerState<_EnhancePanel> {
               onChanged: (value) =>
                   controller.updateEnhanceLevel(value.round()),
             ),
-            Material(
-              type: MaterialType.transparency,
-              child: SwitchListTile.adaptive(
-                contentPadding: EdgeInsets.zero,
-                title: Text(
-                  context.l10n.img2img_enhanceShowIndividualSettings,
-                  style: theme.textTheme.bodyMedium,
-                ),
-                value: enhance.showIndividualSettings,
-                onChanged: controller.toggleEnhanceIndividualSettings,
+            SwitchListTile.adaptive(
+              contentPadding: EdgeInsets.zero,
+              title: Text(
+                context.l10n.img2img_enhanceShowIndividualSettings,
+                style: theme.textTheme.bodyMedium,
               ),
+              value: enhance.showIndividualSettings,
+              onChanged: controller.toggleEnhanceIndividualSettings,
             ),
             const SizedBox(height: 8),
             Text(
@@ -313,6 +313,9 @@ class Img2ImgSlider extends StatelessWidget {
   final int? divisions;
   final String Function(double)? valueLabelBuilder;
 
+  String _valueText(double value) =>
+      valueLabelBuilder?.call(value) ?? value.toStringAsFixed(2);
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -324,14 +327,16 @@ class Img2ImgSlider extends StatelessWidget {
             Text(label, style: theme.textTheme.bodyMedium),
             const Spacer(),
             Text(
-              valueLabelBuilder?.call(value) ?? value.toStringAsFixed(2),
+              _valueText(value),
               style: theme.textTheme.bodySmall?.copyWith(
                 fontWeight: FontWeight.w600,
               ),
             ),
           ],
         ),
-        Slider(
+        NamedSlider(
+          label: label,
+          valueText: _valueText,
           value: value,
           min: min,
           max: max,
@@ -361,6 +366,6 @@ class _SubPanel extends StatelessWidget {
       color: Theme.of(context).colorScheme.surfaceContainerHigh,
       borderRadius: BorderRadius.circular(10),
     ),
-    child: child,
+    child: InkHost(child: child),
   );
 }

@@ -7,11 +7,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 
 import '../../../core/agent/resources/agent_chat_resource_reference.dart';
+import '../../../core/cache/local_file_image.dart';
 import '../../../core/utils/localization_extension.dart';
 import '../../../data/models/gallery/local_image_record.dart';
+import '../../../data/models/tag_library/tag_library_entry.dart';
+import '../../../data/services/gallery/gallery_filter_service.dart';
 import '../../../data/services/gallery/local_gallery_service.dart';
 import '../../adaptive/adaptive_presenter.dart';
 import '../../adaptive/interaction_policy.dart';
+import '../../providers/generation/image_generation_selectors.dart';
 import '../../providers/image_generation_provider.dart';
 import '../../providers/local_gallery_provider.dart';
 import '../../providers/precise_ref_library_provider.dart';
@@ -532,6 +536,7 @@ class _AgentChatResourcePickerBodyState
       ),
       const SizedBox(height: 4),
     ];
+    final items = _buildItems();
     return LayoutBuilder(
       builder: (context, constraints) {
         final textScale = MediaQuery.textScalerOf(context).scale(1);
@@ -541,7 +546,7 @@ class _AgentChatResourcePickerBodyState
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               ...controls,
-              Expanded(child: _buildItems()),
+              Expanded(child: items),
             ],
           );
         }
@@ -560,7 +565,7 @@ class _AgentChatResourcePickerBodyState
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     ...controls,
-                    SizedBox(height: itemsHeight, child: _buildItems()),
+                    SizedBox(height: itemsHeight, child: items),
                   ],
                 ),
               ),
@@ -576,7 +581,11 @@ class _AgentChatResourcePickerBodyState
       if (_tab == 0) {
         final generatedImageLabel = context.l10n.agentChat_generatedImage;
         final images = ref
-            .watch(imageGenerationNotifierProvider)
+            .watch(
+              imageGenerationNotifierProvider.select(
+                selectGenerationPanelImages,
+              ),
+            )
             .mergedPanelImages
             .where(
               (image) =>
@@ -614,9 +623,7 @@ class _AgentChatResourcePickerBodyState
       final entries = ref
           .watch(tagLibraryPageNotifierProvider)
           .filteredEntries
-          .where(
-            (entry) => _matchesQuery([entry.displayName, entry.contentPreview]),
-          );
+          .search(_query);
       return _list(
         entries.map(
           (entry) => _PickerItem(
@@ -844,7 +851,8 @@ class _AgentChatResourcePickerBodyState
       final result = await service.queryPage(
         page: requestedPage,
         pageSize: _localPageSize,
-        searchQuery: requestedQuery,
+        criteria: FilterCriteria(searchQuery: requestedQuery.trim()),
+        includeFilePathMatches: true,
       );
       if (!mounted || requestSerial != _localRequestSerial) return;
 
@@ -963,11 +971,16 @@ class _PickerItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    const fallbackPreview = Icon(Icons.bookmark_outline_rounded);
     final preview = imageBytes != null
         ? Image.memory(imageBytes!, fit: BoxFit.cover)
-        : imageFile != null && imageFile!.existsSync()
-        ? Image.file(imageFile!, fit: BoxFit.cover)
-        : const Icon(Icons.bookmark_outline_rounded);
+        : imageFile != null
+        ? Image(
+            image: LocalFileImage(imageFile!.path),
+            fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => fallbackPreview,
+          )
+        : fallbackPreview;
     return Material(
       color: Colors.transparent,
       borderRadius: BorderRadius.circular(10),

@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 
 import '../core/editor_state.dart';
+import '../core/stroke_rendering.dart';
 import '../tools/blur_tool.dart';
 import '../tools/brush_tool.dart';
 import '../tools/clone_stamp_tool.dart';
-import '../tools/eraser_tool.dart';
 
 /// Paints the in-progress stroke only.
 ///
@@ -24,40 +24,32 @@ class StrokePreviewPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final points = state.currentStrokePoints;
-    if (!state.isDrawing || points.isEmpty) {
+    // 蒙版上的画笔与橡皮擦由图层绘制器直接画进所在图层
+    if (!state.isDrawing || points.isEmpty || state.isPaintingIntoLayer) {
       return;
     }
 
-    final canvasSize = state.canvasSize;
+    final frame = state.frame;
     final controller = state.canvasController;
 
     canvas.save();
-    canvas.translate(controller.offset.dx, controller.offset.dy);
-
-    final centerX = canvasSize.width * controller.scale / 2;
-    final centerY = canvasSize.height * controller.scale / 2;
-
-    if (controller.rotation != 0 || controller.isMirroredHorizontally) {
-      canvas.translate(centerX, centerY);
-
-      if (controller.rotation != 0) {
-        canvas.rotate(controller.rotation);
-      }
-
-      if (controller.isMirroredHorizontally) {
-        canvas.scale(-1.0, 1.0);
-      }
-
-      canvas.translate(-centerX, -centerY);
-    }
-
-    canvas.scale(controller.scale);
-    canvas.clipRect(Rect.fromLTWH(0, 0, canvasSize.width, canvasSize.height));
-    _drawCurrentStroke(canvas, points);
+    controller.applyViewTransform(canvas, frame);
+    canvas.clipRect(frame);
+    _drawCurrentStroke(
+      canvas,
+      points,
+      magnified: controller.scale > 1,
+      visible: controller.visiblePartOf(frame),
+    );
     canvas.restore();
   }
 
-  void _drawCurrentStroke(Canvas canvas, List<Offset> points) {
+  void _drawCurrentStroke(
+    Canvas canvas,
+    List<Offset> points, {
+    required bool magnified,
+    required Rect visible,
+  }) {
     final tool = state.currentTool;
     if (tool == null || !tool.isPaintTool) return;
 
@@ -65,16 +57,13 @@ class StrokePreviewPainter extends CustomPainter {
     double opacity = 1.0;
     double hardness = 0.8;
     Color color = state.foregroundColor;
-    bool isEraser = false;
 
     if (tool is BrushTool) {
-      size = tool.settings.size;
-      opacity = tool.settings.opacity;
-      hardness = tool.settings.hardness;
-    } else if (tool is EraserTool) {
-      size = tool.size;
-      hardness = tool.hardness;
-      isEraser = true;
+      final style = tool.strokeStyleFor(state);
+      size = style.size;
+      color = style.color;
+      opacity = style.opacity;
+      hardness = style.hardness;
     } else if (tool is BlurTool) {
       size = tool.size;
       color = const Color(0xFF90CAF9);
@@ -91,52 +80,27 @@ class StrokePreviewPainter extends CustomPainter {
       color = Colors.cyanAccent;
     }
 
-    final paint = Paint()
-      ..color = isEraser
-          ? Colors.grey.withValues(alpha: 0.5)
-          : color.withValues(alpha: opacity)
-      ..strokeWidth = size
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round
-      ..style = PaintingStyle.stroke;
+    final paint = Paint()..color = color.withValues(alpha: opacity);
 
-    if (hardness < 1.0) {
-      final sigma = size * (1.0 - hardness) * 0.5;
-      paint.maskFilter = MaskFilter.blur(BlurStyle.normal, sigma);
-    }
-
-    if (points.length == 1) {
-      canvas.drawCircle(
-        points.first,
-        size / 2,
-        paint..style = PaintingStyle.fill,
+    final soft = StrokeRendering.blurSigma(size: size, hardness: hardness) > 0;
+    if (soft && magnified) {
+      StrokeRendering.drawAtDocumentResolution(
+        canvas,
+        points,
+        paint,
+        size: size,
+        hardness: hardness,
+        visible: visible,
       );
     } else {
-      final path = _createSmoothPath(points);
-      canvas.drawPath(path, paint);
+      StrokeRendering.draw(
+        canvas,
+        points,
+        paint,
+        size: size,
+        hardness: hardness,
+      );
     }
-  }
-
-  Path _createSmoothPath(List<Offset> points) {
-    final path = Path();
-    if (points.isEmpty) return path;
-
-    path.moveTo(points.first.dx, points.first.dy);
-
-    if (points.length == 2) {
-      path.lineTo(points.last.dx, points.last.dy);
-    } else {
-      for (int i = 1; i < points.length - 1; i++) {
-        final p0 = points[i];
-        final p1 = points[i + 1];
-        final midX = (p0.dx + p1.dx) / 2;
-        final midY = (p0.dy + p1.dy) / 2;
-        path.quadraticBezierTo(p0.dx, p0.dy, midX, midY);
-      }
-      path.lineTo(points.last.dx, points.last.dy);
-    }
-
-    return path;
   }
 
   @override

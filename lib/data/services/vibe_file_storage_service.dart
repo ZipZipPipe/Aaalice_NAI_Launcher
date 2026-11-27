@@ -1,6 +1,9 @@
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../core/utils/vibe_file_parser.dart';
 import '../models/vibe/vibe_library_entry.dart';
 import '../models/vibe/vibe_reference.dart';
 import 'vibe_file_repository.dart';
@@ -87,6 +90,9 @@ class VibeFileStorageService {
   Future<String?> renameVibeFile(String oldPath, String newName) =>
       _repository.renameVibeFile(oldPath, newName);
 
+  Future<VibeBundleRead?> readBundle(String bundlePath) =>
+      _repository.readBundle(bundlePath);
+
   Future<List<VibeReference>> extractVibesFromBundle(
     String bundlePath, {
     int startIndex = 0,
@@ -125,12 +131,20 @@ class VibeFileStorageService {
       _repository.deleteVibeFile(filePath);
 
   Future<VibeFolderSyncResult> syncFolderToHive({
-    required List<VibeLibraryEntry> existingEntries,
+    required Map<String, String> existingFilePathsById,
+    required Future<VibeLibraryEntry?> Function(String id) loadExistingEntry,
     required Future<void> Function(VibeLibraryEntry entry) onUpsertEntry,
-    Future<void> Function(VibeLibraryEntry entry)? onDeleteEntry,
+    Future<void> Function(VibeLibraryEntry entry)? onUnchangedEntry,
+    Future<void> Function(String id)? onDeleteEntry,
   }) => _folderSync.syncFolderToHive(
-    existingEntries: existingEntries,
+    existingFilePathsById: existingFilePathsById,
+    loadExistingEntry: loadExistingEntry,
     onUpsertEntry: onUpsertEntry,
+    onUnchangedEntry: onUnchangedEntry,
     onDeleteEntry: onDeleteEntry,
   );
 }
+
+final vibeFileStorageServiceProvider = Provider<VibeFileStorageService>(
+  (ref) => VibeFileStorageService(),
+);

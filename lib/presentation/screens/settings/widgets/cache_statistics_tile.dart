@@ -64,6 +64,7 @@ class _CacheStatisticsTileState extends ConsumerState<CacheStatisticsTile> {
     _refreshTimer = null;
   }
 
+  // 定时刷新走 30 秒统计缓存，避免每 3 秒查一次库
   void _refreshStats() {
     if (mounted) {
       ref.invalidate(cacheStatisticsProvider);
@@ -71,6 +72,11 @@ class _CacheStatisticsTileState extends ConsumerState<CacheStatisticsTile> {
         _lastRefreshTime = DateTime.now();
       });
     }
+  }
+
+  void _refreshStatsNow() {
+    GalleryCacheManager().invalidateStatistics();
+    _refreshStats();
   }
 
   String _getTimeSinceLastRefresh() {
@@ -136,7 +142,7 @@ class _CacheStatisticsTileState extends ConsumerState<CacheStatisticsTile> {
                 icon: const Icon(Icons.refresh, size: 20),
                 tooltip: context.l10n.cacheStats_refreshNow,
                 onPressed: () {
-                  _refreshStats();
+                  _refreshStatsNow();
                   AppToast.success(context, context.l10n.cacheStats_refreshed);
                 },
               ),
@@ -151,7 +157,7 @@ class _CacheStatisticsTileState extends ConsumerState<CacheStatisticsTile> {
               ),
             ],
           ),
-          onTap: _refreshStats,
+          onTap: _refreshStatsNow,
         ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -230,19 +236,23 @@ class _AutoRefreshIndicatorState extends State<_AutoRefreshIndicator>
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _controller,
-      builder: (context, child) {
-        return SizedBox(
-          width: 16,
-          height: 16,
-          child: CircularProgressIndicator(
-            value: _controller.value,
-            strokeWidth: 2,
-            color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.5),
-          ),
-        );
-      },
+    return RepaintBoundary(
+      child: AnimatedBuilder(
+        animation: _controller,
+        builder: (context, child) {
+          return SizedBox(
+            width: 16,
+            height: 16,
+            child: CircularProgressIndicator(
+              value: _controller.value,
+              strokeWidth: 2,
+              color: Theme.of(
+                context,
+              ).colorScheme.primary.withValues(alpha: 0.5),
+            ),
+          );
+        },
+      ),
     );
   }
 }

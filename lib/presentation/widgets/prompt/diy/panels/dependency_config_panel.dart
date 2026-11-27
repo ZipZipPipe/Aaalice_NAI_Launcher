@@ -1,34 +1,39 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:nai_launcher/core/utils/localization_extension.dart';
 
 import '../../../../../data/models/prompt/dependency_config.dart';
+import '../../../../../data/models/prompt/diy_category_references.dart';
+import '../../../../../data/models/prompt/random_tag_group.dart';
 import '../../../../adaptive/adaptive_presenter.dart';
-import '../../../../widgets/common/elevated_card.dart';
+import '../../../../utils/single_line_text_width.dart';
+import '../../../../widgets/common/horizontal_segmented_control.dart';
+import '../../../../widgets/common/surface_ink_well.dart';
+import '../diy_category_field.dart';
+import '../diy_panel_header.dart';
+import '../diy_section_card.dart';
+import '../diy_switch_card.dart';
 import 'package:nai_launcher/presentation/widgets/common/themed_form_input.dart';
 import 'package:nai_launcher/presentation/widgets/common/themed_input.dart';
 
-/// 依赖配置面板
-///
-/// 用于配置标签选择的依赖关系
-/// 采用 Dimensional Layering 设计风格
+/// 依赖配置面板：按源类别的结果或角色人数决定本词组的抽取
 class DependencyConfigPanel extends StatefulWidget {
-  /// 当前配置
   final DependencyConfig? config;
-
-  /// 配置变更回调
   final ValueChanged<DependencyConfig?> onConfigChanged;
+  final List<DiyCategoryOption> categoryOptions;
 
-  /// 可选的源类别列表
-  final List<String> availableCategories;
+  /// 所属词组的选择模式，用于说明数量依赖如何覆盖该模式的数量
+  final SelectionMode? selectionMode;
 
-  /// 是否只读
   final bool readOnly;
 
   const DependencyConfigPanel({
     super.key,
     this.config,
     required this.onConfigChanged,
-    this.availableCategories = const [],
+    this.categoryOptions = const [],
+    this.selectionMode,
     this.readOnly = false,
   });
 
@@ -75,110 +80,36 @@ class _DependencyConfigPanelState extends State<DependencyConfigPanel> {
         const SizedBox(height: 12),
         _buildDefaultValueField(),
         const SizedBox(height: 12),
-        _buildEnabledSwitch(),
+        DiySwitchCard(
+          title: context.l10n.diy_enableDependency,
+          subtitle: context.l10n.diy_enableDependencyHint,
+          value: _config.enabled,
+          onChanged: widget.readOnly
+              ? null
+              : (value) => _updateConfig(_config.copyWith(enabled: value)),
+        ),
       ],
     );
   }
 
   Widget _buildHeader() {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
+    final colorScheme = Theme.of(context).colorScheme;
 
-    return Row(
-      children: [
-        // 图标容器 - 渐变背景
-        Container(
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                colorScheme.tertiary.withValues(alpha: 0.2),
-                colorScheme.tertiary.withValues(alpha: 0.1),
-              ],
-            ),
-            borderRadius: BorderRadius.circular(10),
-            boxShadow: [
-              BoxShadow(
-                color: colorScheme.tertiary.withValues(alpha: 0.1),
-                blurRadius: 8,
-                offset: const Offset(0, 2),
-              ),
-            ],
-          ),
-          child: Icon(
-            Icons.link_rounded,
-            size: 20,
-            color: colorScheme.tertiary,
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                context.l10n.diy_dependencyTitle,
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              Text(
-                context.l10n.diy_dependencySubtitle,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: colorScheme.onSurfaceVariant,
-                ),
-              ),
-            ],
-          ),
-        ),
-        if (widget.config != null && !widget.readOnly)
-          Material(
-            color: Colors.transparent,
-            child: InkWell(
-              onTap: () => widget.onConfigChanged(null),
-              borderRadius: BorderRadius.circular(8),
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 6,
-                ),
-                decoration: BoxDecoration(
-                  border: Border.all(
-                    color: colorScheme.error.withValues(alpha: 0.5),
-                  ),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.delete_outline_rounded,
-                      size: 16,
-                      color: colorScheme.error,
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      context.l10n.common_clear,
-                      style: theme.textTheme.labelMedium?.copyWith(
-                        color: colorScheme.error,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-      ],
+    return DiyPanelHeader(
+      description: context.l10n.diy_dependencySubtitle,
+      trailing: widget.config != null && !widget.readOnly
+          ? TextButton.icon(
+              onPressed: () => widget.onConfigChanged(null),
+              style: TextButton.styleFrom(foregroundColor: colorScheme.error),
+              icon: const Icon(Icons.delete_outline_rounded, size: 18),
+              label: Text(context.l10n.common_clear),
+            )
+          : null,
     );
   }
 
   Widget _buildTypeSelector() {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-
-    // 类型图标和颜色
+    final colorScheme = Theme.of(context).colorScheme;
     final typeIcons = {
       DependencyType.count: Icons.numbers_rounded,
       DependencyType.exists: Icons.check_circle_outline_rounded,
@@ -193,521 +124,264 @@ class _DependencyConfigPanelState extends State<DependencyConfigPanel> {
       DependencyType.excludes: colorScheme.error,
     };
 
-    return ElevatedCard(
-      elevation: CardElevation.level1,
-      hoverElevation: CardElevation.level2,
-      enableHoverEffect: !widget.readOnly,
-      borderRadius: 12,
-      padding: const EdgeInsets.all(16),
+    return DiySectionCard(
+      icon: Icons.category_rounded,
+      accent: colorScheme.primary,
+      accentContainer: colorScheme.primaryContainer,
+      title: context.l10n.diy_dependencyType,
+      hoverable: !widget.readOnly,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(6),
-                decoration: BoxDecoration(
-                  color: colorScheme.primaryContainer.withValues(alpha: 0.5),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Icon(
-                  Icons.category_rounded,
-                  size: 14,
-                  color: colorScheme.primary,
-                ),
-              ),
-              const SizedBox(width: 10),
-              Text(
-                context.l10n.diy_dependencyType,
-                style: theme.textTheme.titleSmall?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
-          ),
+          _buildTypeOptions(typeIcons, typeColors),
           const SizedBox(height: 12),
-          // 自定义类型选择器
-          Row(
-            children: DependencyType.values.map((type) {
-              final isSelected = _config.type == type;
-              final color = typeColors[type]!;
-              final icon = typeIcons[type]!;
+          _buildNote(
+            Icons.info_outline_rounded,
+            _getDependencyTypeDescription(_config.type),
+          ),
+          if (_selectionCountOverrideNote case final note?) ...[
+            const SizedBox(height: 8),
+            _buildNote(Icons.tune_rounded, note),
+          ],
+        ],
+      ),
+    );
+  }
 
-              return Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 3),
-                  child: Material(
-                    color: Colors.transparent,
-                    child: InkWell(
-                      onTap: widget.readOnly
-                          ? null
-                          : () => _updateConfig(_config.copyWith(type: type)),
-                      borderRadius: BorderRadius.circular(10),
-                      child: AnimatedContainer(
-                        duration: MediaQuery.disableAnimationsOf(context)
-                            ? Duration.zero
-                            : const Duration(milliseconds: 200),
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        decoration: BoxDecoration(
-                          gradient: isSelected
-                              ? LinearGradient(
-                                  begin: Alignment.topLeft,
-                                  end: Alignment.bottomRight,
-                                  colors: [color, color.withValues(alpha: 0.8)],
-                                )
-                              : null,
-                          color: isSelected
-                              ? null
-                              : colorScheme.surfaceContainerHighest,
-                          borderRadius: BorderRadius.circular(10),
-                          boxShadow: isSelected
-                              ? [
-                                  BoxShadow(
-                                    color: color.withValues(alpha: 0.3),
-                                    blurRadius: 8,
-                                    offset: const Offset(0, 2),
-                                  ),
-                                ]
-                              : null,
-                        ),
-                        child: Column(
-                          children: [
-                            Icon(
-                              icon,
-                              size: 20,
-                              color: isSelected
-                                  ? Colors.white
-                                  : colorScheme.onSurfaceVariant,
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              _getDependencyTypeLabel(type),
-                              style: theme.textTheme.labelSmall?.copyWith(
-                                fontWeight: FontWeight.w600,
-                                color: isSelected
-                                    ? Colors.white
-                                    : colorScheme.onSurface,
-                              ),
-                              textAlign: TextAlign.center,
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              );
-            }).toList(),
-          ),
-          const SizedBox(height: 12),
-          // 描述
-          Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: colorScheme.surfaceContainerLowest,
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Row(
-              children: [
-                Icon(
-                  Icons.info_outline_rounded,
-                  size: 16,
-                  color: colorScheme.onSurfaceVariant,
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    _getDependencyTypeDescription(_config.type),
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                ),
-              ],
+  Widget _buildNote(IconData icon, String text) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerLowest,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, size: 16, color: colorScheme.onSurfaceVariant),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              text,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+              ),
             ),
           ),
         ],
       ),
+    );
+  }
+
+  /// 数量与值依赖在“多选数量”以外的模式下覆盖模式自身的数量
+  String? get _selectionCountOverrideNote {
+    final mode = widget.selectionMode;
+    if (!_config.controlsSelectionCount ||
+        mode == null ||
+        mode == SelectionMode.multipleNum) {
+      return null;
+    }
+    return mode == SelectionMode.sequential
+        ? context.l10n.diy_dependencyOverridesSequentialCount
+        : context.l10n.diy_dependencyOverridesSelectionCount;
+  }
+
+  // 四种类型是互斥模式：放得下时等宽排满一行，否则整行横向滚动，不竖排也不截断标签
+  Widget _buildTypeOptions(
+    Map<DependencyType, IconData> typeIcons,
+    Map<DependencyType, Color> typeColors,
+  ) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final labelStyle = theme.textTheme.labelSmall?.copyWith(
+      fontWeight: FontWeight.w600,
+    );
+    const contentPadding = EdgeInsets.symmetric(horizontal: 8, vertical: 12);
+    const gap = 6.0;
+    final tileWidth =
+        DependencyType.values.fold(
+          0.0,
+          (widest, type) => math.max(
+            widest,
+            singleLineTextWidth(
+              context,
+              _getDependencyTypeLabel(type),
+              labelStyle,
+            ),
+          ),
+        ) +
+        contentPadding.horizontal;
+
+    Widget option(DependencyType type) {
+      final isSelected = _config.type == type;
+      final color = typeColors[type]!;
+      return SurfaceInkWell(
+        borderRadius: BorderRadius.circular(10),
+        gradient: isSelected
+            ? LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [color, color.withValues(alpha: 0.8)],
+              )
+            : null,
+        color: isSelected ? null : colorScheme.surfaceContainerHighest,
+        shadows: isSelected
+            ? [
+                BoxShadow(
+                  color: color.withValues(alpha: 0.3),
+                  blurRadius: 8,
+                  offset: const Offset(0, 2),
+                ),
+              ]
+            : null,
+        duration: const Duration(milliseconds: 200),
+        onTap: widget.readOnly
+            ? null
+            : () => _updateConfig(_config.copyWith(type: type)),
+        child: Padding(
+          padding: contentPadding,
+          child: Column(
+            children: [
+              Icon(
+                typeIcons[type],
+                size: 20,
+                color: isSelected ? Colors.white : colorScheme.onSurfaceVariant,
+              ),
+              const SizedBox(height: 4),
+              Text(
+                _getDependencyTypeLabel(type),
+                style: labelStyle?.copyWith(
+                  color: isSelected ? Colors.white : colorScheme.onSurface,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        const types = DependencyType.values;
+        final fits =
+            tileWidth * types.length + gap * (types.length - 1) <=
+            constraints.maxWidth;
+        if (fits) {
+          return Row(
+            spacing: gap,
+            children: [for (final type in types) Expanded(child: option(type))],
+          );
+        }
+        return HorizontalSegmentedControl(
+          child: Row(
+            spacing: gap,
+            children: [
+              for (final type in types)
+                SizedBox(width: tileWidth, child: option(type)),
+            ],
+          ),
+        );
+      },
     );
   }
 
   Widget _buildSourceCategorySelector() {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
+    final colorScheme = Theme.of(context).colorScheme;
 
-    return ElevatedCard(
-      elevation: CardElevation.level1,
-      hoverElevation: CardElevation.level2,
-      enableHoverEffect: !widget.readOnly,
-      borderRadius: 12,
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(6),
-                decoration: BoxDecoration(
-                  color: colorScheme.secondaryContainer.withValues(alpha: 0.5),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Icon(
-                  Icons.source_rounded,
-                  size: 14,
-                  color: colorScheme.secondary,
-                ),
-              ),
-              const SizedBox(width: 10),
-              Text(
-                context.l10n.diy_sourceCategory,
-                style: theme.textTheme.titleSmall?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
+    return DiySectionCard(
+      icon: Icons.source_rounded,
+      accent: colorScheme.secondary,
+      accentContainer: colorScheme.secondaryContainer,
+      title: context.l10n.diy_sourceCategory,
+      hoverable: !widget.readOnly,
+      child: DiyCategoryDropdown(
+        value: _config.sourceCategoryId,
+        options: _sourceOptions,
+        readOnly: widget.readOnly,
+        decoration: InputDecoration(
+          hintText: context.l10n.diy_selectSourceCategory,
+          prefixIcon: Icon(
+            Icons.folder_outlined,
+            color: colorScheme.onSurfaceVariant,
           ),
-          const SizedBox(height: 12),
-          if (widget.availableCategories.isNotEmpty)
-            DropdownButtonFormField<String>(
-              initialValue: _config.sourceCategoryId.isNotEmpty
-                  ? _config.sourceCategoryId
-                  : null,
-              decoration: InputDecoration(
-                hintText: context.l10n.diy_selectSourceCategory,
-                prefixIcon: Icon(
-                  Icons.folder_outlined,
-                  color: colorScheme.onSurfaceVariant,
-                ),
-                border: InputBorder.none,
-              ),
-              items: widget.availableCategories.map((category) {
-                return DropdownMenuItem(value: category, child: Text(category));
-              }).toList(),
-              onChanged: widget.readOnly
-                  ? null
-                  : (value) {
-                      if (value != null) {
-                        _updateConfig(
-                          _config.copyWith(sourceCategoryId: value),
-                        );
-                      }
-                    },
-            )
-          else
-            ThemedFormInput(
-              initialValue: _config.sourceCategoryId,
-              decoration: InputDecoration(
-                labelText: context.l10n.diy_sourceCategoryId,
-                hintText: context.l10n.diy_enterCategoryId,
-                prefixIcon: Icon(
-                  Icons.folder_outlined,
-                  color: colorScheme.onSurfaceVariant,
-                ),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-              ),
-              readOnly: widget.readOnly,
-              onChanged: (value) {
-                _updateConfig(_config.copyWith(sourceCategoryId: value));
-              },
-            ),
-        ],
+          border: InputBorder.none,
+        ),
+        onChanged: (value) {
+          _updateConfig(_config.copyWith(sourceCategoryId: value));
+        },
       ),
     );
   }
 
-  Widget _buildMappingRulesEditor() {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
+  List<DiyCategoryOption> get _sourceOptions => [
+    DiyCategoryOption(
+      id: characterCountReference,
+      label: context.l10n.diy_sourceCharacterCount,
+    ),
+    ...widget.categoryOptions,
+  ];
 
-    return ElevatedCard(
-      elevation: CardElevation.level1,
-      borderRadius: 12,
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(6),
-                decoration: BoxDecoration(
-                  color: colorScheme.tertiaryContainer.withValues(alpha: 0.5),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Icon(
-                  Icons.swap_horiz_rounded,
-                  size: 14,
-                  color: colorScheme.tertiary,
-                ),
-              ),
-              const SizedBox(width: 10),
-              Text(
-                context.l10n.diy_mappingRules,
-                style: theme.textTheme.titleSmall?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const Spacer(),
-              if (!widget.readOnly)
-                Material(
-                  color: Colors.transparent,
-                  child: InkWell(
-                    onTap: _addMappingRule,
-                    borderRadius: BorderRadius.circular(8),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 6,
-                      ),
-                      decoration: BoxDecoration(
-                        border: Border.all(
-                          color: colorScheme.primary.withValues(alpha: 0.5),
-                        ),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            Icons.add_rounded,
-                            size: 16,
-                            color: colorScheme.primary,
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            context.l10n.common_add,
-                            style: theme.textTheme.labelMedium?.copyWith(
-                              color: colorScheme.primary,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          if (_config.mappingRules.isEmpty)
-            Container(
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                color: colorScheme.surfaceContainerLowest,
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Center(
-                child: Column(
-                  children: [
-                    Icon(
-                      Icons.rule_rounded,
-                      size: 32,
-                      color: colorScheme.outline,
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      context.l10n.diy_noMappingRules,
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        color: colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            )
-          else
-            ListView.separated(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: _config.mappingRules.length,
-              separatorBuilder: (_, __) => const SizedBox(height: 8),
-              itemBuilder: (context, index) {
-                final entry = _config.mappingRules.entries.elementAt(index);
-                return Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 10,
-                  ),
-                  decoration: BoxDecoration(
-                    color: colorScheme.surfaceContainerLowest,
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Row(
-                    children: [
-                      // 源值
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 4,
-                        ),
-                        decoration: BoxDecoration(
-                          color: colorScheme.primaryContainer.withValues(
-                            alpha: 0.5,
-                          ),
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: Text(
-                          entry.key,
-                          style: theme.textTheme.labelMedium?.copyWith(
-                            fontWeight: FontWeight.bold,
-                            color: colorScheme.primary,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Icon(
-                        Icons.arrow_forward_rounded,
-                        size: 16,
-                        color: colorScheme.onSurfaceVariant,
-                      ),
-                      const SizedBox(width: 8),
-                      // 目标值
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 4,
-                        ),
-                        decoration: BoxDecoration(
-                          color: colorScheme.secondaryContainer.withValues(
-                            alpha: 0.5,
-                          ),
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: Text(
-                          entry.value,
-                          style: theme.textTheme.labelMedium?.copyWith(
-                            fontWeight: FontWeight.bold,
-                            color: colorScheme.secondary,
-                          ),
-                        ),
-                      ),
-                      const Spacer(),
-                      if (!widget.readOnly)
-                        IconButton(
-                          icon: Icon(
-                            Icons.delete_outline_rounded,
-                            size: 18,
-                            color: colorScheme.error.withValues(alpha: 0.7),
-                          ),
-                          onPressed: () => _removeMappingRule(entry.key),
-                          tooltip: context.l10n.diy_deleteRule,
-                        ),
-                    ],
-                  ),
-                );
-              },
+  Widget _buildMappingRulesEditor() {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return DiySectionCard(
+      icon: Icons.swap_horiz_rounded,
+      accent: colorScheme.tertiary,
+      accentContainer: colorScheme.tertiaryContainer,
+      title: context.l10n.diy_mappingRules,
+      trailing: widget.readOnly
+          ? null
+          : TextButton.icon(
+              onPressed: _addMappingRule,
+              icon: const Icon(Icons.add_rounded, size: 18),
+              label: Text(context.l10n.common_add),
             ),
-        ],
-      ),
+      child: _config.mappingRules.isEmpty
+          ? const _NoMappingRules()
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              spacing: 8,
+              children: [
+                for (final MapEntry(:key, :value)
+                    in _config.mappingRules.entries)
+                  _MappingRuleRow(
+                    source: key,
+                    result: value,
+                    onDeleted: widget.readOnly
+                        ? null
+                        : () => _removeMappingRule(key),
+                  ),
+              ],
+            ),
     );
   }
 
   Widget _buildDefaultValueField() {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
+    final colorScheme = Theme.of(context).colorScheme;
 
-    return ElevatedCard(
-      elevation: CardElevation.level1,
-      hoverElevation: CardElevation.level2,
-      enableHoverEffect: !widget.readOnly,
-      borderRadius: 12,
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(6),
-                decoration: BoxDecoration(
-                  color: colorScheme.primaryContainer.withValues(alpha: 0.5),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Icon(
-                  Icons.text_snippet_outlined,
-                  size: 14,
-                  color: colorScheme.primary,
-                ),
-              ),
-              const SizedBox(width: 10),
-              Text(
-                context.l10n.diy_defaultValue,
-                style: theme.textTheme.titleSmall?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
+    return DiySectionCard(
+      icon: Icons.text_snippet_outlined,
+      accent: colorScheme.primary,
+      accentContainer: colorScheme.primaryContainer,
+      title: context.l10n.diy_defaultValue,
+      hoverable: !widget.readOnly,
+      child: ThemedFormInput(
+        initialValue: _config.defaultValue ?? '',
+        decoration: InputDecoration(
+          hintText: context.l10n.diy_defaultValueHint,
+          prefixIcon: Icon(
+            Icons.edit_note_rounded,
+            color: colorScheme.onSurfaceVariant,
           ),
-          const SizedBox(height: 12),
-          ThemedFormInput(
-            initialValue: _config.defaultValue ?? '',
-            decoration: InputDecoration(
-              hintText: context.l10n.diy_defaultValueHint,
-              prefixIcon: Icon(
-                Icons.edit_note_rounded,
-                color: colorScheme.onSurfaceVariant,
-              ),
-              border: InputBorder.none,
-            ),
-            readOnly: widget.readOnly,
-            onChanged: (value) {
-              _updateConfig(
-                _config.copyWith(defaultValue: value.isEmpty ? null : value),
-              );
-            },
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildEnabledSwitch() {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-
-    return ElevatedCard(
-      elevation: CardElevation.level1,
-      borderRadius: 12,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      child: Row(
-        children: [
-          Icon(
-            _config.enabled ? Icons.check_circle_rounded : Icons.cancel_rounded,
-            size: 20,
-            color: _config.enabled ? colorScheme.primary : colorScheme.outline,
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  context.l10n.diy_enableDependency,
-                  style: theme.textTheme.titleSmall?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                Text(
-                  context.l10n.diy_enableDependencyHint,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Switch(
-            value: _config.enabled,
-            onChanged: widget.readOnly
-                ? null
-                : (value) {
-                    _updateConfig(_config.copyWith(enabled: value));
-                  },
-          ),
-        ],
+        ),
+        readOnly: widget.readOnly,
+        onChanged: (value) {
+          _updateConfig(
+            _config.copyWith(defaultValue: value.isEmpty ? null : value),
+          );
+        },
       ),
     );
   }
@@ -759,17 +433,135 @@ class _DependencyConfigPanelState extends State<DependencyConfigPanel> {
     }
   }
 
+  // 角色数量源读取的是本次生成的人数而非类别结果，说明要按源区分
   String _getDependencyTypeDescription(DependencyType type) {
+    final l10n = context.l10n;
+    final fromCharacterCount =
+        _config.sourceCategoryId == characterCountReference;
     switch (type) {
       case DependencyType.count:
-        return context.l10n.diy_dependencyCountDescription;
+        return fromCharacterCount
+            ? l10n.diy_dependencyCountCharacterCountDescription
+            : l10n.diy_dependencyCountDescription;
       case DependencyType.exists:
-        return context.l10n.diy_dependencyExistsDescription;
+        return fromCharacterCount
+            ? l10n.diy_dependencyExistsCharacterCountDescription
+            : l10n.diy_dependencyExistsDescription;
       case DependencyType.value:
-        return context.l10n.diy_dependencyValueDescription;
+        return fromCharacterCount
+            ? l10n.diy_dependencyValueCharacterCountDescription
+            : l10n.diy_dependencyValueDescription;
       case DependencyType.excludes:
-        return context.l10n.diy_dependencyExcludesDescription;
+        return fromCharacterCount
+            ? l10n.diy_dependencyExcludesCharacterCountDescription
+            : l10n.diy_dependencyExcludesDescription;
     }
+  }
+}
+
+class _NoMappingRules extends StatelessWidget {
+  const _NoMappingRules();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerLowest,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Center(
+        child: Column(
+          children: [
+            Icon(Icons.rule_rounded, size: 32, color: colorScheme.outline),
+            const SizedBox(height: 8),
+            Text(
+              context.l10n.diy_noMappingRules,
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 一条映射：源值 → 结果值，[onDeleted] 为空时不可删除
+class _MappingRuleRow extends StatelessWidget {
+  const _MappingRuleRow({
+    required this.source,
+    required this.result,
+    required this.onDeleted,
+  });
+
+  final String source;
+  final String result;
+  final VoidCallback? onDeleted;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    Widget chip(String text, Color container, Color foreground) => Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: container.withValues(alpha: 0.5),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        text,
+        style: theme.textTheme.labelMedium?.copyWith(
+          fontWeight: FontWeight.bold,
+          color: foreground,
+        ),
+      ),
+    );
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerLowest,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                chip(source, colorScheme.primaryContainer, colorScheme.primary),
+                Icon(
+                  Icons.arrow_forward_rounded,
+                  size: 16,
+                  color: colorScheme.onSurfaceVariant,
+                ),
+                chip(
+                  result,
+                  colorScheme.secondaryContainer,
+                  colorScheme.secondary,
+                ),
+              ],
+            ),
+          ),
+          if (onDeleted != null)
+            IconButton(
+              icon: Icon(
+                Icons.delete_outline_rounded,
+                size: 18,
+                color: colorScheme.error.withValues(alpha: 0.7),
+              ),
+              onPressed: onDeleted,
+              tooltip: context.l10n.diy_deleteRule,
+            ),
+        ],
+      ),
+    );
   }
 }
 
@@ -837,9 +629,6 @@ class _MappingRuleFormState extends State<_MappingRuleForm> {
                             Icons.input_rounded,
                             color: colorScheme.onSurfaceVariant,
                           ),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
                   ),
                   onChanged: (_) => setState(() {}),
                   onSubmitted: (_) => _valueFocusNode.requestFocus(),
@@ -859,9 +648,6 @@ class _MappingRuleFormState extends State<_MappingRuleForm> {
                             Icons.output_rounded,
                             color: colorScheme.onSurfaceVariant,
                           ),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
                   ),
                   onChanged: (_) => setState(() {}),
                   onSubmitted: (_) {

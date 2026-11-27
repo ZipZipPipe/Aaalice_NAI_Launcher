@@ -18,7 +18,7 @@ import 'dart:io';
 import 'dart:convert';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
-import 'package:hive/hive.dart';
+import 'package:hive_ce/hive_ce.dart';
 
 // 导入项目中的元数据解析器
 // 注意：此脚本需要在项目根目录下运行，以正确解析导入
@@ -226,7 +226,6 @@ Future<TestResult> testMetadataExtraction(String rootPath) async {
     final result = UnifiedMetadataParser.parseFromFile(
       file.path,
       useGradualRead: true,
-      useCache: false, // 测试时不使用缓存
     );
 
     if (result.success && result.metadata != null) {

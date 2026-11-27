@@ -1,13 +1,35 @@
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/misc.dart' show Override;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image/image.dart' as img;
+import 'package:nai_launcher/core/constants/api_constants.dart';
+import 'package:nai_launcher/core/storage/local_storage_service.dart';
+import 'package:nai_launcher/core/utils/image_save_utils.dart';
+import 'package:nai_launcher/data/models/character/character_prompt.dart';
+import 'package:nai_launcher/data/models/fixed_tag/fixed_tag_entry.dart';
+import 'package:nai_launcher/data/models/fixed_tag/fixed_tag_usage_snapshot.dart';
 import 'package:nai_launcher/data/models/gallery/nai_image_metadata.dart';
+import 'package:nai_launcher/data/models/image/image_params.dart'
+    show ImageParams;
 import 'package:nai_launcher/data/models/metadata/metadata_import_options.dart';
+import 'package:nai_launcher/data/services/fixed_tag/fixed_tag_usage_record_store.dart';
+import 'package:nai_launcher/data/services/image_metadata_service.dart';
+import 'package:nai_launcher/data/services/metadata_import_selection_store.dart';
 import 'package:nai_launcher/l10n/app_localizations.dart';
+import 'package:nai_launcher/presentation/providers/character_prompt_provider.dart';
+import 'package:nai_launcher/presentation/providers/generation/generation_params_notifier.dart';
 import 'package:nai_launcher/presentation/services/image_metadata_import_workflow.dart';
 import 'package:nai_launcher/presentation/services/mobile_image_metadata_importer.dart';
+import 'package:nai_launcher/presentation/utils/fixed_tag_import_resolution.dart';
+import 'package:nai_launcher/presentation/utils/metadata_import_coordinator.dart';
+
+import '../../helpers/content_hash.dart';
+import '../../helpers/image_metadata_service_sandbox.dart';
+import '../../helpers/memory_local_storage.dart';
 
 void main() {
   testWidgets('system picker cancellation stops without processing', (
@@ -65,7 +87,7 @@ void main() {
     final reports = <ImageMetadataImportResult>[];
     final workflow = ImageMetadataImportWorkflow(
       metadataReader: (bytes) async => null,
-      optionsPicker: (context, metadata) async {
+      optionsPicker: (context, metadata, initialOptions) async {
         optionsOpened = true;
         return const MetadataImportOptions();
       },
@@ -95,10 +117,10 @@ void main() {
     final reports = <ImageMetadataImportResult>[];
     final workflow = ImageMetadataImportWorkflow(
       metadataReader: (bytes) async => const NaiImageMetadata(prompt: '1girl'),
-      optionsPicker: (context, metadata) async => null,
+      optionsPicker: (context, metadata, initialOptions) async => null,
       metadataApplier: (read, metadata, options, l10n) async {
         applied = true;
-        return 1;
+        return const MetadataImportOutcome(1);
       },
       resultReporter: (context, result, appliedCount) => reports.add(result),
     );
@@ -126,9 +148,10 @@ void main() {
     var openedGeneration = false;
     final workflow = ImageMetadataImportWorkflow(
       metadataReader: (bytes) async => const NaiImageMetadata(prompt: '1girl'),
-      optionsPicker: (context, metadata) async =>
+      optionsPicker: (context, metadata, initialOptions) async =>
           const MetadataImportOptions(importPrompt: true),
-      metadataApplier: (read, metadata, options, l10n) async => 0,
+      metadataApplier: (read, metadata, options, l10n) async =>
+          const MetadataImportOutcome(0),
       resultReporter: (context, result, appliedCount) => reports.add(result),
       generationPageOpener: (context) => openedGeneration = true,
     );
@@ -157,16 +180,16 @@ void main() {
     final reports = <(ImageMetadataImportResult, int)>[];
     final workflow = ImageMetadataImportWorkflow(
       metadataReader: (bytes) async => const NaiImageMetadata(prompt: '1girl'),
-      optionsPicker: (context, metadata) async =>
+      optionsPicker: (context, metadata, initialOptions) async =>
           const MetadataImportOptions(importPrompt: true),
       metadataApplier: (read, metadata, options, l10n) async {
         applyCalls++;
         expect(metadata.prompt, '1girl');
         expect(options.importPrompt, isTrue);
-        return 1;
+        return const MetadataImportOutcome(1);
       },
-      resultReporter: (context, result, appliedCount) {
-        reports.add((result, appliedCount));
+      resultReporter: (context, result, outcome) {
+        reports.add((result, outcome.appliedCount));
       },
       generationPageOpener: (context) => openedGeneration = true,
     );
@@ -187,17 +210,316 @@ void main() {
     expect(reports, [(ImageMetadataImportResult.applied, 1)]);
     expect(openedGeneration, isTrue);
   });
+
+  for (final (outcome, result, message) in [
+    (
+      const MetadataImportOutcome(
+        1,
+        characterAppend: (added: 1, skipped: 2, limit: 6),
+      ),
+      ImageMetadataImportResult.applied,
+      'Applied 1 parameters\nCharacters added: 1. Skipped: 2. Limit: 6.',
+    ),
+    (
+      const MetadataImportOutcome(
+        0,
+        characterAppend: (added: 0, skipped: 1, limit: 6),
+      ),
+      ImageMetadataImportResult.characterLimitReached,
+      'Characters added: 0. Skipped: 1. Limit: 6.',
+    ),
+    (
+      const MetadataImportOutcome(
+        1,
+        characterAppend: (added: 0, skipped: 1, limit: 22),
+      ),
+      ImageMetadataImportResult.applied,
+      'Applied 1 parameters\nCharacters added: 0. Skipped: 1. Limit: 22.',
+    ),
+  ]) {
+    testWidgets('reports $message', (tester) async {
+      var opened = false;
+      ImageMetadataImportResult? actual;
+      final workflow = ImageMetadataImportWorkflow(
+        optionsPicker: (_, _, options) async => options,
+        metadataApplier: (_, _, _, _) async => outcome,
+        generationPageOpener: (_) => opened = true,
+      );
+      await _pumpAction(
+        tester,
+        action: (context, ref) async => actual = await workflow.run(
+          context: context,
+          read: ref.read,
+          metadata: const NaiImageMetadata(characterPrompts: ['new']),
+        ),
+      );
+      await tester.tap(find.text('run'));
+      await tester.pumpAndSettle();
+      expect(actual, result);
+      expect(find.text(message), findsOneWidget);
+      expect(find.text('No parameters selected'), findsNothing);
+      expect(opened, result == ImageMetadataImportResult.applied);
+      await tester.pump(const Duration(seconds: 4));
+      await tester.pumpAndSettle();
+    });
+  }
+
+  for (final (model, message) in [
+    (
+      ImageModels.animeDiffusionV45Full,
+      'You already have 8 characters, exceeding the selected model’s limit of 6. '
+          'Uncheck “Model” to append, or choose “Replace existing characters”.',
+    ),
+    (
+      ImageModels.animeDiffusionV3,
+      'This model supports up to 0 characters. Choose another model or turn off character import.',
+    ),
+  ]) {
+    testWidgets('reports the append conflict for $model', (tester) async {
+      var opened = false;
+      ImageMetadataImportResult? result;
+      final workflow = ImageMetadataImportWorkflow(
+        optionsPicker: (context, metadata, initialOptions) async =>
+            MetadataImportOptions.none().copyWith(
+              importModel: true,
+              importCharacterPrompts: true,
+              characterImportMode: CharacterImportMode.append,
+              selectedCharacterIndices: [0],
+            ),
+        generationPageOpener: (context) => opened = true,
+      );
+      await _pumpAction(
+        tester,
+        overrides: [
+          localStorageServiceProvider.overrideWithValue(MemoryLocalStorage()),
+          generationParamsNotifierProvider.overrideWithValue(
+            const ImageParams(model: ImageModels.animeDiffusionV5Full),
+          ),
+          characterPromptNotifierProvider.overrideWithValue(
+            CharacterPromptConfig(
+              characters: [
+                for (var index = 0; index < 8; index++)
+                  CharacterPrompt(
+                    id: '$index',
+                    name: 'Existing $index',
+                    prompt: 'existing',
+                  ),
+              ],
+            ),
+          ),
+        ],
+        action: (context, ref) async => result = await workflow.run(
+          context: context,
+          read: ref.read,
+          metadata: NaiImageMetadata(
+            model: model,
+            characterInfos: const [CharacterPromptInfo(prompt: 'new')],
+          ),
+        ),
+      );
+      await tester.tap(find.text('run'));
+      await tester.pumpAndSettle();
+
+      expect(result, ImageMetadataImportResult.characterModelConflict);
+      expect(find.text(message), findsOneWidget);
+      expect(find.text('No parameters selected'), findsNothing);
+      expect(opened, isFalse);
+      await tester.pump(const Duration(seconds: 4));
+      await tester.pumpAndSettle();
+    });
+  }
+
+  group('上次勾选的记忆', () {
+    ImageMetadataImportWorkflow buildWorkflow({
+      required MetadataImportOptionsPicker picker,
+      MetadataImportApplier? applier,
+      List<ImageMetadataImportResult>? reports,
+    }) => ImageMetadataImportWorkflow(
+      metadataReader: (bytes) async =>
+          const NaiImageMetadata(prompt: '1girl', seed: 7),
+      optionsPicker: picker,
+      metadataApplier:
+          applier ??
+          (read, metadata, options, l10n) async =>
+              const MetadataImportOutcome(1),
+      resultReporter: (context, result, appliedCount) => reports?.add(result),
+      generationPageOpener: (context) {},
+    );
+
+    Future<void> pumpImport(
+      WidgetTester tester,
+      ImageMetadataImportWorkflow workflow,
+      MetadataImportSelectionStore store,
+    ) => _pumpAction(
+      tester,
+      selectionStore: store,
+      action: (context, ref) => workflow.run(
+        context: context,
+        read: ref.read,
+        bytes: Uint8List.fromList([1]),
+      ),
+    );
+
+    testWidgets('确认后的类别开关成为下一次导入的初始勾选', (tester) async {
+      final store = _RecordingSelectionStore();
+      final offered = <MetadataImportOptions>[];
+      final workflow = buildWorkflow(
+        picker: (context, metadata, initialOptions) async {
+          offered.add(initialOptions);
+          return initialOptions.copyWith(
+            importSeed: false,
+            characterImportMode: CharacterImportMode.append,
+            selectedCharacterIndices: [0],
+          );
+        },
+      );
+
+      await pumpImport(tester, workflow, store);
+      for (var round = 0; round < 2; round++) {
+        await tester.tap(find.text('run'));
+        await tester.pumpAndSettle();
+      }
+
+      expect(offered, [
+        MetadataImportOptions.all(),
+        MetadataImportOptions.all().copyWith(
+          importSeed: false,
+          characterImportMode: CharacterImportMode.append,
+        ),
+      ]);
+      expect(store.saved, hasLength(2));
+    });
+
+    testWidgets('取消对话框不改动已记住的勾选', (tester) async {
+      final store = _RecordingSelectionStore();
+      final remembered = MetadataImportOptions.all().copyWith(
+        importSeed: false,
+        characterImportMode: CharacterImportMode.append,
+      );
+      await store.save(remembered);
+      store.saved.clear();
+      MetadataImportOptions? offered;
+      final workflow = buildWorkflow(
+        picker: (context, metadata, initialOptions) async {
+          offered = initialOptions;
+          return null;
+        },
+      );
+
+      await pumpImport(tester, workflow, store);
+      await tester.tap(find.text('run'));
+      await tester.pumpAndSettle();
+
+      expect(offered, remembered);
+      expect(store.saved, isEmpty);
+      expect(store.load(), remembered);
+    });
+
+    testWidgets('记忆写入失败时仍完成已确认的导入', (tester) async {
+      final store = _RecordingSelectionStore(failSave: true);
+      final reports = <ImageMetadataImportResult>[];
+      var applyCalls = 0;
+      final workflow = buildWorkflow(
+        picker: (context, metadata, initialOptions) async =>
+            const MetadataImportOptions(importPrompt: true),
+        applier: (read, metadata, options, l10n) async {
+          applyCalls++;
+          return const MetadataImportOutcome(1);
+        },
+        reports: reports,
+      );
+
+      await pumpImport(tester, workflow, store);
+      await tester.tap(find.text('run'));
+      await tester.pumpAndSettle();
+
+      expect(store.saved, hasLength(1));
+      expect(applyCalls, 1);
+      expect(reports, [ImageMetadataImportResult.applied]);
+    });
+  });
+
+  group('固定词导入判定', () {
+    const qualityBlock =
+        '<quality>\n2::best quality::,masterpiece,very aesthetic, highres, '
+        'absurdres, highly finished\n</quality>';
+    useImageMetadataServiceSandbox();
+
+    Future<Uint8List> buildImage(String prompt) =>
+        ImageSaveUtils.rebuildImageBytesWithMetadata(
+          imageBytes: Uint8List.fromList(
+            img.encodePng(img.Image(width: 2, height: 2)),
+          ),
+          params: ImageParams(prompt: prompt, width: 2, height: 2),
+          actualSeed: 219,
+        );
+
+    test('没有记录时同名词库条目仍会被推断为固定词', () async {
+      final bytes = await buildImage('$qualityBlock, 1girl');
+      final metadata = await ImageMetadataService().getMetadataFromBytes(bytes);
+
+      final resolution = resolveFixedTagImport(
+        metadata: metadata!,
+        entries: [FixedTagEntry.create(name: '质量词', content: qualityBlock)],
+      );
+
+      expect(resolution.source, FixedTagImportSource.currentLibrary);
+      expect(resolution.metadata.mainPrompt, '1girl');
+    });
+
+    test('记录库中的空快照阻断词库推断', () async {
+      final bytes = await buildImage('$qualityBlock, 1girl');
+      await FixedTagUsageRecordStore().record(
+        contentHash: contentHashOf(bytes),
+        snapshot: const FixedTagUsageSnapshot(),
+      );
+      final metadata = await ImageMetadataService().getMetadataFromBytes(bytes);
+
+      final resolution = resolveFixedTagImport(
+        metadata: metadata!,
+        entries: [FixedTagEntry.create(name: '质量词', content: qualityBlock)],
+      );
+
+      expect(resolution.source, FixedTagImportSource.structured);
+      expect(resolution.snapshot?.entries, isEmpty);
+      expect(resolution.metadata.fixedPrefixTags, isEmpty);
+      expect(resolution.metadata.mainPrompt, '$qualityBlock, 1girl');
+    });
+  });
 }
 
 typedef _TestAction =
     Future<Object?> Function(BuildContext context, WidgetRef ref);
 
+class _RecordingSelectionStore extends MetadataImportSelectionStore {
+  _RecordingSelectionStore({this.failSave = false})
+    : super(MemoryLocalStorage());
+
+  final bool failSave;
+  final saved = <MetadataImportOptions>[];
+
+  @override
+  Future<void> save(MetadataImportOptions options) async {
+    saved.add(options);
+    if (failSave) throw const FileSystemException('disk full');
+    await super.save(options);
+  }
+}
+
 Future<void> _pumpAction(
   WidgetTester tester, {
   required _TestAction action,
+  MetadataImportSelectionStore? selectionStore,
+  List<Override> overrides = const [],
 }) async {
   await tester.pumpWidget(
     ProviderScope(
+      overrides: [
+        metadataImportSelectionStoreProvider.overrideWithValue(
+          selectionStore ?? _RecordingSelectionStore(),
+        ),
+        ...overrides,
+      ],
       child: MaterialApp(
         locale: const Locale('en'),
         supportedLocales: AppLocalizations.supportedLocales,

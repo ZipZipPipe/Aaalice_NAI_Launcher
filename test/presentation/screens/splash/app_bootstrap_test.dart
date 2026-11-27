@@ -3,9 +3,13 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mocktail/mocktail.dart';
 import 'package:nai_launcher/core/constants/app_version.dart';
 import 'package:nai_launcher/core/services/data_migration_service.dart';
+import 'package:nai_launcher/core/services/update_check_service.dart';
+import 'package:nai_launcher/core/services/update_installer_service.dart';
 import 'package:nai_launcher/core/storage/local_storage_service.dart';
+import 'package:nai_launcher/data/models/version/version_info.dart';
 import 'package:nai_launcher/presentation/providers/startup_initialization_provider.dart';
 import 'package:nai_launcher/presentation/providers/update_provider.dart';
 import 'package:nai_launcher/presentation/screens/splash/app_bootstrap.dart';
@@ -138,6 +142,59 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('真实自动检测跨过帧间异步间隙后仍完成并写回更新状态', (tester) async {
+    const latest = VersionInfo(
+      version: '2.0.0',
+      currentVersion: '1.0.0',
+      releaseNotes: 'test',
+      isNewer: true,
+    );
+    final serviceReady = Completer<UpdateCheckService>();
+    final checkService = _MockUpdateCheckService();
+    final installer = _MockUpdateInstallerService();
+    when(installer.consumeExecutionResult).thenAnswer((_) async => null);
+    when(installer.restorePendingUpdate).thenAnswer((_) async => null);
+    when(checkService.shouldCheckOnStartup).thenAnswer((_) async => true);
+    when(
+      () => checkService.checkForUpdates(ignoreSkipped: false),
+    ).thenAnswer((_) async => latest);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          updateCheckServiceReadyProvider.overrideWith(
+            (ref) => serviceReady.future,
+          ),
+          updateCheckServiceProvider.overrideWithValue(checkService),
+          updateInstallerServiceProvider.overrideWithValue(installer),
+        ],
+        child: const AutomaticUpdateCheck(
+          delay: Duration(seconds: 1),
+          child: SizedBox(),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(seconds: 1));
+    // 服务就绪前先走几帧：无订阅者的 autoDispose provider 会在此期间被回收
+    for (var i = 0; i < 3; i++) {
+      await tester.pump();
+    }
+    serviceReady.complete(checkService);
+    await tester.pump();
+    await tester.pump();
+
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(AutomaticUpdateCheck)),
+    );
+    final state = container.read(updateStateProvider);
+    expect(state.status, UpdateStatus.available);
+    expect(state.versionInfo, latest);
+    verify(checkService.shouldCheckOnStartup).called(1);
+    verify(() => checkService.checkForUpdates(ignoreSkipped: false)).called(1);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('后台暂停检测，回到前台补查且不并发重复请求', (tester) async {
     var checks = 0;
     final pending = Completer<void>();
@@ -173,6 +230,49 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(minutes: 5));
     expect(checks, 3);
+  });
+
+  testWidgets('窗口失焦时照常计时，切换焦点不重置延迟', (tester) async {
+    var checks = 0;
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    addTearDown(
+      () => tester.binding.handleAppLifecycleStateChanged(
+        AppLifecycleState.resumed,
+      ),
+    );
+    void switchFocus() {
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    }
+
+    await tester.pumpWidget(
+      ProviderScope(
+        child: AutomaticUpdateCheck(
+          delay: const Duration(seconds: 10),
+          checkRunner: (_) async => checks++,
+          child: const SizedBox(),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(seconds: 4));
+    switchFocus();
+    await tester.pump(const Duration(seconds: 4));
+    switchFocus();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    await tester.pump(const Duration(seconds: 2));
+    expect(checks, 1);
+
+    await tester.pump(UpdateCheckService.failedCheckRetryInterval);
+    expect(checks, 2);
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    await tester.pump(const Duration(hours: 1));
+    expect(checks, 2);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    await tester.pump(const Duration(seconds: 10));
+    expect(checks, 3);
+
+    await tester.pumpWidget(const SizedBox());
   });
 
   testWidgets('数据库失败保留 Splash，点击重试后才进入主应用', (tester) async {
@@ -372,3 +472,8 @@ class _MemoryStorage extends LocalStorageService {
   @override
   T? getSetting<T>(String key, {T? defaultValue}) => defaultValue;
 }
+
+class _MockUpdateCheckService extends Mock implements UpdateCheckService {}
+
+class _MockUpdateInstallerService extends Mock
+    implements UpdateInstallerService {}

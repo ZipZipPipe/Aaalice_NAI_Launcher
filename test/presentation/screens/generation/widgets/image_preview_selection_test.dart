@@ -1,20 +1,32 @@
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
+import 'package:nai_launcher/core/platform/platform_capabilities.dart';
 import 'package:nai_launcher/core/shortcuts/shortcut_config.dart';
+import 'package:nai_launcher/core/storage/local_storage_service.dart';
 import 'package:nai_launcher/l10n/app_localizations.dart';
+import 'package:nai_launcher/presentation/adaptive/interaction_policy.dart';
+import 'package:nai_launcher/presentation/providers/generation/generation_view_state_provider.dart';
+import 'package:nai_launcher/presentation/providers/generation/image_card_selection_provider.dart';
 import 'package:nai_launcher/presentation/providers/generation/preview_selection_provider.dart';
 import 'package:nai_launcher/presentation/providers/history_click_behavior_provider.dart';
 import 'package:nai_launcher/presentation/providers/image_generation_provider.dart';
 import 'package:nai_launcher/presentation/providers/shortcuts_provider.dart';
+import 'package:nai_launcher/presentation/widgets/bulk_action_bar.dart';
+import 'package:nai_launcher/presentation/widgets/common/image_card_batch_scope.dart';
+import 'package:nai_launcher/presentation/widgets/common/image_comparison_toolbar.dart';
 import 'package:nai_launcher/presentation/widgets/common/image_comparison_view.dart';
+import 'package:nai_launcher/presentation/widgets/common/transparency_background.dart';
 import 'package:nai_launcher/presentation/screens/generation/widgets/image_preview.dart';
 import 'package:nai_launcher/presentation/screens/generation/widgets/preview_info_bar.dart';
 import 'package:nai_launcher/presentation/widgets/common/image_detail/image_detail_viewer.dart';
 import 'package:nai_launcher/presentation/widgets/common/selectable_image_card.dart';
+
+import '../../../../helpers/memory_local_storage.dart';
 
 class _SelectionImageGenerationNotifier extends ImageGenerationNotifier {
   _SelectionImageGenerationNotifier(this.initialState);
@@ -85,6 +97,39 @@ void main() {
       expect(find.byType(SelectableImageCard), findsNWidgets(2));
     },
   );
+
+  testWidgets('send-to-Krita is only offered where the Krita bridge exists', (
+    tester,
+  ) async {
+    addTearDown(() => PlatformCapabilities.debugOverride = null);
+    Future<SelectableImageCard> pumpOn(TargetPlatform platform) async {
+      PlatformCapabilities.debugOverride = PlatformCapabilities.forPlatform(
+        platform,
+      );
+      final container = ProviderContainer(
+        overrides: [
+          imageGenerationNotifierProvider.overrideWith(
+            () => _SelectionImageGenerationNotifier(
+              ImageGenerationState(displayImages: [_image('only', 20)]),
+            ),
+          ),
+          shortcutConfigNotifierProvider.overrideWith(
+            _DefaultShortcutConfigNotifier.new,
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      await tester.pumpWidget(_app(container));
+      await tester.pumpAndSettle();
+      return tester.widget<SelectableImageCard>(
+        find.byType(SelectableImageCard),
+      );
+    }
+
+    expect((await pumpOn(TargetPlatform.windows)).onSendToKrita, isNotNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect((await pumpOn(TargetPlatform.android)).onSendToKrita, isNull);
+  });
 
   testWidgets('generating state keeps priority over linked selection', (
     tester,
@@ -236,6 +281,253 @@ void main() {
     );
   });
 
+  testWidgets('server scaled result keeps comparison entry', (tester) async {
+    final result = _comparisonImage(
+      id: 'server-scaled',
+      resultWidth: 137,
+      resultHeight: 200,
+      sourceWidth: 100,
+      sourceHeight: 146,
+    );
+    final container = _comparisonContainer(result);
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(_app(container));
+    await tester.pumpAndSettle();
+    final l10n = await AppLocalizations.delegate.load(const Locale('en'));
+
+    expect(find.text(l10n.generation_imageComparison), findsOneWidget);
+  });
+
+  testWidgets(
+    'comparison card reserves its toolbar and keeps every control reachable',
+    (tester) async {
+      // Chinese glyph widths in the test font are close to real ones.
+      const locale = Locale('zh');
+      final l10n = await AppLocalizations.delegate.load(locale);
+      for (final size in const [Size(320, 560), Size(600, 720)]) {
+        for (final textScale in const [1.0, 3.0]) {
+          final reason = '$size text ${textScale}x';
+          final result = _comparisonImage(
+            id: 'drifted',
+            resultWidth: 137,
+            resultHeight: 200,
+            sourceWidth: 100,
+            sourceHeight: 146,
+          );
+          final container = _comparisonContainer(result);
+          container
+              .read(generationImageCardSelectionProvider.notifier)
+              .enterAndSelect(result.id);
+
+          await tester.pumpWidget(
+            _app(
+              container,
+              size: size,
+              textScale: textScale,
+              locale: locale,
+              policy: InteractionPolicy.touchFirst,
+            ),
+          );
+          await tester.pumpAndSettle();
+          expect(
+            tester
+                .widget<SelectableImageCard>(find.byType(SelectableImageCard))
+                .isSelected,
+            isTrue,
+            reason: reason,
+          );
+          expect(find.byType(BulkActionBar), findsOneWidget, reason: reason);
+
+          tester
+              .widget<PreviewInfoBar>(find.byType(PreviewInfoBar))
+              .onComparisonChanged!(true);
+          await tester.pumpAndSettle();
+
+          expect(
+            container.read(generationImageCardSelectionProvider).isActive,
+            isFalse,
+            reason: reason,
+          );
+          expect(find.byType(BulkActionBar), findsNothing, reason: reason);
+          final card = tester.widget<SelectableImageCard>(
+            find.byType(SelectableImageCard),
+          );
+          final view = tester.widget<ImageComparisonView>(
+            find.byType(ImageComparisonView),
+          );
+          final toolbarFinder = find.byType(ImageComparisonToolbar);
+          final toolbarHeight = ImageComparisonToolbar.singleRowHeight(
+            tester.element(toolbarFinder),
+          );
+          expect(card.isSelected, isFalse, reason: reason);
+          expect(card.selectionMode, isFalse, reason: reason);
+          expect(card.enableSelection, isFalse, reason: reason);
+          expect(card.onLongPress, isNull, reason: reason);
+          expect(card.imageContentFooterHeight, toolbarHeight, reason: reason);
+          expect(view.fit, BoxFit.contain, reason: reason);
+          expect(view.imageBackdrop, isA<TransparencyBackgroundLayer>());
+
+          final cardRect = tester.getRect(find.byType(SelectableImageCard));
+          final toolbarRect = tester.getRect(toolbarFinder);
+          final viewport = tester.getRect(
+            find.byKey(const ValueKey('generation-image-comparison')),
+          );
+          expect(toolbarRect.height, toolbarHeight, reason: reason);
+          expect(toolbarRect.bottom, closeTo(cardRect.bottom, 0.01));
+          expect(
+            viewport.width / viewport.height,
+            closeTo(137 / 200, 0.01),
+            reason: reason,
+          );
+
+          final more = tester.getRect(find.byTooltip(l10n.common_moreActions));
+          final follow = tester.getRect(
+            find.byKey(const ValueKey('comparison-follow-mouse')),
+          );
+          expect(more.bottom, lessThanOrEqualTo(toolbarRect.top + 0.01));
+          expect(cardRect.contains(more.topLeft), isTrue, reason: reason);
+          expect(more.overlaps(follow), isFalse, reason: reason);
+          expect(tester.takeException(), isNull, reason: reason);
+
+          await tester.pumpWidget(const SizedBox.shrink());
+          container.dispose();
+        }
+      }
+    },
+  );
+
+  testWidgets('short preview widens the comparison card to fit its toolbar', (
+    tester,
+  ) async {
+    const locale = Locale('zh');
+    final l10n = await AppLocalizations.delegate.load(locale);
+    for (final size in const [Size(400, 220), Size(640, 240)]) {
+      for (final textScale in const [1.0, 3.0]) {
+        final reason = '$size text ${textScale}x';
+        final result = _comparisonImage(
+          id: 'short-preview',
+          resultWidth: 137,
+          resultHeight: 200,
+          sourceWidth: 100,
+          sourceHeight: 146,
+        );
+        final container = _comparisonContainer(result);
+        container
+            .read(generationComparisonEnabledProvider.notifier)
+            .setEnabled(true);
+
+        await tester.pumpWidget(
+          _app(container, size: size, textScale: textScale, locale: locale),
+        );
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull, reason: reason);
+
+        final label = tester.renderObject<RenderParagraph>(
+          find.text(l10n.comparison_followMouse),
+        );
+        final generated = tester.getRect(
+          find.byKey(const ValueKey('generation-comparison-generated')),
+        );
+        expect(label.didExceedMaxLines, isFalse, reason: reason);
+        expect(
+          generated.width / generated.height,
+          closeTo(137 / 200, 0.01),
+          reason: reason,
+        );
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        container.dispose();
+      }
+    }
+  });
+
+  testWidgets('turning comparison on leaves batch selection', (tester) async {
+    final result = _comparisonImage(
+      id: 'selected-then-compared',
+      resultWidth: 4,
+      resultHeight: 4,
+      sourceWidth: 8,
+      sourceHeight: 8,
+    );
+    final container = _comparisonContainer(result);
+    addTearDown(container.dispose);
+    container
+        .read(generationImageCardSelectionProvider.notifier)
+        .enterAndSelect(result.id);
+
+    await tester.pumpWidget(_app(container));
+    await tester.pumpAndSettle();
+    final l10n = await AppLocalizations.delegate.load(const Locale('en'));
+    expect(find.byType(BulkActionBar), findsOneWidget);
+
+    await tester.tap(find.text(l10n.generation_imageComparison));
+    await tester.pumpAndSettle();
+
+    expect(
+      container.read(generationImageCardSelectionProvider).isActive,
+      isFalse,
+    );
+    expect(find.byType(BulkActionBar), findsNothing);
+    expect(
+      tester
+          .widget<ImageCardBatchScope>(find.byType(ImageCardBatchScope))
+          .targetIds,
+      isEmpty,
+    );
+    expect(find.byType(ImageComparisonView), findsOneWidget);
+    expect(container.read(generationComparisonEnabledProvider), isTrue);
+  });
+
+  testWidgets('batch selection entered elsewhere suspends comparison', (
+    tester,
+  ) async {
+    final result = _comparisonImage(
+      id: 'compared-then-selected',
+      resultWidth: 4,
+      resultHeight: 4,
+      sourceWidth: 8,
+      sourceHeight: 8,
+    );
+    final container = _comparisonContainer(result);
+    addTearDown(container.dispose);
+    container
+        .read(generationComparisonEnabledProvider.notifier)
+        .setEnabled(true);
+
+    await tester.pumpWidget(_app(container));
+    await tester.pumpAndSettle();
+    expect(find.byType(ImageComparisonView), findsOneWidget);
+
+    // History cards and Ctrl+A share this selection with the preview.
+    container
+        .read(generationImageCardSelectionProvider.notifier)
+        .enterAndSelect(result.id);
+    await tester.pumpAndSettle();
+
+    final card = tester.widget<SelectableImageCard>(
+      find.byType(SelectableImageCard),
+    );
+    expect(find.byType(ImageComparisonView), findsNothing);
+    expect(find.byType(BulkActionBar), findsOneWidget);
+    expect(card.selectionMode, isTrue);
+    expect(card.isSelected, isTrue);
+    expect(card.imageContent, isNull);
+    expect(card.imageContentFooterHeight, 0);
+    expect(
+      tester
+          .widget<PreviewInfoBar>(find.byType(PreviewInfoBar))
+          .comparisonEnabled,
+      isFalse,
+    );
+
+    container.read(generationImageCardSelectionProvider.notifier).exit();
+    await tester.pumpAndSettle();
+
+    expect(find.byType(ImageComparisonView), findsOneWidget);
+    expect(find.byType(BulkActionBar), findsNothing);
+  });
+
   testWidgets('missing or mismatched source keeps final-only preview', (
     tester,
   ) async {
@@ -343,14 +635,105 @@ void main() {
     expect(tester.getSize(infoBar).height, PreviewInfoBar.barHeight);
     expect(tester.takeException(), isNull);
   });
+
+  for (final scale in [1.0, 3.0]) {
+    testWidgets(
+      'short touch preview gives the metadata controls room at ${scale}x',
+      (tester) async {
+        final container = _comparisonContainer(_portraitImage());
+        addTearDown(container.dispose);
+        container
+            .read(generationParamsNotifierProvider.notifier)
+            .updateModel(
+              'nai-diffusion-5-curated',
+              persist: false,
+              followDefaults: false,
+            );
+        for (final height in [560.0, 120.0]) {
+          await tester.pumpWidget(
+            _app(
+              container,
+              size: Size(360, height),
+              textScale: scale,
+              locale: const Locale('zh'),
+              policy: InteractionPolicy.touchFirst,
+            ),
+          );
+          await tester.pumpAndSettle();
+          expect(tester.takeException(), isNull);
+          final card = tester.getRect(find.byType(SelectableImageCard));
+          final bar = tester.getRect(find.byType(PreviewInfoBar));
+          final toggle = find.byKey(
+            const ValueKey('generation_preview_transparent_background_toggle'),
+          );
+          expect(bar.left, closeTo(card.left, 0.01));
+          expect(bar.right, lessThanOrEqualTo(360 - 16));
+          expect(bar.top, closeTo(card.bottom + 4, 0.01));
+          if (height == 560) {
+            expect(bar.width, closeTo(card.width, 0.01));
+          } else {
+            expect(bar.width, greaterThan(card.width));
+            expect(toggle.hitTestable(), findsOneWidget);
+            await tester.tap(toggle);
+            await tester.pumpAndSettle();
+            expect(
+              container
+                  .read(generationParamsNotifierProvider)
+                  .transparentBackground,
+              isTrue,
+            );
+            expect(
+              find.byType(TransparencyBackgroundIcon).hitTestable(),
+              findsOneWidget,
+            );
+            expect(tester.takeException(), isNull);
+          }
+        }
+      },
+    );
+  }
 }
 
-Widget _app(ProviderContainer container, {Size size = const Size(640, 480)}) {
+ProviderContainer _comparisonContainer(GeneratedImage image) {
+  return ProviderContainer(
+    overrides: [
+      localStorageServiceProvider.overrideWithValue(MemoryLocalStorage()),
+      imageGenerationNotifierProvider.overrideWith(
+        () => _SelectionImageGenerationNotifier(
+          ImageGenerationState(displayImages: [image]),
+        ),
+      ),
+      historyClickBehaviorNotifierProvider.overrideWith(
+        _LinkedHistoryBehaviorNotifier.new,
+      ),
+      shortcutConfigNotifierProvider.overrideWith(
+        _DefaultShortcutConfigNotifier.new,
+      ),
+    ],
+  );
+}
+
+Widget _app(
+  ProviderContainer container, {
+  Size size = const Size(640, 480),
+  double textScale = 1,
+  Locale? locale,
+  InteractionPolicy? policy,
+}) {
   return UncontrolledProviderScope(
     container: container,
     child: MaterialApp(
+      locale: locale,
       localizationsDelegates: AppLocalizations.localizationsDelegates,
       supportedLocales: AppLocalizations.supportedLocales,
+      builder: (context, child) => MediaQuery(
+        data: MediaQuery.of(
+          context,
+        ).copyWith(textScaler: TextScaler.linear(textScale)),
+        child: policy == null
+            ? child!
+            : InteractionPolicyScope(initialPolicy: policy, child: child!),
+      ),
       home: Scaffold(
         body: SizedBox(
           width: size.width,

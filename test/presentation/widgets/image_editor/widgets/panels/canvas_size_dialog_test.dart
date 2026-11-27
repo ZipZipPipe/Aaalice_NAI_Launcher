@@ -3,6 +3,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nai_launcher/l10n/app_localizations.dart';
 import 'package:nai_launcher/presentation/widgets/image_editor/widgets/panels/canvas_size_dialog.dart';
 
+import '../../../../../helpers/adaptive_panel_expectations.dart';
+
 void main() {
   testWidgets('320x568、3x 文本与 IME 下字段和底部动作始终可达', (tester) async {
     tester.view.physicalSize = const Size(320, 568);
@@ -22,6 +24,7 @@ void main() {
     expect(find.byType(AlertDialog), findsNothing);
     expect(find.byKey(const ValueKey('canvas-size-scroll')), findsOneWidget);
     expect(tester.takeException(), isNull);
+    expectPanelHeaderScrollsWithContent(tester);
 
     final dialog = tester.getRect(
       find.byKey(const ValueKey('canvas-size-dialog')),
@@ -58,12 +61,15 @@ void main() {
     expect(find.text('9:16'), findsOneWidget);
     expect(tester.takeException(), isNull);
 
+    // 标题、操作栏与最小正文放不下时，操作栏随正文滚动
     final cancel = find.widgetWithText(TextButton, '取消');
     final confirm = find.widgetWithText(FilledButton, 'Apply');
-    expect(cancel, findsOneWidget);
-    expect(confirm, findsOneWidget);
-    expect(tester.getRect(cancel).bottom, lessThanOrEqualTo(388));
-    expect(tester.getRect(confirm).bottom, lessThanOrEqualTo(388));
+    for (final action in [cancel, confirm]) {
+      await tester.scrollUntilVisible(action, 100, scrollable: scrollable);
+      await tester.pump();
+      expect(action, findsOneWidget);
+      expect(tester.getRect(action).bottom, lessThanOrEqualTo(388));
+    }
     expect(tester.takeException(), isNull);
   });
 

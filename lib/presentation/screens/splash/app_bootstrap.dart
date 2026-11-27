@@ -7,10 +7,11 @@ import 'package:nai_launcher/l10n/app_localizations.dart';
 
 import '../../../app.dart';
 import '../../../core/services/update_check_service.dart';
+import '../../../core/utils/app_background_return.dart';
 import '../../../core/utils/app_logger.dart';
 import '../../../core/utils/first_launch_detector.dart';
 import '../../../core/windowing/windows_native_window_state.dart';
-import '../../providers/locale_provider.dart';
+import '../../../core/utils/locale_provider.dart';
 import '../../providers/update_provider.dart';
 import '../../providers/warmup_provider.dart';
 import '../../widgets/common/desktop_window_frame.dart';
@@ -203,25 +204,27 @@ class _AutomaticUpdateCheckState extends ConsumerState<AutomaticUpdateCheck>
   Timer? _timer;
   bool _startupCheckCompleted = false;
   bool _running = false;
-
-  bool get _isForeground {
-    final lifecycle = WidgetsBinding.instance.lifecycleState;
-    return lifecycle == null || lifecycle == AppLifecycleState.resumed;
-  }
+  final AppBackgroundReturnTracker _visibility = AppBackgroundReturnTracker(
+    initialState: WidgetsBinding.instance.lifecycleState,
+  );
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _schedule(widget.delay);
+    if (_visibility.isVisible) _schedule(widget.delay);
   }
 
+  // 失焦的窗口仍在屏幕上，照常计时；只有隐藏才暂停，焦点来回切换不重置延迟
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      _schedule(widget.delay);
-    } else {
-      _timer?.cancel();
+    switch (_visibility.observe(state)) {
+      case AppVisibilityChange.returnedToView:
+        _schedule(widget.delay);
+      case AppVisibilityChange.leftView:
+        _timer?.cancel();
+      case AppVisibilityChange.unchanged:
+        break;
     }
   }
 
@@ -231,7 +234,7 @@ class _AutomaticUpdateCheckState extends ConsumerState<AutomaticUpdateCheck>
   }
 
   Future<void> _run() async {
-    if (!mounted || !_isForeground || _running) return;
+    if (!mounted || !_visibility.isVisible || _running) return;
     _running = true;
     try {
       final checkRunner = widget.checkRunner;
@@ -246,14 +249,20 @@ class _AutomaticUpdateCheckState extends ConsumerState<AutomaticUpdateCheck>
         onStartup: !_startupCheckCompleted,
       );
       ref.invalidate(provider);
-      await ref.read(provider.future);
+      // 本次检测持有订阅直到 Future 完成。
+      final subscription = ref.listenManual(provider.future, (_, _) {});
+      try {
+        await subscription.read();
+      } finally {
+        subscription.close();
+      }
       _startupCheckCompleted = true;
     } catch (error, stackTrace) {
       AppLogger.w('Auto update check failed: $error', 'AppBootstrap');
       AppLogger.d('$stackTrace', 'AppBootstrap');
     } finally {
       _running = false;
-      if (mounted && _isForeground) {
+      if (mounted && _visibility.isVisible) {
         _schedule(UpdateCheckService.failedCheckRetryInterval);
       }
     }

@@ -1,9 +1,10 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hive/hive.dart';
+import 'package:hive_ce/hive_ce.dart';
 import 'package:nai_launcher/core/constants/storage_keys.dart';
 import 'package:nai_launcher/core/storage/local_storage_service.dart';
 import 'package:nai_launcher/l10n/app_localizations.dart';
@@ -19,11 +20,15 @@ void main() {
   setUpAll(() async {
     hiveDir = Directory.systemTemp.createTempSync('right_panel_test_hive_');
     Hive.init(hiveDir.path);
-    await Hive.openBox(StorageKeys.settingsBox);
+    // 内存后端：落盘写一旦从 widget test 的 FakeAsync 时钟发起就不会完成，会锁死 box
+    await Hive.openBox(StorageKeys.settingsBox, bytes: Uint8List(0));
   });
 
   tearDownAll(() async {
-    await Hive.box(StorageKeys.settingsBox).close();
+    // 有界等待：box 被锁死时快速失败，不把整个测试分片拖到看门狗超时
+    await Hive.box(
+      StorageKeys.settingsBox,
+    ).close().timeout(const Duration(seconds: 10));
     if (hiveDir.existsSync()) hiveDir.deleteSync(recursive: true);
   });
 
@@ -130,8 +135,7 @@ void main() {
         overrides: [
           localStorageServiceProvider.overrideWithValue(_MemoryLocalStorage()),
           agentChatNotifierProvider.overrideWith(
-            (ref) => AgentChatNotifier(
-              ref,
+            () => AgentChatNotifier(
               supportDir: hiveDir,
               workspaceDir: Directory('${hiveDir.path}/agent-workspace'),
               presetSkills: const [],

@@ -1,23 +1,24 @@
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:hive/hive.dart';
+import 'package:hive_ce/hive_ce.dart';
 import 'package:path/path.dart' as p;
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../core/database/utils/lru_cache.dart';
 import '../../core/enums/precise_ref_type.dart';
+import '../../core/storage/storage_file_system.dart';
 import '../../core/utils/app_logger.dart';
 import '../../core/utils/async_work_pool.dart';
 import '../../core/utils/display_thumbnail_utils.dart';
+import '../../core/utils/file_system_error_summary.dart';
 import '../../core/utils/precise_ref_library_path_helper.dart';
 import '../models/precise_ref/precise_ref_library_entry.dart';
 import 'precise_ref_portable_importer.dart';
 
 export 'precise_ref_portable_importer.dart'
-    show InvalidPreciseRefImageException, PreciseRefLibraryFileSystem;
+    show InvalidPreciseRefImageException;
 
 part 'precise_ref_library_storage_service.g.dart';
 
@@ -27,8 +28,7 @@ part 'precise_ref_library_storage_service.g.dart';
 class PreciseRefLibraryStorageService {
   PreciseRefLibraryStorageService({
     String? overrideDirectory,
-    PreciseRefLibraryFileSystem fileSystem =
-        const PreciseRefLibraryFileSystem(),
+    StorageFileSystem fileSystem = const StorageFileSystem(),
   }) : _overrideDirectory = overrideDirectory,
        _fileSystem = fileSystem;
 
@@ -44,7 +44,7 @@ class PreciseRefLibraryStorageService {
   );
 
   final String? _overrideDirectory;
-  final PreciseRefLibraryFileSystem _fileSystem;
+  final StorageFileSystem _fileSystem;
   Box<PreciseRefLibraryEntry>? _entriesBox;
   LazyBox<Uint8List>? _thumbnailCacheBox;
   Future<void>? _initFuture;
@@ -102,6 +102,7 @@ class PreciseRefLibraryStorageService {
     Uint8List bytes, {
     required String name,
     PreciseRefType type = PreciseRefType.characterAndStyle,
+    bool? preferSameOutfit,
     double strength = 1.0,
     double fidelity = 1.0,
   }) async {
@@ -122,6 +123,7 @@ class PreciseRefLibraryStorageService {
       name: name,
       imagePath: filePath,
       type: type,
+      preferSameOutfit: preferSameOutfit,
       strength: strength,
       fidelity: fidelity,
     );
@@ -139,20 +141,30 @@ class PreciseRefLibraryStorageService {
           await _entriesBox!.delete(id);
           metadataRolledBack = true;
         } catch (rollbackError, rollbackStack) {
-          AppLogger.e('回滚精准参考元数据失败', rollbackError, rollbackStack, _tag);
+          AppLogger.e(
+            '回滚精准参考元数据失败: $id',
+            fileSystemErrorSummary(rollbackError),
+            rollbackStack,
+            _tag,
+          );
         }
       }
       if (metadataRolledBack) {
         await _deleteIfExists(stagingPath);
       }
-      AppLogger.e('精准参考入库失败', e, s, _tag);
+      AppLogger.e(
+        '精准参考入库失败: $id$extension',
+        fileSystemErrorSummary(e),
+        s,
+        _tag,
+      );
       rethrow;
     }
 
     try {
       await _thumbnailCacheBox!.put(id, thumbnail);
     } catch (e) {
-      AppLogger.w('保存精准参考缩略图失败: $e', _tag);
+      AppLogger.w('保存精准参考缩略图失败: $id (${fileSystemErrorSummary(e)})', _tag);
     }
     _memoryThumbnails.put(id, thumbnail);
 
@@ -161,39 +173,13 @@ class PreciseRefLibraryStorageService {
   }
 
   /// Imports a portable record with stable identity and transactional rollback.
-  Future<PreciseRefLibraryEntry> importPortableEntry(
-    Uint8List bytes, {
-    required String id,
-    required String name,
-    required PreciseRefType type,
-    required double strength,
-    required double fidelity,
-    required bool isFavorite,
-    required int usedCount,
-    required DateTime? lastUsedAt,
-    required DateTime createdAt,
-  }) async {
-    return importPortableEntryStream(
-      Stream.value(bytes),
-      expectedLength: bytes.length,
-      id: id,
-      name: name,
-      type: type,
-      strength: strength,
-      fidelity: fidelity,
-      isFavorite: isFavorite,
-      usedCount: usedCount,
-      lastUsedAt: lastUsedAt,
-      createdAt: createdAt,
-    );
-  }
-
   Future<PreciseRefLibraryEntry> importPortableEntryStream(
     Stream<List<int>> bytes, {
     required int expectedLength,
     required String id,
     required String name,
     required PreciseRefType type,
+    bool? preferSameOutfit,
     required double strength,
     required double fidelity,
     required bool isFavorite,
@@ -218,6 +204,7 @@ class PreciseRefLibraryStorageService {
       id: id,
       name: name,
       type: type,
+      preferSameOutfit: preferSameOutfit,
       strength: strength,
       fidelity: fidelity,
       isFavorite: isFavorite,
@@ -232,6 +219,7 @@ class PreciseRefLibraryStorageService {
     String id, {
     String? name,
     PreciseRefType? type,
+    bool? preferSameOutfit,
     double? strength,
     double? fidelity,
     bool? isFavorite,
@@ -246,6 +234,9 @@ class PreciseRefLibraryStorageService {
           ? entry.name
           : trimmedName,
       typeIndex: type?.index ?? entry.typeIndex,
+      preferSameOutfit: type != null && type != entry.type
+          ? preferSameOutfit
+          : preferSameOutfit ?? entry.preferSameOutfit,
       strength: strength ?? entry.strength,
       fidelity: fidelity ?? entry.fidelity,
       isFavorite: isFavorite ?? entry.isFavorite,
@@ -274,7 +265,7 @@ class PreciseRefLibraryStorageService {
         try {
           await _fileSystem.rename(entry.imagePath, tombstonePath);
         } catch (e, s) {
-          AppLogger.e('暂存待删除精准参考原图失败', e, s, _tag);
+          AppLogger.e('暂存待删除精准参考原图失败: $id', fileSystemErrorSummary(e), s, _tag);
           return false;
         }
       }
@@ -283,14 +274,14 @@ class PreciseRefLibraryStorageService {
         await _entriesBox!.delete(id);
       } catch (e, s) {
         await _restoreStagedFile(entry.imagePath, tombstonePath);
-        AppLogger.e('删除精准参考元数据失败', e, s, _tag);
+        AppLogger.e('删除精准参考元数据失败: $id', fileSystemErrorSummary(e), s, _tag);
         rethrow;
       }
 
       try {
         await _thumbnailCacheBox!.delete(id);
       } catch (e) {
-        AppLogger.w('删除精准参考缩略图缓存失败: $e', _tag);
+        AppLogger.w('删除精准参考缩略图缓存失败: $id (${fileSystemErrorSummary(e)})', _tag);
       }
       if (tombstonePath != null) {
         await _deleteIfExists(tombstonePath);
@@ -344,7 +335,7 @@ class PreciseRefLibraryStorageService {
 
     try {
       final activeLoad = _thumbnailLoadsById[id];
-      if (activeLoad != null) return activeLoad;
+      if (activeLoad != null) return await activeLoad;
 
       final load = _thumbnailReadPool.run(
         () => _readOrCreateDisplayThumbnail(id),
@@ -406,12 +397,12 @@ class PreciseRefLibraryStorageService {
     if (entry == null) return null;
     try {
       if (!await _fileSystem.exists(entry.imagePath)) {
-        AppLogger.w('精准参考原图文件丢失: ${entry.imagePath}', _tag);
+        AppLogger.w('精准参考原图文件丢失: $id', _tag);
         return null;
       }
       return await _fileSystem.readBytes(entry.imagePath);
     } catch (e) {
-      AppLogger.w('读取精准参考原图失败: $e', _tag);
+      AppLogger.w('读取精准参考原图失败: $id (${fileSystemErrorSummary(e)})', _tag);
       return null;
     }
   }
@@ -455,7 +446,7 @@ class PreciseRefLibraryStorageService {
         await _reconcileFile(entity.path, referencedPaths);
       }
     } catch (e, s) {
-      AppLogger.e('精准参考库存储对账失败', e, s, _tag);
+      AppLogger.e('精准参考库存储对账失败', fileSystemErrorSummary(e), s, _tag);
     }
   }
 
@@ -482,7 +473,10 @@ class PreciseRefLibraryStorageService {
         await _fileSystem.delete(filePath);
       }
     } catch (e) {
-      AppLogger.w('清理精准参考孤立文件失败: $filePath ($e)', _tag);
+      AppLogger.w(
+        '清理精准参考孤立文件失败: ${p.basename(filePath)} (${fileSystemErrorSummary(e)})',
+        _tag,
+      );
     }
   }
 
@@ -509,7 +503,12 @@ class PreciseRefLibraryStorageService {
     try {
       await _fileSystem.rename(stagedPath, originalPath);
     } catch (e, s) {
-      AppLogger.e('恢复精准参考原图失败', e, s, _tag);
+      AppLogger.e(
+        '恢复精准参考原图失败: ${p.basename(originalPath)}',
+        fileSystemErrorSummary(e),
+        s,
+        _tag,
+      );
     }
   }
 
@@ -519,11 +518,14 @@ class PreciseRefLibraryStorageService {
         await _fileSystem.delete(path);
       }
     } catch (e) {
-      AppLogger.w('清理精准参考暂存文件失败: $path ($e)', _tag);
+      AppLogger.w(
+        '清理精准参考暂存文件失败: ${p.basename(path)} (${fileSystemErrorSummary(e)})',
+        _tag,
+      );
     }
   }
 
-  /// 关闭 box（测试用）。
+  /// 关闭 box（测试用）；调用方必须先等待所有进行中的操作结束。
   Future<void> close() async {
     await _entriesBox?.close();
     await _thumbnailCacheBox?.close();

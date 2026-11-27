@@ -105,8 +105,7 @@ class _AssistantPrefillEditorState
               selected: {_mode},
               onSelectionChanged: _saving
                   ? null
-                  : (selection) =>
-                        setState(() => _mode = selection.single),
+                  : (selection) => setState(() => _mode = selection.single),
             ),
           ),
           const SizedBox(height: 8),

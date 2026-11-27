@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -7,7 +8,9 @@ import 'package:image/image.dart' as img;
 import 'package:nai_launcher/data/models/inpaint/inpaint_draft.dart';
 import 'package:nai_launcher/data/models/inpaint/inpaint_draft_status.dart';
 import 'package:nai_launcher/data/services/inpaint_draft_file_repository.dart';
+import 'package:nai_launcher/data/services/inpaint_draft_file_store.dart';
 import 'package:nai_launcher/data/services/inpaint_draft_repository.dart';
+import 'package:nai_launcher/data/services/metadata/hash_calculator.dart';
 import 'package:path/path.dart' as p;
 
 void main() {
@@ -286,6 +289,202 @@ void main() {
     },
   );
 
+  test(
+    'readers wait for a completing draft instead of seeing its new mask early',
+    () async {
+      final store = _PausingFileStore(pauseAfter: 'mask.image');
+      final gated = InpaintDraftFileRepository(
+        rootDirectory: root,
+        idGenerator: ids.next,
+        clock: () => DateTime.utc(2026, 3, 14, 12),
+        fileStore: store,
+      );
+      final draft = await _prepare(gated, width: 10, height: 6);
+      await gated.beginEditing(draft.id);
+      await gated.complete(
+        draft.id,
+        sourceBytes: _png(width: 10, height: 6, value: 60),
+        maskBytes: _png(width: 10, height: 6, value: 200),
+        parameterSnapshot: const {'prompt': 'first pass'},
+        estimatedAnlas: 2,
+      );
+      await gated.reEdit(draft.id);
+
+      final newMask = _png(width: 10, height: 6, value: 120);
+      final paused = store.arm();
+      final completing = gated.complete(
+        draft.id,
+        sourceBytes: _png(width: 10, height: 6, value: 80),
+        maskBytes: newMask,
+        parameterSnapshot: const {'prompt': 'second pass'},
+        estimatedAnlas: 3,
+      );
+      await paused;
+
+      var settled = false;
+      final reading = gated.get(draft.id).whenComplete(() => settled = true);
+      final maskReading = gated.readMask(draft.id);
+      for (var turn = 0; turn < 5; turn++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      expect(
+        settled,
+        isFalse,
+        reason: 'the new mask is on disk but metadata still describes the old',
+      );
+
+      store.release();
+      final ready = await completing;
+      final seen = await reading;
+      final seenMask = await maskReading;
+      expect(seen!.status, InpaintDraftStatus.ready);
+      expect(seen.mask!.toJson(), ready.mask!.toJson());
+      expect(seenMask, newMask);
+    },
+  );
+
+  group('cancelWithEditedSource', () {
+    test('keeps the edited source and drops the mask', () async {
+      final prepared = await _prepare(repository, width: 10, height: 6);
+      await repository.beginEditing(prepared.id);
+      final edited = _png(width: 12, height: 6, value: 30);
+
+      final cancelled = await repository.cancelWithEditedSource(
+        prepared.id,
+        sourceBytes: edited,
+        parameterSnapshot: const {'prompt': 'edited'},
+        estimatedAnlas: 4,
+      );
+
+      expect(cancelled.status, InpaintDraftStatus.cancelled);
+      expect(cancelled.mask, isNull);
+      expect(cancelled.source.width, 12);
+      expect(await repository.readSource(prepared.id), edited);
+      final restored = await repository.get(prepared.id);
+      expect(restored!.parameterSnapshot['prompt'], 'edited');
+      expect(restored.estimatedAnlas, 4);
+
+      final editing = await repository.reEdit(prepared.id);
+      expect(editing.status, InpaintDraftStatus.editing);
+      expect(await repository.readSource(prepared.id), edited);
+    });
+
+    test('tells same-size large sources apart by checksum', () async {
+      final original = _storedPng(value: 40);
+      final edited = _storedPng(value: 41);
+      expect(edited.length, original.length);
+      expect(
+        original.length,
+        greaterThanOrEqualTo(FileHashCalculator.backgroundHashMinBytes),
+      );
+      final prepared = await repository.prepare(
+        sourceBytes: original,
+        parameterSnapshot: const {},
+        estimatedAnlas: 1,
+      );
+      await repository.beginEditing(prepared.id);
+
+      await repository.cancelWithEditedSource(
+        prepared.id,
+        sourceBytes: edited,
+        parameterSnapshot: const {},
+        estimatedAnlas: 1,
+      );
+
+      expect(await repository.readSource(prepared.id), edited);
+      await repository.reEdit(prepared.id);
+      expect(await repository.readSource(prepared.id), edited);
+    });
+
+    test('never rewrites the file the editing metadata points at', () async {
+      final prepared = await _prepare(repository, width: 10, height: 6);
+      await repository.beginEditing(prepared.id);
+      final original = File(p.join(root.path, prepared.id, 'source.image'));
+      final originalBytes = await original.readAsBytes();
+
+      await repository.cancelWithEditedSource(
+        prepared.id,
+        sourceBytes: _png(width: 12, height: 6, value: 30),
+        parameterSnapshot: const {},
+        estimatedAnlas: 1,
+      );
+
+      expect(await original.readAsBytes(), originalBytes);
+    });
+
+    test('an interrupted edit leaves the editing draft intact', () async {
+      final prepared = await _prepare(repository);
+      await repository.beginEditing(prepared.id);
+      // 新底图已写入、元数据尚未提交时进程退出
+      await File(
+        p.join(root.path, prepared.id, 'source.ready.image'),
+      ).writeAsBytes(_png(value: 30));
+
+      final draft = await InpaintDraftFileRepository(
+        rootDirectory: root,
+      ).get(prepared.id);
+
+      expect(draft!.status, InpaintDraftStatus.editing);
+      expect(await repository.readSource(prepared.id), _png());
+    });
+
+    test('only applies to drafts that are being edited', () async {
+      final prepared = await _prepare(repository);
+
+      await expectLater(
+        repository.cancelWithEditedSource(
+          prepared.id,
+          sourceBytes: _png(value: 30),
+          parameterSnapshot: const {},
+          estimatedAnlas: 1,
+        ),
+        throwsA(isA<InpaintDraftTransitionException>()),
+      );
+      expect(await repository.readSource(prepared.id), _png());
+    });
+  });
+
+  test(
+    'only new assets are fully decoded; stored PNGs are checked by header',
+    () async {
+      final decoded = <Uint8List>[];
+      final counted = InpaintDraftFileRepository(
+        rootDirectory: root,
+        idGenerator: ids.next,
+        clock: () => DateTime.utc(2026, 3, 14, 12),
+        fileStore: InpaintDraftFileStore(
+          decodeImageSize: (bytes) async {
+            decoded.add(bytes);
+            final image = img.decodeImage(bytes);
+            return image == null ? null : (image.width, image.height);
+          },
+        ),
+      );
+      final prepared = await _prepare(counted);
+      await counted.beginEditing(prepared.id);
+      await counted.complete(
+        prepared.id,
+        sourceBytes: _png(value: 60),
+        maskBytes: _png(value: 220),
+        parameterSnapshot: const {},
+        estimatedAnlas: 1,
+      );
+      expect(decoded, hasLength(3));
+      decoded.clear();
+
+      await counted.get(prepared.id);
+      await counted.readSource(prepared.id);
+      await counted.readMask(prepared.id);
+      await counted.beginSubmission(prepared.id);
+      await counted.restoreReady(prepared.id, message: 'rejected');
+      await counted.markFailed(prepared.id, message: 'rejected');
+      final cancelled = await counted.cancel(prepared.id);
+
+      expect(cancelled.status, InpaintDraftStatus.cancelled);
+      expect(decoded, isEmpty);
+    },
+  );
+
   test('detects tampering and never accepts caller-controlled paths', () async {
     final draft = await _prepare(repository);
     final source = File(p.join(root.path, draft.id, 'source.image'));
@@ -323,6 +522,29 @@ void main() {
       throwsArgumentError,
     );
   });
+
+  test('corrupt metadata never quotes the prompt into the error', () async {
+    final draft = await _prepare(repository);
+    final metadataFile = File(p.join(root.path, draft.id, 'metadata.json'));
+    final metadata = await metadataFile.readAsString();
+    await metadataFile.writeAsString(
+      metadata.replaceFirst(
+        '"prompt":"source"',
+        '"prompt":"secret lighthouse keeper" broken',
+      ),
+    );
+
+    await expectLater(
+      repository.get(draft.id),
+      throwsA(
+        isA<InpaintDraftIntegrityException>().having(
+          (error) => '$error',
+          'text',
+          allOf(contains('invalid metadata'), isNot(contains('lighthouse'))),
+        ),
+      ),
+    );
+  });
 }
 
 Future<InpaintDraft> _prepare(
@@ -341,6 +563,39 @@ Uint8List _png({int width = 8, int height = 8, int value = 128}) {
   final image = img.Image(width: width, height: height);
   img.fill(image, color: img.ColorRgb8(value, value, value));
   return Uint8List.fromList(img.encodePng(image));
+}
+
+/// Uncompressed PNG: every fill value encodes to the same byte length.
+Uint8List _storedPng({required int value}) {
+  final image = img.Image(width: 160, height: 160);
+  img.fill(image, color: img.ColorRgb8(value, value, value));
+  return Uint8List.fromList(img.encodePng(image, level: 0));
+}
+
+class _PausingFileStore extends InpaintDraftFileStore {
+  _PausingFileStore({required this.pauseAfter});
+
+  final String pauseAfter;
+  Completer<void>? _paused;
+  Completer<void>? _release;
+
+  Future<void> arm() {
+    _paused = Completer<void>();
+    _release = Completer<void>();
+    return _paused!.future;
+  }
+
+  void release() => _release?.complete();
+
+  @override
+  Future<void> atomicWriteBytes(File target, List<int> bytes) async {
+    await super.atomicWriteBytes(target, bytes);
+    final paused = _paused;
+    if (paused == null || p.basename(target.path) != pauseAfter) return;
+    _paused = null;
+    paused.complete();
+    await _release!.future;
+  }
 }
 
 class _IdSequence {

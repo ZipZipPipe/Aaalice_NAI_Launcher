@@ -58,6 +58,7 @@
   "common_import": "インポート",
   "common_loading": "読み込み中...",
   "common_error": "エラー",
+  "common_secureStorageUnavailable": "セキュアストレージに一時的にアクセスできません。ウイルス対策ソフトや同期ソフトが使用中の可能性があります。しばらくしてから再試行してください。",
   "promptAssistant_completed": "プロンプトアシスタントの処理が完了しました",
   "common_success": "成功",
   "common_retry": "再試行",
@@ -192,13 +193,23 @@
   "auth_switchAccount": "アカウントを切り替える",
   "auth_currentAccount": "現在のアカウント",
   "auth_selectAccount": "アカウントを選択してください",
-  "auth_deleteAccount": "アカウントを削除",
-  "auth_deleteAccountConfirm": "「{name}」を削除してもよろしいですか?これを元に戻すことはできません。",
-  "@auth_deleteAccountConfirm": {
+  "auth_manageAccounts": "アカウント管理",
+  "auth_removeSavedAccount": "アカウントを削除",
+  "auth_removeSavedAccountAction": "削除",
+  "auth_removeSavedAccountConfirm": "「{name}」の保存済みログイン情報とアバターをこの端末から削除します。NovelAI アカウント自体には影響せず、あとで再ログインできます。",
+  "@auth_removeSavedAccountConfirm": {
     "placeholders": {
       "name": {}
     }
   },
+  "auth_removeSessionAccountNotice": "現在このアカウントでログイン中です。削除の前にログアウトします。",
+  "auth_removeSavedAccountSuccess": "「{name}」を削除しました",
+  "@auth_removeSavedAccountSuccess": {
+    "placeholders": {
+      "name": {}
+    }
+  },
+  "auth_removeSavedAccountFailed": "アカウントを削除できませんでした。もう一度お試しください。",
   "auth_removeAvatar": "アバターを削除",
   "auth_selectFromGallery": "ギャラリーから選択",
   "auth_quickLogin": "クイックログイン",
@@ -238,7 +249,6 @@
   "settings_title": "設定",
   "settings_account": "アカウント",
   "settings_appearance": "外観",
-  "settings_style": "スタイル",
   "settings_font": "フォント",
   "settings_language": "言語",
   "settings_languageChinese": "简体中文",
@@ -275,7 +285,6 @@
   "settings_alphaModePremultipliedDescription": "RGB にアルファを乗算し、乗算済み入力を必要とする合成・レンダリング処理に適した形式にします。",
   "settings_promptAssistant": "プロンプトアシスタント",
   "settings_comfyUiDesktopOnly": "デスクトップ版でのみ利用できます",
-  "settings_selectStyle": "スタイルの選択",
   "settings_defaultPreset": "デフォルト",
   "settings_selectFont": "フォントの選択",
   "settings_selectLanguage": "言語の選択",
@@ -288,6 +297,88 @@
   "settings_imageSavePath": "画像の保存場所",
   "settings_autoSave": "自動保存",
   "settings_autoSaveSubtitle": "生成後に画像を自動的に保存します",
+  "settings_syncToSystemGallery": "システムギャラリーに同期",
+  "settings_syncToSystemGallerySubtitle": "オフにすると画像はアプリ内ギャラリーにのみ保存され、システムギャラリーには表示されません。同期済みの画像には影響しません。",
+  "settings_saveNaming": "フォルダーとファイル名",
+  "settings_saveNamingSubtitle": "例：{example}",
+  "@settings_saveNamingSubtitle": {"placeholders":{"example":{}}},
+  "settings_saveNamingFolderSection": "サブフォルダー",
+  "settings_saveNamingFileNameSection": "ファイル名",
+  "settings_saveNamingFolderByDate": "日付ごと",
+  "settings_saveNamingFolderByMonth": "月ごと",
+  "settings_saveNamingFolderByYearMonth": "年・月の2階層",
+  "settings_saveNamingFolderNone": "サブフォルダーを作らない",
+  "settings_saveNamingFolderNoneExample": "画像の保存場所に直接保存",
+  "settings_saveNamingFileTimeSeed": "時刻 + シード",
+  "settings_saveNamingFileDateTimeSeed": "日時 + シード",
+  "settings_saveNamingFilePromptSeed": "プロンプト + シード",
+  "settings_saveNamingCustom": "カスタム",
+  "settings_saveNamingFolderTemplate": "サブフォルダーのテンプレート",
+  "settings_saveNamingFolderTemplateHelper": "/ で階層を区切ります。空欄にするとサブフォルダーを作りません。",
+  "settings_saveNamingFileNameTemplate": "ファイル名のテンプレート",
+  "settings_saveNamingFileNameTemplateHelper": "拡張子 .png は自動で付きます。",
+  "settings_saveNamingFileNameEmpty": "ファイル名のテンプレートを入力してください",
+  "settings_saveNamingInsertField": "フィールドを挿入",
+  "settings_saveNamingPreview": "プレビュー",
+  "settings_saveNamingPreviewLatest": "直近に生成した画像をもとにした例です",
+  "settings_saveNamingPreviewSample": "サンプルデータをもとにした例です",
+  "settings_saveNamingOmitsDateHint": "パスに日付が含まれないため、異なる日の画像が混在します。日付で区別したい場合はサブフォルダーかファイル名に日付を加えてください。",
+  "settings_saveNamingAppliesToNewHint": "今後保存する画像にのみ適用され、既存のファイルの名前変更や移動は行いません。",
+  "settings_saveNamingRestoreDefaults": "既定に戻す",
+  "settings_saveNamingSyntaxHelp": "テンプレートの書き方",
+  "settings_saveNamingSyntaxIntro": "フィールドで画像の情報を挿入します。フィルターは左から順に適用され、フィールドが空のときは pre と suf も省略されます。左波括弧を 2 つ続けると 1 つの波括弧になります。",
+  "settings_saveNamingSyntaxFields": "フィールド",
+  "settings_saveNamingSyntaxFilters": "フィルター",
+  "settings_saveNamingSyntaxCharacterFilters": "キャラクター用フィルター（characters 専用、他のフィルターより前に記述）",
+  "settings_saveNamingSyntaxExamples": "例",
+  "settings_saveNamingFieldPrompt": "プロンプト（長さのフィルターがない場合は先頭 80 文字）",
+  "settings_saveNamingFieldSeed": "シード",
+  "settings_saveNamingFieldDate": "生成日（例：2026-10-12）",
+  "settings_saveNamingFieldTime": "生成時刻（例：14-30-05）",
+  "settings_saveNamingFieldYear": "年（例：2026）",
+  "settings_saveNamingFieldMonth": "月（例：10）",
+  "settings_saveNamingFieldDay": "日（例：12）",
+  "settings_saveNamingFieldModel": "モデル ID",
+  "settings_saveNamingFieldModelName": "モデル名",
+  "settings_saveNamingFieldResolution": "解像度（例：832x1216）",
+  "settings_saveNamingFieldWidth": "幅",
+  "settings_saveNamingFieldHeight": "高さ",
+  "settings_saveNamingFieldIndex": "1 回の保存内での番号（1 から）",
+  "settings_saveNamingFieldId": "画像 ID",
+  "settings_saveNamingFieldType": "生成方法：inpaint、image2image、vibe-transfer のいずれか。テキストからの生成では空",
+  "settings_saveNamingFieldCharacters": "キャラクター名（既定では先頭 3 人を + で連結）",
+  "settings_saveNamingFilterFirst": "先頭 N 文字を残す",
+  "settings_saveNamingFilterLast": "末尾 N 文字を残す",
+  "settings_saveNamingFilterWords": "先頭 N 語を残す（負の数で末尾から）",
+  "settings_saveNamingFilterTags": "カンマ区切りのタグを先頭 N 個残す（負の数で末尾から）",
+  "settings_saveNamingFilterPre": "値が空でなければ前に X を付ける",
+  "settings_saveNamingFilterSuf": "値が空でなければ後ろに X を付ける",
+  "settings_saveNamingFilterPad": "数値を 0 埋めして N 桁にする",
+  "settings_saveNamingFilterLower": "小文字にする",
+  "settings_saveNamingFilterUpper": "大文字にする",
+  "settings_saveNamingFilterMax": "最大 N 人まで（既定 3）",
+  "settings_saveNamingFilterAt": "N 番目のキャラクターのみ",
+  "settings_saveNamingFilterEach": "各キャラクター名を先頭 N 文字に",
+  "settings_saveNamingFilterJoin": "名前を X で連結（既定 +）",
+  "settings_saveNamingFilterFull": "名前ではなくキャラクタープロンプト全体を使う",
+  "settings_saveNamingErrorUnclosedBrace": "{position} 文字目の左波括弧が閉じられていません",
+  "@settings_saveNamingErrorUnclosedBrace": {"placeholders":{"position":{"type":"int"}}},
+  "settings_saveNamingErrorUnknownField": "不明なフィールド「{name}」",
+  "@settings_saveNamingErrorUnknownField": {"placeholders":{"name":{}}},
+  "settings_saveNamingErrorUnknownFilter": "不明なフィルター「{name}」",
+  "@settings_saveNamingErrorUnknownFilter": {"placeholders":{"name":{}}},
+  "settings_saveNamingErrorFilterOnlyForCharacters": "フィルター「{name}」は characters 専用です",
+  "@settings_saveNamingErrorFilterOnlyForCharacters": {"placeholders":{"name":{}}},
+  "settings_saveNamingErrorCharacterFilterOrder": "フィルター「{name}」は first や pre などより前に書いてください",
+  "@settings_saveNamingErrorCharacterFilterOrder": {"placeholders":{"name":{}}},
+  "settings_saveNamingErrorFilterTakesNoValue": "フィルター「{name}」に値は不要です",
+  "@settings_saveNamingErrorFilterTakesNoValue": {"placeholders":{"name":{}}},
+  "settings_saveNamingErrorFilterNeedsValue": "フィルター「{name}」には値が必要です（例：{name}:-）",
+  "@settings_saveNamingErrorFilterNeedsValue": {"placeholders":{"name":{}}},
+  "settings_saveNamingErrorFilterNeedsPositiveNumber": "フィルター「{name}」には正の整数が必要です",
+  "@settings_saveNamingErrorFilterNeedsPositiveNumber": {"placeholders":{"name":{}}},
+  "settings_saveNamingErrorFilterNeedsNonZeroNumber": "フィルター「{name}」には 0 以外の整数が必要です",
+  "@settings_saveNamingErrorFilterNeedsNonZeroNumber": {"placeholders":{"name":{}}},
   "settings_about": "概要",
   "settings_version": "バージョン {version}",
   "@settings_version": {
@@ -377,6 +468,10 @@
   "generation_history": "履歴",
   "generation_historyRecord": "履歴レコード",
   "agentChat_tab": "チャット",
+  "agentChat_popOutFloating": "フローティングウィンドウで表示",
+  "agentChat_dockToSidePanel": "サイドパネルに戻す",
+  "agentChat_hideFloating": "フローティングウィンドウを隠す",
+  "agentChat_resizeDockSplit": "チャットと履歴の境界を調整",
   "nav_agent": "エージェント",
   "agentChat_inputHint": "AI アシスタントにメッセージを送る…",
   "agentChat_inputHintWithSlash": "AI アシスタントにメッセージを送る。/ でスキル…",
@@ -408,6 +503,7 @@
       "fileName": {}
     }
   },
+  "agentChat_dropHint": "ドロップして会話に追加",
   "agentChat_newChat": "新しいチャット",
   "agentChat_searchSessions": "チャットを検索",
   "agentChat_send": "送信",
@@ -489,6 +585,7 @@
   "agentChat_toolUpdateGeneration": "生成ドラフトを更新",
   "agentChat_toolCancelGeneration": "生成ドラフトをキャンセル",
   "agentChat_toolSubmitGeneration": "生成タスクを送信",
+  "agentChat_toolUpscaleImage": "画像を拡大",
   "agentChat_toolCreateInpaint": "手動インペイントドラフトを作成",
   "agentChat_toolListInpaint": "インペイントドラフト一覧を表示",
   "agentChat_toolInspectInpaint": "インペイントドラフトを表示",
@@ -507,6 +604,8 @@
   "@agentChat_addResourceFailed": {"placeholders":{"error":{"type":"String"}}},
   "agentChat_approvalEstimatedAnlas": "推定コスト：{cost} Anlas",
   "@agentChat_approvalEstimatedAnlas": {"placeholders": {"cost": {"type": "int"}}},
+  "agentChat_approvalFileTarget": "ファイルを書き込みます：{path}",
+  "@agentChat_approvalFileTarget": {"placeholders": {"path": {"type": "String"}}},
   "agentChat_needSetup": "チャットモデルが未設定です。先に設定でツール呼び出しに対応したプロバイダーを追加してください。",
   "agentChat_heroTitle": "今日は何をしますか？",
   "agentChat_heroSubtitle": "キャラクタープロンプトの準備、アイデアの整理、設定の調整ができます。",
@@ -522,6 +621,12 @@
   "@agentChat_compactFailed": {"placeholders":{"error":{"type":"String"}}},
   "agentChat_requestFailed": "リクエストに失敗しました。もう一度お試しください。",
   "agentChat_errorDetails": "エラーの詳細",
+  "agentChat_autoRetryCountdown": "自動再試行 {attempt}/{maxAttempts}：{seconds} 秒後に開始",
+  "@agentChat_autoRetryCountdown": {"placeholders": {"attempt": {"type": "int"}, "maxAttempts": {"type": "int"}, "seconds": {"type": "int"}}},
+  "agentChat_autoRetryStarting": "自動再試行中 {attempt}/{maxAttempts}…",
+  "@agentChat_autoRetryStarting": {"placeholders": {"attempt": {"type": "int"}, "maxAttempts": {"type": "int"}}},
+  "agentChat_autoRetryExhausted": "自動再試行 {count} 回",
+  "@agentChat_autoRetryExhausted": {"placeholders": {"count": {"type": "int"}}},
   "agentChat_modelLabel": "モデル",
   "agentChat_modelPickerTitle": "モデルを選択",
   "agentChat_searchModels": "モデルを検索",
@@ -540,7 +645,9 @@
   "agentChat_permissionAsk": "確認",
   "agentChat_permissionAskDescription": "機密性の高い操作の前に確認",
   "agentChat_permissionFull": "フルアクセス",
-  "agentChat_permissionFullDescription": "確認なしで実行し、ワークスペース外のファイルも許可",
+  "agentChat_permissionFullDescription": "保存データの削除と Anlas 消費時のみ確認、ワークスペース外も許可",
+  "agentChat_permissionAutopilot": "全自動",
+  "agentChat_permissionAutopilotDescription": "Anlas 消費は確認なし。保存データの削除と高コストしきい値到達時のみ確認",
   "agentChat_approvalTitle": "{toolName} の実行を許可しますか？",
   "@agentChat_approvalTitle": {
     "placeholders": {
@@ -550,16 +657,76 @@
   "agentChat_approvalDescription": "このツールはローカルデータの読み取り、アプリ状態の変更、または料金の発生を伴う可能性があります。",
   "agentChat_approvalAllow": "今回のみ許可",
   "agentChat_approvalDeny": "拒否",
+  "mcpApproval_title": "外部エージェント {client} が承認を求めています",
+  "@mcpApproval_title": {
+    "placeholders": {
+      "client": {}
+    }
+  },
+  "mcpApproval_expiresIn": "{seconds} 秒後に自動的に拒否します",
+  "@mcpApproval_expiresIn": {
+    "placeholders": {
+      "seconds": {}
+    }
+  },
+  "mcpApproval_unknownClient": "不明なクライアント",
   "generation_failedStreamSnapshot": "スナップショットが失敗しました",
   "generation_failedStreamSnapshotHint": "生成が完了しませんでした。最後のプレビュー フレームのみが保持されます。保存したり、お気に入りに登録したり、画像ワークフローに使用したりすることはできません。",
   "generation_noHistory": "履歴レコードがありません",
   "generation_clearHistory": "履歴をクリア",
   "generation_clearHistoryConfirm": "すべての履歴レコードをクリアしてもよろしいですか?この操作は元に戻すことができません。",
+  "generation_deleteImageConfirm": "この画像を履歴から削除しますか？この操作は元に戻せません。",
+  "generation_deleteImageWithFileConfirm": "この画像を履歴から削除し、ローカルギャラリーのファイル「{fileName}」も完全に削除しますか？この操作は元に戻せません。",
+  "@generation_deleteImageWithFileConfirm": {
+    "placeholders": {
+      "fileName": {}
+    }
+  },
+  "generation_deleteImagesConfirm": "選択した {count} 枚の画像を履歴から削除しますか？この操作は元に戻せません。",
+  "@generation_deleteImagesConfirm": {
+    "placeholders": {
+      "count": {}
+    }
+  },
+  "generation_deleteImagesWithFilesConfirm": "選択した {count} 枚の画像を履歴から削除し、そのうちローカルギャラリーに保存済みの {fileCount} 個のファイルも完全に削除しますか？この操作は元に戻せません。",
+  "@generation_deleteImagesWithFilesConfirm": {
+    "placeholders": {
+      "count": {},
+      "fileCount": {}
+    }
+  },
+  "generation_deleteConfirmSkipForSession": "アプリを再起動するまで確認しない",
+  "generation_deleteImageFilesFailed": "履歴からは削除しましたが、{count} 個のローカルファイルを削除できませんでした：{error}",
+  "@generation_deleteImageFilesFailed": {
+    "placeholders": {
+      "count": {},
+      "error": {}
+    }
+  },
   "generation_model": "モデル",
+  "generation_modelMode": "モード",
+  "generation_modelModeAnime": "アニメ",
+  "generation_modelModeFurry": "ケモノ",
+  "generation_effort": "生成モード",
+  "generation_effortMedium": "節約",
+  "generation_effortHigh": "通常",
+  "generation_effortUnavailableHint": "節約モードでは使用しません",
+  "generation_effortNegativeLocked": "節約モードでは送信しません",
+  "generation_effortNegativeLockedHint": "節約モードでは除外したい要素を送信せず、「{ucPreset}」除外したい要素プリセットのみを使用します。入力内容は保持され、通常モードに戻すと再び使用されます",
+  "@generation_effortNegativeLockedHint": {
+    "placeholders": {
+      "ucPreset": {}
+    }
+  },
   "generation_opusUsageRemaining": "Opus 無料生成の残り {percent}%",
   "generation_opusUsageEstimate": "あと約 {count} 枚生成可能",
-  "generation_opusUsageRefill": "上限は時間経過で自動回復します",
+  "generation_opusUsageRefillRate": "現在は 1 日あたり {percent}% 回復（約 {count} 枚）",
+  "generation_opusUsageRefillPaused": "最大 100% まで自動回復します",
   "generation_opusUsageExhausted": "Opus の無料枠を使い切りました。回復するまで V5 の生成には Anlas を消費します。",
+  "generation_opusUsagePoolsTitle": "Opus 無料生成の残り枠",
+  "generation_opusUsageRegularPool": "通常枠 {percent}%",
+  "generation_opusUsageExtraPool": "追加利用枠 +{percent}%（回復しません）",
+  "generation_opusUsageCombinedEstimate": "合計であと約 {count} 枚生成可能",
   "generation_imageSize": "画像サイズ",
   "generation_transparentBackground": "透過背景",
   "generation_e2eUpscaleHint": "サーバー出力 {size}",
@@ -570,7 +737,9 @@
       "steps": {}
     }
   },
+  "generation_stepsLabel": "ステップ",
   "generation_cfgScale": "CFG スケール: {scale}",
+  "generation_cfgScaleLabel": "CFG スケール",
   "@character_limitReached": {
     "placeholders": {
       "limit": {}
@@ -582,6 +751,27 @@
     }
   },
   "@generation_opusUsageEstimate": {
+    "placeholders": {
+      "count": {}
+    }
+  },
+  "@generation_opusUsageRefillRate": {
+    "placeholders": {
+      "percent": {},
+      "count": {}
+    }
+  },
+  "@generation_opusUsageRegularPool": {
+    "placeholders": {
+      "percent": {}
+    }
+  },
+  "@generation_opusUsageExtraPool": {
+    "placeholders": {
+      "percent": {}
+    }
+  },
+  "@generation_opusUsageCombinedEstimate": {
     "placeholders": {
       "count": {}
     }
@@ -627,6 +817,7 @@
       "value": {}
     }
   },
+  "generation_cfgRescaleLabel": "CFG リスケール",
   "generation_noiseSchedule": "ノイズスケジュール",
   "prompt_positive": "プロンプト",
   "prompt_negative": "除外したい要素",
@@ -703,13 +894,19 @@
   "prompt_smartAutocomplete": "スマート オートコンプリート",
   "prompt_smartAutocompleteSubtitle": "入力中にタグの候補を表示します",
   "prompt_autoFormat": "自動フォーマット",
-  "prompt_autoFormatSubtitle": "改行を保持しながら、中国語のカンマとタグ内の空白を変換します",
+  "prompt_autoFormatSubtitle": "空白の設定に従ってカンマとタグを整え、改行と引用符内の文字を保持します",
+  "prompt_replaceUnderscores": "タグのアンダースコアを空白にする",
+  "prompt_replaceUnderscoresSubtitle": "補完の挿入と自動フォーマットで共通の設定です。顔文字のアンダースコアは保持します",
   "prompt_highlightEmphasis": "ハイライトの強調",
   "prompt_highlightEmphasisSubtitle": "括弧と重みの構文を強調表示します",
   "prompt_sdSyntaxAutoConvert": "SD 構文自動変換",
   "prompt_sdSyntaxAutoConvertSubtitle": "フォーカスが外れたときに SD ウェイト構文を NAI 形式に変換します",
+  "prompt_separateNumericWeightClosing": "数字末尾タグの後に空白",
+  "prompt_separateNumericWeightClosingSubtitle": "year_2025:: が新しいウェイトとして読まれないよう :: の前に空白を入れます",
   "prompt_resolveAliasOnCopy": "コピー時に単語ライブラリを展開",
   "prompt_resolveAliasOnCopySubtitle": "コピーまたは切り取り時に <ライブラリ名> をその内容に置き換えます",
+  "prompt_detectMultiCharacterOnPaste": "貼り付け時に複数キャラクターを検出",
+  "prompt_detectMultiCharacterOnPasteSubtitle": "| や COUPLE などの複数キャラクター構文を貼り付けたときにキャラクターのインポートを提案します",
   "prompt_cooccurrenceRecommendation": "共起タグの推奨事項",
   "prompt_cooccurrenceRecommendationSubtitle": "タグ確定後に自動表示。Ctrl+Shift+Space または Ctrl+クリックでも表示できます",
   "prompt_regexRulesManage": "正規表現置換ルール…",
@@ -769,6 +966,7 @@
   "regexRules_testNoChange": "変化なし",
   "regexRules_testNoRules": "有効なルールがありません",
   "prompt_formatted": "フォーマット済み",
+  "prompt_numericWeightClosingSeparated": "ウェイトの区切りに空白を追加",
   "image_save": "保存",
   "image_copy": "コピー",
   "image_upscale": "拡大",
@@ -824,7 +1022,7 @@
   "img2img_directorTools": "ディレクターツール",
   "img2img_directorToolsHint": "ディレクターツールを通じて現在のソース イメージを送信します。結果の準備ができたら、それを新しいソース イメージとして再度適用できます。",
   "img2img_directorPrompt": "追加のプロンプト",
-  "img2img_directorPromptHint": "ターゲットの感情や色の方向など、必要に応じてガイダンスを追加します",
+  "img2img_directorPromptHint": "任意。求める仕上がりを補足します",
   "img2img_directorRun": "{tool} を実行します",
   "@img2img_directorRun": {
     "placeholders": {
@@ -847,12 +1045,88 @@
       "tool": {}
     }
   },
+  "img2img_directorResultSaveFailed": "{tool} が完了しましたが、結果を保存できませんでした",
+  "@img2img_directorResultSaveFailed": {
+    "placeholders": {
+      "tool": {}
+    }
+  },
+  "img2img_directorResultSelectedSaveFailed": "{tool} が完了しましたが、選択中の結果を保存できませんでした ({total} 件中 {failed} 件失敗)",
+  "@img2img_directorResultSelectedSaveFailed": {
+    "placeholders": {
+      "tool": {},
+      "failed": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "img2img_directorResultPartiallySaved": "{tool} が完了しましたが、{total} 件中 {failed} 件の結果を保存できませんでした",
+  "@img2img_directorResultPartiallySaved": {
+    "placeholders": {
+      "tool": {},
+      "failed": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
   "img2img_directorApplied": "ディレクターツールの結果を新しいソース イメージとして適用しました",
+  "img2img_directorResultMasked": "マスク切り抜き",
+  "img2img_directorResultGenerated": "生成",
+  "img2img_directorResultBlend": "ブレンド",
+  "img2img_directorResultNumbered": "結果 {index}",
+  "@img2img_directorResultNumbered": {
+    "placeholders": {
+      "index": {
+        "type": "int"
+      }
+    }
+  },
+  "img2img_directorResultWithVariant": "{result} · {variant}",
+  "@img2img_directorResultWithVariant": {
+    "placeholders": {
+      "result": {
+        "type": "String"
+      },
+      "variant": {
+        "type": "String"
+      }
+    }
+  },
   "img2img_directorDefry": "デフライ",
   "img2img_directorDefryHint": "結果のノイズまたは過飽和を低減します (0 = オフ、5 = 最大)",
   "img2img_directorEmotionLevel": "感情レベル",
-  "img2img_directorEmotionLevelHint": "感情が適用される強さ (0 = 微妙、5 = 強い)",
-  "img2img_directorEmotionPresets": "プリセット",
+  "img2img_directorEmotionLevelHint": "値が大きいほど感情が弱くなります (0 = 通常、5 = 最も弱い)",
+  "img2img_directorEmotionMood": "感情",
+  "img2img_directorEmotionNeutral": "普通",
+  "img2img_directorEmotionHappy": "嬉しい",
+  "img2img_directorEmotionSad": "悲しい",
+  "img2img_directorEmotionAngry": "怒り",
+  "img2img_directorEmotionScared": "怖い",
+  "img2img_directorEmotionSurprised": "驚き",
+  "img2img_directorEmotionTired": "疲れ",
+  "img2img_directorEmotionExcited": "ワクワク",
+  "img2img_directorEmotionNervous": "緊張",
+  "img2img_directorEmotionThinking": "考え中",
+  "img2img_directorEmotionConfused": "困惑",
+  "img2img_directorEmotionShy": "照れ",
+  "img2img_directorEmotionDisgusted": "嫌悪",
+  "img2img_directorEmotionSmug": "ドヤ顔",
+  "img2img_directorEmotionBored": "退屈",
+  "img2img_directorEmotionLaughing": "大笑い",
+  "img2img_directorEmotionIrritated": "イライラ",
+  "img2img_directorEmotionAroused": "興奮",
+  "img2img_directorEmotionEmbarrassed": "恥ずかしい",
+  "img2img_directorEmotionWorried": "心配",
+  "img2img_directorEmotionLove": "愛情",
+  "img2img_directorEmotionDetermined": "決意",
+  "img2img_directorEmotionHurt": "傷つく",
+  "img2img_directorEmotionPlayful": "いたずら",
   "img2img_directorApplyAsSource": "ソースとして使用",
   "img2img_directorSourceImage": "ソース画像",
   "img2img_variationsStarted": "バリエーションを生成しています...",
@@ -862,6 +1136,42 @@
   "img2img_directorColorize": "カラー化",
   "img2img_directorEmotion": "感情",
   "img2img_directorDeclutter": "デクラッター",
+  "img2img_directorPixelSnap": "ピクセルスナップ",
+  "img2img_directorPixelSnapHint": "すべてこの PC 上で処理します。Anlas も通信も不要です。大きな画像では数秒かかります。",
+  "img2img_directorPixelSnapPalette": "パレット化",
+  "img2img_directorPixelSnapPaletteOff": "オフ",
+  "img2img_directorPixelSnapPaletteAuto": "自動",
+  "img2img_directorPixelSnapPaletteCustom": "カスタム",
+  "img2img_directorPixelSnapColors": "色数",
+  "img2img_directorPixelSnapAvoidOverRefining": "細かくしすぎない",
+  "img2img_directorPixelSnapAvoidOverRefiningOn": "検出したピクセルサイズを常に維持します。",
+  "img2img_directorPixelSnapAvoidOverRefiningOff": "画像により適している場合、より細かいピクセルサイズを使用することがあります。",
+  "img2img_directorPixelSnapUpscale": "アップスケール",
+  "img2img_directorPixelSnapUpscaleOn": "結果を元の画像とほぼ同じサイズまで拡大し直します。",
+  "img2img_directorPixelSnapUpscaleOff": "結果をスナップ後のピクセルサイズのまま保持します。",
+  "img2img_directorPixelSnapSummary": "{width}×{height} ピクセル · {colors} 色",
+  "@img2img_directorPixelSnapSummary": {
+    "placeholders": {
+      "width": {"type": "int"},
+      "height": {"type": "int"},
+      "colors": {"type": "int"}
+    }
+  },
+  "img2img_directorPixelSnapSummaryNoPalette": "{width}×{height} ピクセル",
+  "@img2img_directorPixelSnapSummaryNoPalette": {
+    "placeholders": {
+      "width": {"type": "int"},
+      "height": {"type": "int"}
+    }
+  },
+  "img2img_directorPixelSnapNoGrid": "この画像には繰り返しのピクセルグリッドが見つかりませんでした。",
+  "img2img_directorPixelSnapBlank": "この画像は全体が透明です。",
+  "img2img_directorPixelSnapDownscaled": "サイズ上限を超えているため、縮小してから解析しました。",
+  "img2img_directorCancel": "キャンセル",
+  "img2img_directorStageAnalyzing": "画像を解析中",
+  "img2img_directorStageSearchingPitch": "ピクセルサイズを探索中",
+  "img2img_directorStageRefiningGrid": "グリッドを調整中",
+  "img2img_directorStageFinishing": "結果を生成中",
   "img2img_enhance": "品質向上",
   "img2img_enhanceHint": "品質向上は、潜在スペースでソース画像を拡大して再生成する間、現在のプロンプトを使用し続けます。",
   "img2img_enhanceMagnitude": "大きさ",
@@ -934,7 +1244,17 @@
   "editor_done": "完了",
   "editor_tolerance": "許容差",
   "editor_intensity": "強度",
-  "editor_sourcePoint": "Alt+クリックしてソースポイントを設定します",
+  "editor_cloneStampSetSource": "ソースを設定",
+  "editor_cloneStampSetSourceTooltip": "オンにすると、次にキャンバス上で選んだ位置がソースポイントになります。Alt キーを押しながらキャンバスをクリックしても設定できます。",
+  "editor_cloneStampPickingHint": "キャンバス上でクローン元の位置を選びます",
+  "editor_cloneStampNoSourceHint": "ソースポイントが未設定です。「ソースを設定」をオンにしてから、キャンバス上の位置を選んでください。",
+  "editor_cloneStampSourceReadout": "ソースポイント: X {x}, Y {y}",
+  "@editor_cloneStampSourceReadout": {
+    "placeholders": {
+      "x": {"type": "int"},
+      "y": {"type": "int"}
+    }
+  },
   "editor_brushPresets": "ブラシ プリセット",
   "editor_size": "サイズ",
   "editor_opacity": "不透明度",
@@ -950,8 +1270,8 @@
   "editor_toolFill": "塗りつぶし",
   "editor_toolMagicWand": "マジックワンド",
   "editor_magicWandMode": "選択方法",
-  "editor_magicWandSmartObject": "スマートオブジェクト（EfficientViT）",
-  "editor_magicWandColorArea": "色領域（塗りつぶし）",
+  "editor_magicWandSmartObject": "オブジェクト",
+  "editor_magicWandColorArea": "色領域",
   "editor_magicWandSmartHelp": "選択するオブジェクトをクリックします。初回使用時に MIT Han Lab から約 133 MiB の EfficientViT-SAM L0 モデル（Apache-2.0）をダウンロードし、以後はローカルに保存します。",
   "editor_magicWandColorHelp": "近い色の連続領域をクリックします。境界が明瞭なフラット画像に適し、モデルのダウンロードは不要です。",
   "editor_magicWandInvert": "結果を反転",
@@ -973,6 +1293,9 @@
   "editor_zoomIn": "ズームイン",
   "editor_zoomOut": "ズームアウト",
   "editor_fitToWindow": "窓に合わせる",
+  "editor_viewOptions": "ビューのオプション",
+  "editor_menuGroupView": "ビュー",
+  "editor_menuGroupCanvas": "キャンバス",
   "editor_tempColorPickerShortcut": "Alt+クリック: 一時的なカラーピッカー",
   "editor_shortcutHelpTitle": "ショートカット ヘルプ",
   "editor_shortcutPaintTools": "ペイント ツール",
@@ -984,6 +1307,7 @@
   "editor_shortcutHistoryActions": "履歴アクション",
   "editor_shortcutSelectionActions": "選択アクション",
   "editor_shortcutTemporaryColorPicker": "一時的なカラーピッカー",
+  "editor_shortcutCloneStampSource": "クローンスタンプのソースを設定",
   "editor_shortcutRectSelection": "長方形の選択",
   "editor_shortcutEllipseSelection": "楕円の選択",
   "editor_shortcutLassoSelection": "なげなわ選択",
@@ -1039,6 +1363,7 @@
   "editor_effectBlur": "ガウスぼかし",
   "editor_effectSharpen": "シャープにする",
   "editor_effectCropToSelection": "選択範囲まで切り抜き",
+  "editor_cropNeedsSelection": "先に選択範囲を作成してください。選択範囲を囲む矩形内のピクセルだけをその位置のまま残します。",
   "editor_effectRotateLeft": "左に 90 度回転",
   "editor_effectRotateRight": "右に 90 度回転",
   "editor_effectFlipHorizontal": "水平方向に反転",
@@ -1247,6 +1572,7 @@
       "value": {}
     }
   },
+  "editor_focusMinimumContextAreaLabel": "最小コンテキスト領域",
   "editor_canvasSizeTitle": "キャンバスのサイズ",
   "editor_presetSize": "プリセット サイズ",
   "editor_customSize": "カスタム",
@@ -1293,9 +1619,9 @@
   "editor_sample": "サンプル",
   "editor_samplePoint": "ポイント",
   "editor_sampleArea": "エリア",
-  "editor_source": "ソース",
-  "editor_sourceCurrentLayer": "現在のレイヤー",
-  "editor_sourceAllLayers": "すべてのレイヤー",
+  "editor_source": "対象レイヤー",
+  "editor_sourceCurrentLayer": "現在",
+  "editor_sourceAllLayers": "すべて",
   "editor_lassoSelectionHelp": "押したままドラッグして、自由形式の選択範囲を描画します。放すと自動的に閉まります。",
   "layer_empty": "レイヤーがありません",
   "layer_add": "レイヤーを追加",
@@ -1400,8 +1726,6 @@
     }
   },
   "gallery_upscale": "拡大",
-  "gallery_sentToImg2Img": "画像を Image2Image に送信しました",
-  "gallery_sentToReversePrompt": "画像がリバースプロンプトモジュールに送信されました",
   "gallery_sendFailed": "送信失敗: {error}",
   "@gallery_sendFailed": {
     "placeholders": {
@@ -1563,6 +1887,14 @@
   "onlineGallery_blacklistMenuHint": "このタグを含むギャラリー画像を非表示にします",
   "onlineGallery_outputFilteredTagTooltip": "コピー、送信、キュー追加時に除外されます。右クリックで管理できます",
   "onlineGallery_tagContextMenuTooltip": "右クリックでブラックリストまたは出力フィルターに追加",
+  "onlineGallery_outputFilteredTagTooltipTouch": "コピー、送信、キュー追加時に除外されます。長押しで管理できます",
+  "@onlineGallery_outputFilteredTagTooltipTouch": {
+    "description": "Tooltip for an output-filtered tag chip on touch devices; mirrors onlineGallery_outputFilteredTagTooltip."
+  },
+  "onlineGallery_tagContextMenuTooltipTouch": "長押しでブラックリストまたは出力フィルターに追加",
+  "@onlineGallery_tagContextMenuTooltipTouch": {
+    "description": "Tooltip for a tag chip on touch devices, where there is no right-click; mirrors onlineGallery_tagContextMenuTooltip."
+  },
   "onlineGallery_outputFilterTagAdded": "{tag} を出力フィルターに追加しました",
   "@onlineGallery_outputFilterTagAdded": {
     "placeholders": {
@@ -1775,11 +2107,7 @@
   "tooltip_fullscreenEdit": "フルスクリーン編集",
   "tooltip_decreaseWeight": "ウェイトを下げる [-5%]",
   "tooltip_increaseWeight": "ウェイトを上げる [+5%]",
-  "tooltip_edit": "編集",
   "tooltip_copy": "コピー",
-  "tooltip_delete": "削除",
-  "tooltip_enable": "有効にする",
-  "tooltip_disable": "無効にする",
   "tooltip_resetWeight": "クリックして 100% にリセットします",
   "upscale_scale": "スケール係数",
   "danbooru_loginTitle": "ログイン Danbooru",
@@ -1812,15 +2140,6 @@
   "gelbooru_storageError": "Gelbooru 認証情報を安全に保存または読み取れませんでした。",
   "gelbooru_unknownError": "Gelbooru の検証に失敗しました。しばらくしてから再試行してください。",
   "weight_title": "ウェイト",
-  "weight_reset": "リセット",
-  "weight_done": "完了",
-  "weight_noBrackets": "括弧なし",
-  "weight_editTag": "タグを編集",
-  "weight_tagName": "タグ名",
-  "weight_tagNameHint": "タグ名を入力してください...",
-  "tag_enable": "有効にする",
-  "tag_disable": "無効にする",
-  "tag_delete": "削除",
   "tag_addTag": "タグを追加",
   "tagCategory_artist": "アーティスト",
   "tagCategory_copyright": "著作権",
@@ -1967,6 +2286,15 @@
       "height": { "type": "int" },
       "suggestedWidth": { "type": "int" },
       "suggestedHeight": { "type": "int" }
+    }
+  },
+  "generation_invalidInpaintFrameHint": "フレームを画像内に収め、出力サイズに縮小しても残る大きさでフレーム内にマスクを描いてください。",
+  "generation_unreadableInpaintImageHint": "元画像またはマスクを読み込めません。画像またはマスクを読み込み直してから、もう一度お試しください。",
+  "generation_emptyInpaintMask": "インペイントマスクがサンプリング後に空になりました",
+  "generation_emptyInpaintMaskHint": "マスクが細すぎるか小さすぎるため、{gridSize} ピクセル単位のグリッドでサンプリングすると再描画する領域が残りません。マスクを太くするか広げてから、もう一度お試しください。",
+  "@generation_emptyInpaintMaskHint": {
+    "placeholders": {
+      "gridSize": { "type": "int" }
     }
   },
   "api_error_429": "同時実行制限に達しました",
@@ -2183,6 +2511,26 @@
       "name": {}
     }
   },
+  "randomManager_branchOutputBadge": "「{name}」の条件分岐から出力",
+  "@randomManager_branchOutputBadge": {
+    "placeholders": {
+      "name": {"type": "String"}
+    }
+  },
+  "randomManager_branchOutputBadgeMultiple": "「{name}」など {count} 件の条件分岐から出力",
+  "@randomManager_branchOutputBadgeMultiple": {
+    "placeholders": {
+      "name": {"type": "String"},
+      "count": {"type": "int"}
+    }
+  },
+  "randomManager_branchOutputTooltip": "このタググループは通常の抽選に参加せず、参照している分岐が選ばれたときだけ出力されます。それらの分岐を無効化または削除すると通常の抽選に戻ります。タップすると分岐を開きます。",
+  "randomManager_deleteBranchTargetWarning": "「{names}」の条件分岐がこのタググループを参照しています。削除すると、それらの分岐のこの項目は無効として表示されます。",
+  "@randomManager_deleteBranchTargetWarning": {
+    "placeholders": {
+      "names": {"type": "String"}
+    }
+  },
   "randomManager_tagGroupCount": "{count} タグ グループ",
   "@randomManager_tagGroupCount": {
     "placeholders": {
@@ -2190,10 +2538,7 @@
     }
   },
   "randomManager_categories": "カテゴリ",
-  "randomManager_tagGroups": "タググループ",
-  "randomManager_tags": "タグ",
   "randomManager_addTagGroup": "タググループの追加",
-  "randomManager_locked": "ロックされました",
   "randomManager_addCategory": "カテゴリを追加",
   "randomManager_noCategories": "カテゴリがありません",
   "randomManager_noCategoriesHint": "[カテゴリを追加] をクリックして設定を開始してください",
@@ -2335,12 +2680,8 @@
   },
   "randomManager_previewHint": "サンプルはまだ生成されていません",
   "randomManager_moreActions": "その他のアクション",
-  "scope_global": "メイン",
-  "scope_globalTooltip": "プロンプトはメイン プロンプト領域に表示されます\n適した用途: 背景、シーン、スタイルなど。",
   "scope_character": "キャラクター",
-  "scope_characterTooltip": "プロンプトはキャラクタープロンプトにのみ表示されます\nキャラクターごとに個別に生成されます\n適用対象: 髪の色、目の色、服装、表情など。",
   "scope_all": "両方",
-  "scope_allTooltip": "プロンプトはメイン プロンプトとキャラクター プロンプトの両方に表示されます\n用途: ポーズ、インタラクション、その他の汎用タグ",
   "vibeParseFailed": "Vibe ファイルの解析に失敗しました",
   "localGallery_progressiveLoadError": "画像のロードに失敗しました",
   "localGallery_noImagesFound": "画像が見つかりませんでした",
@@ -2353,6 +2694,7 @@
   },
   "localGallery_indexingLocalImages": "ローカル画像のインデックスを作成しています...",
   "localGallery_emptyTitle": "ローカル イメージがありません",
+  "localGallery_emptyScopeTitle": "ここにはまだ画像がありません",
   "localGallery_emptySubtitle": "生成された画像はここに保存されます",
   "localGallery_noMatchingResults": "一致する結果はありません",
   "localGallery_loadingGroupedImages": "グループ化された画像を読み込み中...",
@@ -2396,6 +2738,14 @@
     }
   },
   "localGallery_imageDeleted": "画像が削除されました",
+  "localGallery_deleteCleanupFailed": "画像ファイルはすでにありません。ギャラリーの記録を整理できませんでした。{error}",
+  "@localGallery_deleteCleanupFailed": {
+    "placeholders": {
+      "error": {}
+    }
+  },
+  "localGallery_deleteRegistryCleanupFailed": "派生画像の登録情報を削除できませんでした。",
+  "localGallery_deleteIndexCleanupFailed": "ギャラリーの記録を更新できませんでした。",
   "localGallery_deleteFailed": "削除に失敗しました: {error}",
   "@localGallery_deleteFailed": {
     "placeholders": {
@@ -2410,7 +2760,6 @@
   "localGallery_confirmMoveImageContent": "これにより、画像がターゲット カテゴリ フォルダーに移動されます。これが誤ってドラッグされたものではないことを確認します。",
   "localGallery_confirmMove": "移動の確認",
   "localGallery_imageMovedToCategory": "画像がカテゴリに移動されました",
-  "localGallery_categoriesSynced": "カテゴリとフォルダーが同期されました",
   "localGallery_saveDirectoryNotSet": "保存ディレクトリが設定されていません",
   "localGallery_folderNotFound": "フォルダーが見つかりません",
   "localGallery_openFolderFailed": "フォルダーを開けませんでした: {error}",
@@ -2549,12 +2898,12 @@
   "comparison_loadError": "画像のロードに失敗しました",
   "statistics_title": "統計",
   "statistics_noData": "利用可能な統計はありません",
-  "statistics_noTagData": "タグデータがありません",
   "statistics_generateFirst": "最初にいくつかの画像を生成します",
   "statistics_totalImages": "合計画像数",
   "statistics_totalSize": "合計サイズ",
   "statistics_favorites": "お気に入り",
-  "statistics_samplerDistribution": "サンプラー分布",
+  "statistics_parameterDistribution": "パラメータ分布",
+  "statistics_parameterOther": "その他",
   "statistics_additionalStats": "追加の統計",
   "statistics_averageFileSize": "平均ファイルサイズ",
   "statistics_withMetadata": "メタデータ付きの画像",
@@ -2822,19 +3171,7 @@
       "error": {"type": "String"}
     }
   },
-  "collectionSelect_dialogTitle": "コレクションを選択してください",
   "collectionSelect_filterHint": "コレクションを検索...",
-  "collectionSelect_noCollections": "コレクションはありません",
-  "collectionSelect_createCollectionHint": "最初にコレクションを作成してください",
-  "collectionSelect_noFilterResults": "一致するコレクションが見つかりませんでした",
-  "collectionSelect_imageCount": "{count} 画像",
-  "@collectionSelect_imageCount": {
-    "placeholders": {
-      "count": {
-        "type": "int"
-      }
-    }
-  },
   "statistics_chartTopTags": "トップのタグ",
   "statistics_chartAspectRatio": "アスペクト比の分布",
   "statistics_chartActivityHeatmap": "アクティビティ ヒートマップ",
@@ -3026,7 +3363,8 @@
   "reversePrompt_localTaggerModelHint": "設定でモデルフォルダーを構成します",
   "reversePrompt_generalThreshold": "一般タグしきい値",
   "reversePrompt_characterThreshold": "キャラクタータグのしきい値",
-  "reversePrompt_taggerFilterHint": "一般/キャラクタータグのみが出力されます。評価、アーティスト、著作権、メタ、その他のカテゴリはフィルターされます。",
+  "reversePrompt_taggerCategories": "出力カテゴリ",
+  "reversePrompt_keepOneTaggerCategory": "出力カテゴリを1つ以上選択してください",
   "reversePrompt_replacementEmptyHint": "置換対象キャラクターが選択されていません。ここでタグライブラリからキャラクターを選択します。プロンプトには挿入されません。",
   "reversePrompt_selectReplacementCharacter": "置換対象のキャラクターをライブラリから選択してください",
   "reversePrompt_selectReplacementTargetTitle": "置換対象キャラクターを選択してください",
@@ -3136,25 +3474,137 @@
   },
   "promptAssistant_provider": "プロバイダー",
   "promptAssistant_model": "モデル",
-  "promptAssistant_noModelsPullFirst": "モデルはまだありません。まずモデルリストを取得します",
-  "promptAssistant_providerManagement": "プロバイダー管理",
-  "promptAssistant_providerManagementSubtitle": "OpenAI Chat / Responses、Anthropic、Gemini、DeepSeek、LM Studio、Ollama、Pollinations、カスタム互換エンドポイントをサポート",
-  "promptAssistant_apiKeyConfigured": "API キー: 設定済み",
-  "promptAssistant_apiKeyNotConfigured": "API キー: 設定されていません",
-  "promptAssistant_supportsImageInput": "画像入力をサポート",
-  "promptAssistant_textOnly": "テキストのみ",
-  "promptAssistant_connectionConfig": "接続構成",
-  "promptAssistant_pullModelList": "モデルリストをプルします",
-  "promptAssistant_editProvider": "プロバイダーの編集",
-  "promptAssistant_deleteProvider": "プロバイダーを削除します",
-  "promptAssistant_pullingModels": "モデル リストを取得しています...",
-  "promptAssistant_emptyModelList": "プロバイダーが空のモデル リストを返しました",
-  "promptAssistant_modelsSynced": "同期された {count} モデル",
-  "@promptAssistant_modelsSynced": {
+  "promptAssistant_noModelsPullFirst": "モデルはまだありません。先にモデルサービスで追加してください",
+  "settings_modelServices": "モデルサービス",
+  "modelServices_searchProviders": "プロバイダーを検索",
+  "modelServices_noProviderMatches": "一致するプロバイダーはありません",
+  "modelServices_emptyTitle": "最初のプロバイダーを追加",
+  "modelServices_emptyBody": "プロバイダーは、プロンプトアシスタントとエージェントが使うモデルを提供します。",
+  "modelServices_disabled": "無効",
+  "modelServices_enableProvider": "プロバイダーを有効にする",
+  "modelServices_moreActions": "その他の操作",
+  "modelServices_connection": "接続",
+  "modelServices_apiKey": "API キー",
+  "modelServices_apiKeySavedHint": "保存済みです。新しいキーを入力すると置き換わります。",
+  "modelServices_apiKeyOptional": "このプロバイダーでは省略できます",
+  "modelServices_showApiKey": "キーを表示",
+  "modelServices_hideApiKey": "キーを隠す",
+  "modelServices_clearApiKey": "保存済みのキーを削除",
+  "modelServices_apiKeyCleared": "API キーを削除しました",
+  "modelServices_vertexCredential": "認証情報",
+  "modelServices_vertexCredentialHint": "サービスアカウント JSON、gcloud ADC JSON または API キー",
+  "modelServices_vertexCredentialInvalid": "認証情報が無効です：{error}",
+  "@modelServices_vertexCredentialInvalid": {
+    "placeholders": {
+      "error": {}
+    }
+  },
+  "modelServices_vertexImportCredential": "ファイルから読み込む",
+  "modelServices_vertexCredentialImported": "認証情報を読み込みました",
+  "modelServices_vertexCredentialReadFailed": "選択したファイルを読み込めませんでした",
+  "modelServices_vertexCredentialCleared": "認証情報を削除しました",
+  "modelServices_vertexProjectId": "プロジェクト ID",
+  "modelServices_vertexProjectIdHint": "空欄の場合は認証情報のプロジェクトを使用",
+  "modelServices_vertexLocation": "リージョン",
+  "modelServices_vertexLocationHint": "global、us-central1 など",
+  "modelServices_vertexLocationInvalid": "英小文字・数字・ハイフンのみ使用できます",
+  "modelServices_vertexBaseUrlHint": "空欄の場合はリージョンから自動選択",
+  "modelServices_baseUrl": "API アドレス",
+  "modelServices_checkConnection": "接続を確認",
+  "modelServices_connectionOk": "接続できました。{count} 個のモデルが一覧にあります。",
+  "@modelServices_connectionOk": {
     "placeholders": {
       "count": {}
     }
   },
+  "modelServices_connectionFailed": "接続できませんでした：{error}",
+  "@modelServices_connectionFailed": {
+    "placeholders": {
+      "error": {}
+    }
+  },
+  "modelServices_models": "モデル",
+  "modelServices_modelCount": "{count} 個のモデル",
+  "@modelServices_modelCount": {
+    "placeholders": {
+      "count": {}
+    }
+  },
+  "modelServices_noModels": "モデルはまだありません。プロバイダーの一覧から選ぶか、モデル ID を追加してください。",
+  "modelServices_manageModels": "モデルを管理",
+  "modelServices_addModel": "モデルを追加",
+  "modelServices_manageModelsTitle": "{provider} のモデル",
+  "@modelServices_manageModelsTitle": {
+    "placeholders": {
+      "provider": {}
+    }
+  },
+  "modelServices_addGroup": "{group} をすべて追加",
+  "@modelServices_addGroup": {
+    "placeholders": {
+      "group": {}
+    }
+  },
+  "modelServices_removeGroup": "{group} をすべて削除",
+  "@modelServices_removeGroup": {
+    "placeholders": {
+      "group": {}
+    }
+  },
+  "modelServices_notListed": "一覧に表示されなくなりました",
+  "modelServices_reasoning": "推論",
+  "modelServices_vision": "画像入力",
+  "modelServices_contextWindow": "コンテキスト {size}",
+  "@modelServices_contextWindow": {
+    "placeholders": {
+      "size": {}
+    }
+  },
+  "modelServices_modelId": "モデル ID",
+  "modelServices_modelIdRequired": "モデル ID を入力してください",
+  "modelServices_modelExists": "このプロバイダーには既にこのモデルがあります",
+  "modelServices_displayName": "表示名",
+  "modelServices_displayNameHint": "空欄の場合は {name} を使用します",
+  "@modelServices_displayNameHint": {
+    "placeholders": {
+      "name": {}
+    }
+  },
+  "modelServices_editModel": "モデルを編集",
+  "modelServices_removeModel": "モデルを削除",
+  "modelServices_removeModelConfirm": "このプロバイダーから {name} を削除しますか？",
+  "@modelServices_removeModelConfirm": {
+    "placeholders": {
+      "name": {}
+    }
+  },
+  "modelServices_removeModelInUse": "{name} は {usages} で使用中です。削除すると、タスクルーティングはこのプロバイダーの別のモデルに切り替わり、エージェントではモデルを選び直す必要があります。",
+  "@modelServices_removeModelInUse": {
+    "placeholders": {
+      "name": {},
+      "usages": {}
+    }
+  },
+  "modelServices_usageSeparator": "、",
+  "modelServices_cleanStaleModels": "一覧にないモデルを整理",
+  "modelServices_addAllModels": "すべてのモデルを追加",
+  "modelServices_staleModelCount": "一覧にないモデル {count} 個",
+  "@modelServices_staleModelCount": {
+    "placeholders": {
+      "count": {}
+    }
+  },
+  "modelServices_addAllConfirm": "このプロバイダーに {count} 個のモデルを追加しますか？",
+  "@modelServices_addAllConfirm": {
+    "placeholders": {
+      "count": {}
+    }
+  },
+  "promptAssistant_supportsImageInput": "画像入力をサポート",
+  "promptAssistant_textOnly": "テキストのみ",
+  "promptAssistant_editProvider": "プロバイダーの編集",
+  "promptAssistant_deleteProvider": "プロバイダーを削除します",
+  "promptAssistant_emptyModelList": "プロバイダーが空のモデル リストを返しました",
   "promptAssistant_pullModelsFailed": "モデルのプルに失敗しました: {error}",
   "@promptAssistant_pullModelsFailed": {
     "placeholders": {
@@ -3171,16 +3621,7 @@
   "promptAssistant_allowImageInput": "画像入力を許可します",
   "promptAssistant_allowImageInputSubtitle": "モデルとプロバイダーが実際にビジョン入力をサポートしている場合にのみ有効になります",
   "promptAssistant_apiKeyLeaveEmpty": "API キー (変更しない場合は空のままにします)",
-  "promptAssistant_connectionTitle": "{name} 接続構成",
-  "@promptAssistant_connectionTitle": {
-    "placeholders": {
-      "name": {}
-    }
-  },
   "promptAssistant_baseUrlHint": "例: https://api.openai.com/v1",
-  "promptAssistant_clearCurrentApiKey": "現在の API キーをクリアします",
-  "promptAssistant_protocolSupportsImagePayload": "現在のプロトコルは画像ペイロードをサポートしています。モデル自体は引き続きビジョン入力をサポートする必要があります",
-  "promptAssistant_protocolTextOnlyWarning": "現在のプロトコルはデフォルトではテキストのみです。これを有効にしてもサーバーによって拒否される可能性があります",
   "promptAssistant_addRuleTitle": "ルールの追加",
   "promptAssistant_editRuleTitle": "ルールの編集",
   "promptAssistant_taskType": "タスクの種類",
@@ -3470,7 +3911,7 @@
       "error": {}
     }
   },
-  "settings_proxyRestartHint": "プロキシ設定が変更されました。再起動をお勧めします",
+  "settings_proxyAppliedHint": "プロキシ設定を適用しました。新しいリクエストから有効になります",
   "tagLibrary_categoryNameExists": "カテゴリ名はすでに存在します",
   "tagLibrary_addToLibrary": "ライブラリに追加",
   "tagLibrary_saveToLibrary": "ライブラリに保存",
@@ -3497,6 +3938,7 @@
   "queue_ready": "準備完了",
   "queue_noTasksToStart": "キューが空のため開始できません",
   "queue_executionProgress": "実行の進行状況",
+  "queue_stoppedStorageWriteFailed": "キューをローカルに保存できなかったため停止しました。ディスクの空き容量やアクセス権限を確認してから再開してください。",
   "queue_totalTasks": "合計",
   "queue_completedTasks": "完了しました",
   "queue_failedTasks": "失敗しました",
@@ -3564,6 +4006,47 @@
   "queue_size": "サイズ",
   "queue_addCurrentTask": "現在のタスクを追加",
   "queue_taskAdded": "キューに追加されました",
+  "queue_imagesUnavailable": "キューの画像を現在読み込めません",
+  "queue_imagesUnavailableHint": "画像ファイルが他のプログラム（ウイルス対策ソフトなど）に使用されている可能性があります。しばらくしてから再試行してください",
+  "queue_enqueueStartedUnsaved": "キューを保存できませんでしたが、{count} 件のタスクはすでに実行を開始しています。再度追加しないでください",
+  "@queue_enqueueStartedUnsaved": {
+    "placeholders": {
+      "count": {}
+    }
+  },
+  "queue_enqueueStartedAndWithdrawn": "キューを保存できませんでした。{started} 件はすでに実行を開始しているため、再度追加しないでください。ほかの {withdrawn} 件は実行前に取り消されました",
+  "@queue_enqueueStartedAndWithdrawn": {
+    "placeholders": {
+      "started": {},
+      "withdrawn": {}
+    }
+  },
+  "queue_enqueueQueued": "{count} 件のタスクはキューに保存されました",
+  "@queue_enqueueQueued": {
+    "placeholders": {
+      "count": {}
+    }
+  },
+  "queue_enqueueWithdrawn": "キューを保存できず、{count} 件のタスクは実行前に取り消されました",
+  "@queue_enqueueWithdrawn": {
+    "placeholders": {
+      "count": {}
+    }
+  },
+  "queue_enqueueRemoved": "{count} 件のタスクは保存完了前に削除されたため、追加成功には数えられません",
+  "@queue_enqueueRemoved": {
+    "placeholders": {
+      "count": {}
+    }
+  },
+  "queue_enqueueFailedBeforeSaved": "{count} 件のタスクは保存完了前に失敗したため、追加成功には数えられません。キューまたは失敗タブを確認してください",
+  "@queue_enqueueFailedBeforeSaved": {
+    "placeholders": {
+      "count": {}
+    }
+  },
+  "queue_enqueueIndexUnsaved": "キューのインデックスはまだ保存されていません。取り消し済みまたは削除済みのタスクが再起動後に再表示される可能性があります。確認してから再度追加してください",
+  "queue_enqueueUnexpectedError": "キューへの追加中に予期しないエラーが発生しました。キューを確認してから再試行してください",
   "queue_negativePromptFromMain": "除外したい要素にはメインページの設定が使用されます",
   "queue_pinToTop": "トップに固定する",
   "queue_delete": "削除",
@@ -3595,6 +4078,18 @@
   "@settings_queueRetryIntervalValue": {
     "placeholders": {
       "seconds": {}
+    }
+  },
+  "settings_decreaseValue": "{field}を減らす",
+  "@settings_decreaseValue": {
+    "placeholders": {
+      "field": {}
+    }
+  },
+  "settings_increaseValue": "{field}を増やす",
+  "@settings_increaseValue": {
+    "placeholders": {
+      "field": {}
     }
   },
   "unit_times": "回",
@@ -3711,6 +4206,30 @@
     }
   },
   "metadataImport_negativePrompt": "除外したい要素",
+  "metadataImport_characterMode": "キャラクターの読み込み方法",
+  "metadataImport_characterReplace": "既存のキャラクターを置き換える",
+  "metadataImport_characterAppend": "末尾に追加",
+  "metadataImport_characterAppendResult": "{added} 人を追加し、{skipped} 人をスキップしました（上限 {limit} 人）。",
+  "@metadataImport_characterAppendResult": {
+    "placeholders": {
+      "added": {"type": "int"},
+      "skipped": {"type": "int"},
+      "limit": {"type": "int"}
+    }
+  },
+  "metadataImport_characterModelConflict": "選択したモデルの上限は {limit} 人です。モデルを変更するか、キャラクターの読み込みをオフにしてください。",
+  "@metadataImport_characterModelConflict": {
+    "placeholders": {
+      "limit": {"type": "int"}
+    }
+  },
+  "metadataImport_characterAppendModelConflict": "現在のキャラクター数は {count} 人で、選択したモデルの上限（{limit} 人）を超えています。「モデル」のチェックを外して追加するか、「既存のキャラクターを置き換える」を選んでください。",
+  "@metadataImport_characterAppendModelConflict": {
+    "placeholders": {
+      "count": {"type": "int"},
+      "limit": {"type": "int"}
+    }
+  },
   "metadataImport_characterPromptsCount": "キャラクタープロンプト ({count})",
   "@metadataImport_characterPromptsCount": {
     "placeholders": {
@@ -3820,6 +4339,8 @@
   "shortcut_action_reuse_params": "パラメータの再利用",
   "shortcut_action_previous_image": "前の画像",
   "shortcut_action_next_image": "次の画像",
+  "shortcut_action_first_image": "最初の画像",
+  "shortcut_action_last_image": "最後の画像",
   "shortcut_action_zoom_in": "ズームイン",
   "shortcut_action_zoom_out": "ズームアウト",
   "shortcut_action_reset_zoom": "ズームをリセット",
@@ -3988,10 +4509,16 @@
   "preciseRef_referenceType": "参照タイプ",
   "preciseRef_strength": "強度",
   "preciseRef_fidelity": "忠実度",
-  "preciseRef_v4Only": "この機能は V4.5 モデルのみ対応しています",
+  "preciseRef_supportedModels": "精密参照は V4.5 と V5 のモデルで利用できます",
   "preciseRef_typeCharacter": "キャラ参照",
   "preciseRef_typeStyle": "絵柄参照",
   "preciseRef_typeCharacterAndStyle": "キャラ＆絵柄参照",
+  "preciseRef_typeOutfit": "衣装",
+  "preciseRef_preferSameOutfit": "同じ衣装を優先",
+  "preciseRef_outfitUnsupported": "このモデルでは生成時に衣装参照がスキップされます。",
+  "preciseRef_inpaintUnsupported": "このモデルでは部分修正時に精密参照が送信されません。",
+  "preciseRef_limitExceeded": "精密参照は最大 {max} 件までです。超過分を削除するか無効にしてください。",
+  "@preciseRef_limitExceeded": {"placeholders": {"max": {"type": "int"}}},
   "preciseRef_costHint": "精密参照を使用すると追加の Anlas を消費します",
   "preciseRef_costBadge": "Anlas を使用します",
   "preciseRef_dropToAdd": "精密参照を追加するにはリリースしてください",
@@ -4185,104 +4712,6 @@
   "categoryError_reorderFailed": "カテゴリの並べ替えに失敗しました: {error}",
   "@categoryError_reorderFailed": {
     "placeholders": {
-      "error": {"type": "String"}
-    }
-  },
-  "vibeBulk_errorEntryNotFoundOrDeleteFailed": "{item} が見つからないか、削除できませんでした",
-  "@vibeBulk_errorEntryNotFoundOrDeleteFailed": {
-    "placeholders": {
-      "item": {"type": "String"}
-    }
-  },
-  "vibeBulk_errorDeleteFailed": "{item} の削除に失敗しました: {error}",
-  "@vibeBulk_errorDeleteFailed": {
-    "placeholders": {
-      "item": {"type": "String"},
-      "error": {"type": "String"}
-    }
-  },
-  "vibeBulk_errorEntryNotFound": "エントリが見つかりません: {item}",
-  "@vibeBulk_errorEntryNotFound": {
-    "placeholders": {
-      "item": {"type": "String"}
-    }
-  },
-  "vibeBulk_errorMoveFailed": "{item} の移動に失敗しました: {error}",
-  "@vibeBulk_errorMoveFailed": {
-    "placeholders": {
-      "item": {"type": "String"},
-      "error": {"type": "String"}
-    }
-  },
-  "vibeBulk_errorFavoriteFailed": "お気に入り状態の更新に失敗しました: {item}",
-  "@vibeBulk_errorFavoriteFailed": {
-    "placeholders": {
-      "item": {"type": "String"}
-    }
-  },
-  "vibeBulk_errorFavoriteFailedWithDetails": "{item} のお気に入り状態の更新に失敗しました: {error}",
-  "@vibeBulk_errorFavoriteFailedWithDetails": {
-    "placeholders": {
-      "item": {"type": "String"},
-      "error": {"type": "String"}
-    }
-  },
-  "vibeBulk_errorAddTagsFailed": "タグの追加に失敗しました: {item}",
-  "@vibeBulk_errorAddTagsFailed": {
-    "placeholders": {
-      "item": {"type": "String"}
-    }
-  },
-  "vibeBulk_errorAddTagsFailedWithDetails": "{item} へのタグ追加に失敗しました: {error}",
-  "@vibeBulk_errorAddTagsFailedWithDetails": {
-    "placeholders": {
-      "item": {"type": "String"},
-      "error": {"type": "String"}
-    }
-  },
-  "vibeBulk_errorRemoveTagsFailed": "タグの削除に失敗しました: {item}",
-  "@vibeBulk_errorRemoveTagsFailed": {
-    "placeholders": {
-      "item": {"type": "String"}
-    }
-  },
-  "vibeBulk_errorRemoveTagsFailedWithDetails": "{item} からのタグ削除に失敗しました: {error}",
-  "@vibeBulk_errorRemoveTagsFailedWithDetails": {
-    "placeholders": {
-      "item": {"type": "String"},
-      "error": {"type": "String"}
-    }
-  },
-  "vibeBulk_errorExportNoFile": "ファイルが作成されなかったため、エクスポートに失敗しました",
-  "vibeBulk_errorExportFailed": "エクスポートに失敗しました: {error}",
-  "@vibeBulk_errorExportFailed": {
-    "placeholders": {
-      "error": {"type": "String"}
-    }
-  },
-  "vibeBulk_errorFileNotFound": "ファイルが見つかりません: {item}",
-  "@vibeBulk_errorFileNotFound": {
-    "placeholders": {
-      "item": {"type": "String"}
-    }
-  },
-  "vibeBulk_errorNoVibeData": "{item} に有効な Vibe データが見つかりません",
-  "@vibeBulk_errorNoVibeData": {
-    "placeholders": {
-      "item": {"type": "String"}
-    }
-  },
-  "vibeBulk_errorImportFailed": "{item} からの Vibe インポートに失敗しました: {error}",
-  "@vibeBulk_errorImportFailed": {
-    "placeholders": {
-      "item": {"type": "String"},
-      "error": {"type": "String"}
-    }
-  },
-  "vibeBulk_errorProcessFileFailed": "{item} の処理に失敗しました: {error}",
-  "@vibeBulk_errorProcessFileFailed": {
-    "placeholders": {
-      "item": {"type": "String"},
       "error": {"type": "String"}
     }
   },
@@ -4670,14 +5099,6 @@
   },
   "vibe_saveToLibrary_tagHint": "タグを入力して、[追加] を押します",
   "vibe_maxReached": "最大 16 件の Vibe に達しました",
-  "vibe_addedNamed": "Vibe を追加しました: {name}",
-  "@vibe_addedNamed": {
-    "placeholders": {
-      "name": {
-        "type": "String"
-      }
-    }
-  },
   "vibe_addedCount": "{count} 件の Vibe を追加しました",
   "@vibe_addedCount": {
     "placeholders": {
@@ -4767,6 +5188,86 @@
       "client": {}
     }
   },
+
+  "settings_mcpServerPermissionSection": "権限",
+  "settings_mcpServerClientsSection": "クライアント",
+  "settings_mcpServerEnable": "MCP サーバーを有効にする",
+  "settings_mcpServerDisabledText": "既定ではオフ。有効にするとローカルの 127.0.0.1 でのみ待ち受けます",
+  "settings_mcpServerStartingText": "ローカル MCP サーバーを起動しています...",
+  "settings_mcpServerListeningText": "MCP クライアントの接続を待っています",
+  "settings_mcpServerErrorText": "起動に失敗しました。エラーメッセージを確認してください",
+  "settings_mcpServerDisabled": "無効",
+  "settings_mcpServerStarting": "起動中",
+  "settings_mcpServerListening": "待ち受け中",
+  "settings_mcpServerError": "エラー",
+  "settings_mcpServerEndpoint": "エンドポイント",
+  "settings_mcpServerCopyEndpoint": "エンドポイントをコピー",
+  "settings_mcpServerPort": "ポート",
+  "settings_mcpServerPortHelper": "変更すると接続中のクライアントは切断されます",
+  "settings_mcpServerPortInvalid": "ポートは {min} から {max} の範囲で入力してください",
+  "@settings_mcpServerPortInvalid": {
+    "placeholders": {
+      "min": {},
+      "max": {}
+    }
+  },
+  "settings_mcpServerPortInUseHint": "ポート {port} は使用中です。下で別のポートを指定してください",
+  "@settings_mcpServerPortInUseHint": {
+    "placeholders": {
+      "port": {}
+    }
+  },
+  "settings_mcpServerDiscoveryFile": "ディスカバリーファイル",
+  "settings_mcpServerToken": "アクセストークン",
+  "settings_mcpServerRevealToken": "トークンを表示",
+  "settings_mcpServerHideToken": "トークンを隠す",
+  "settings_mcpServerCopyToken": "トークンをコピー",
+  "settings_mcpServerRegenerateToken": "トークンを再生成",
+  "settings_mcpServerRegenerateTokenTitle": "アクセストークンを再生成",
+  "settings_mcpServerRegenerateTokenMessage": "現在のトークンは直ちに無効になり、接続中のクライアントは切断されます。すべてのクライアント設定を新しいトークンに更新してください。",
+  "settings_mcpServerAnlasNotice": "Anlas を消費する可能性のある操作はランチャー内で個別に確認します。全自動モードでは、1 回の消費が保護モードの高コストしきい値に達した場合のみ確認します。",
+  "settings_mcpServerPendingApproval": "{client} が {tool} の実行を要求しています",
+  "@settings_mcpServerPendingApproval": {
+    "placeholders": {
+      "client": {},
+      "tool": {}
+    }
+  },
+  "settings_mcpServerPendingApprovalHint": "ページ上部の承認バナーで対応してください",
+  "settings_mcpServerConnectedClients": "接続中のクライアント",
+  "settings_mcpServerSessionsEmpty": "接続中のクライアントはありません",
+  "settings_mcpServerSessionConnectedAt": "接続 {time}",
+  "@settings_mcpServerSessionConnectedAt": {
+    "placeholders": {
+      "time": {}
+    }
+  },
+  "settings_mcpServerSessionLastActivity": "最終アクティビティ {time}",
+  "@settings_mcpServerSessionLastActivity": {
+    "placeholders": {
+      "time": {}
+    }
+  },
+  "settings_mcpServerClientConfigs": "クライアント設定",
+  "settings_mcpServerConfigUnavailable": "サーバーを有効にするとクライアント設定が表示されます",
+  "settings_mcpServerCopyConfig": "設定をコピー",
+  "settings_mcpServerTokenMaskNotice": "プレビューのトークンはマスクされています。コピーすると実際のトークンが書き込まれます。",
+  "settings_mcpServerCliMissing": "同梱 CLI が見つかりません（想定パス: {path}）。開発実行では正常です",
+  "@settings_mcpServerCliMissing": {
+    "placeholders": {
+      "path": {}
+    }
+  },
+  "settings_mcpServerViewDocs": "ドキュメントを見る",
+  "settings_mcpServerAgentPromptTitle": "推奨: エージェントに設定させる",
+  "settings_mcpServerAgentPromptHint": "接続したいエージェントに次のプロンプトを渡すと、設定ドキュメントを読んで自分でインストールします。プロンプトにトークンは含まれず、同梱 CLI がローカルで読み取ります。",
+  "settings_mcpServerClaudeCodeHint": "ターミナルで次のコマンドを実行してサーバーを登録します。",
+  "settings_mcpServerCodexHint": "コマンドでサーバーを登録してから、下の環境変数にトークンを設定します。",
+  "settings_mcpServerCursorHint": "次の内容を Cursor の mcp.json に統合してください。",
+  "settings_mcpServerCherryStudioHint": "Cherry Studio の MCP サーバー設定で「JSON からインポート」に次の内容を貼り付けてください。timeout は秒単位で、アプリ内の承認待ちに十分な余裕があります。",
+  "settings_mcpServerPiHint": "Pi 本体に MCP はありません。先に pi-mcp-adapter パッケージをインストールし、次の内容を ~/.pi/agent/mcp.json に統合してください。",
+  "settings_mcpServerAntigravityHint": "次の内容を Antigravity のグローバル設定 ~/.gemini/config/mcp_config.json に統合してください。timeoutSeconds にはアプリ内の承認待ちに十分な余裕があります。",
+  "settings_mcpServerClaudeDesktopHint": "次の内容を Claude Desktop の設定に統合してください。同梱 CLI を介して stdio で接続します。",
   "settings_fontScale": "フォント サイズ",
   "settings_fontScale_description": "グローバルフォントスケールを調整します",
   "settings_fontScale_previewSmall": "夕日と一匹のアヒルが一緒に飛ぶ",
@@ -4848,7 +5349,7 @@
   "settings_copyDragWatermarkTitle": "コピーまたはドラッグ時に透かしを追加",
   "settings_copyDragWatermarkSubtitle": "保存済みの既定の透かしを使用します。透かしの追加ではメタデータは削除されません。削除するには、上の「コピーまたはドラッグするときにすべてのメタデータを削除します」を有効にしてください。",
   "settings_stripMetadataTitle": "コピーまたはドラッグするときにすべてのメタデータを削除します",
-  "settings_stripMetadataSubtitle": "サニタイズされたコピーを作成し、PNG テキスト チャンク、EXIF、および NAI ステガノグラフィック透かしデータを削除し、ドラッグ中に元のパスが露出しないようにします。",
+  "settings_stripMetadataSubtitle": "コピー、ドラッグ、MCP 画像の返却時に PNG テキストチャンク、EXIF、NAI のステガノグラフィック透かしを削除します。ローカルの元画像は変更せず、MCP は元の解像度を維持します。MCP が saved_path として返すギャラリーの元画像はそのままです。",
   "settings_confirmDangerousActionsTitle": "危険な資産のアクションを再確認する",
   "settings_confirmDangerousActionsSubtitle": "ローカル アセットを削除、移動、またはバッチ移動すると、追加の保護の確認が表示されます。",
   "settings_warnExternalImageSendTitle": "外部サービスに送信する前に確認してください",
@@ -4893,6 +5394,13 @@
   "settings_highAnlasCostTitle": "保護モード: 高 Anlas コスト",
   "settings_highAnlasCostContent": "このリクエストには {cost} Anlas の費用がかかると推定されており、{threshold} Anlas の警告しきい値に達するか超えています。生成を継続しますか?",
   "@settings_highAnlasCostContent": {
+    "placeholders": {
+      "cost": {},
+      "threshold": {}
+    }
+  },
+  "settings_highAnlasCostUnverifiedContent": "サブスクリプションの状態をまだ確認できていません。Opus の無料枠を使い切っている場合、このリクエストには最大 {cost} Anlas かかり、{threshold} Anlas の警告しきい値に達するか超えています。生成を継続しますか?",
+  "@settings_highAnlasCostUnverifiedContent": {
     "placeholders": {
       "cost": {},
       "threshold": {}
@@ -5237,7 +5745,6 @@
   "toast_presetSaved": "プリセットは正常に保存されました",
   "toast_imagePromptCopied": "プロンプトがコピーされました",
   "toast_imageHasNoPrompt": "この画像にはプロンプトがありません",
-  "toast_useDeleteButton": "UI の削除ボタンを使用します。",
   "toast_imageHasNoMetadata": "この画像にはメタデータがありません",
   "toast_imageDataUnavailable": "画像データが利用できないため、コピーできません",
   "toast_vibeDataCopied": "Vibe データをコピーしました",
@@ -5376,6 +5883,8 @@
   "detail_sendToReversePrompt": "逆プロンプトに送信",
   "detail_loadingImage": "画像を読み込み中...",
   "detail_imageLoadFailed": "画像のロードに失敗しました",
+  "detail_lockZoom": "ズームを固定",
+  "detail_unlockZoom": "ズーム固定を解除",
   "detail_noImage": "画像がありません",
   "detail_parsingMetadata": "メタデータを解析しています...",
   "detail_noMetadata": "この画像にはメタデータがありません",
@@ -5408,6 +5917,8 @@
   "detail_copyCharacterPrompt": "キャラクタープロンプトをコピー",
   "detail_copyAllVibeData": "すべての Vibe データをコピーします",
   "detail_saveToVibeLibrary": "バイブライブラリに保存",
+  "detail_collapseThumbnails": "サムネイルを折りたたむ",
+  "detail_expandThumbnails": "サムネイルを展開",
   "pagination_firstPage": "最初のページ",
   "pagination_previousPage": "前のページ",
   "pagination_nextPage": "次のページ",
@@ -5416,63 +5927,6 @@
   "pagination_jump": "ジャンプ",
   "pagination_itemsPerPage": "ページごと",
   "pagination_itemUnit": "アイテム",
-  "diyGuide_title": "DIY 機能ガイド",
-  "diyGuide_subtitle": "高度な機能を学び、独自のライブラリを作成します",
-  "diyGuide_intro": "このガイドでは、DIY システムの中核となる概念と高度な機能について説明し、強力な動的プロンプト ライブラリの構築に役立ちます。",
-  "diyGuide_exampleLabel": "例",
-  "diyGuide_hierarchyTitle": "階層",
-  "diyGuide_hierarchyDescription": "DIY システムは、3 レベルのカテゴリ構造を使用してプロンプトを整理し、管理と検索を容易にします。",
-  "diyGuide_hierarchyExample": "カテゴリ: キャラクターの特徴\n  -> グループ: ヘアスタイル\n      -> タグ: ロングヘア、ショートヘア、ツインテール",
-  "diyGuide_selectionModeTitle": "選択モード",
-  "diyGuide_selectionModeDescription": "グループから選択されるタグの数を制御します。",
-  "diyGuide_selectionModeExample": "• ランダム: ランダムな髪の色など、毎回 1 つのアイテムを選択します\n• すべて: 固定機能セットなど、グループ内のすべてのタグを選択します。",
-  "diyGuide_weightTitle": "ウェイト制御",
-  "diyGuide_weightDescription": "生成中の特定のプロンプトの影響を調整します。",
-  "diyGuide_weightExample": "• ブースト: masterpiece を中括弧で囲む = 1.05x ウェイト\n• 強力なブースト: masterpiece を三重中括弧で囲む = 1.16x ウェイト\n• 弱体化: [bad hands] = 0.95x ウェイト",
-  "diyGuide_genderTitle": "性別制限",
-  "diyGuide_genderDescription": "互換性のない生成された機能を避けるために、タグを特定のキャラクターの性別に制限します。",
-  "diyGuide_genderExample": "• 女性: スカートなどの女性キャラクターのみ\n• 男性: ひげなどの男性キャラクターのみ\n• 任意: T シャツなどの普遍的なもの",
-  "diyGuide_scopeTitle": "範囲",
-  "diyGuide_scopeDescription": "タグをキャラクター、背景、または画像全体のどれに適用するかを定義します。",
-  "diyGuide_scopeExample": "• キャラクター: 目や髪などのキャラクターの特徴\n• 背景: 青空や屋内などの環境の説明\n• グローバル: アート スタイルと品質タグ (最高品質など)",
-  "diyGuide_conditionalTitle": "条件分岐",
-  "diyGuide_conditionalDescription": "選択したタグまたはその他の条件に基づいて、後のタグを動的に選択します。",
-  "diyGuide_conditionalExample": "「雨」を選択した場合\n  次に、「傘」と「濡れた服」を追加します\n  ELSE「晴れ」を追加",
-  "diyGuide_dependenciesTitle": "依存関係",
-  "diyGuide_dependenciesDescription": "タグ間のリンクを作成し、1 つのタグが選択されたときに関連タグが自動的に導入されるようにします。",
-  "diyGuide_dependenciesExample": "「JK制服」を選択 -> 「学校背景」と「スクールバッグ」を自動追加",
-  "diyGuide_visibilityTitle": "可視性ルール",
-  "diyGuide_visibilityDescription": "タグが UI にいつ表示されるか、または生成中にアクティブになるかを制御します。",
-  "diyGuide_visibilityExample": "「魔法少女」カテゴリが選択されている場合に「魔法の杖」オプション グループのみを表示します",
-  "diyGuide_timeTitle": "時間条件",
-  "diyGuide_timeDescription": "リアルタイムまたは設定されたシミュレート時間に基づいて特定のタグをトリガーします。",
-  "diyGuide_timeExample": "• 06:00-18:00 -> \"daylight\" を追加\n• 18:00-06:00 -> \"night\" を追加",
-  "diyGuide_postProcessingTitle": "後処理ルール",
-  "diyGuide_postProcessingDescription": "プロンプト生成の最終段階でテキストの置換またはクリーンアップを実行します。",
-  "diyGuide_postProcessingExample": "より特徴的な説明のために、すべての「青い目」を「紺碧の目」に置き換えます。",
-  "diyGuide_emphasisTitle": "強調確率",
-  "diyGuide_emphasisDescription": "出力の多様性を高めるためにタグに重み構文をランダムに追加します。",
-  "diyGuide_emphasisExample": "確率を 30% に設定します。出力の約 1/3 は重み付きタグを使用し、2/3 はプレーン タグを出力します。",
-  "naiRules_title": "NAI ランダム ルール",
-  "naiRules_characterCountProbability": "キャラクター数の確率",
-  "naiRules_solo": "1人（ソロ）",
-  "naiRules_duo": "2名（デュオ）",
-  "naiRules_trio": "3人（トリオ）",
-  "naiRules_group": "4名（グループ）",
-  "naiRules_genderRules": "性別ルール",
-  "naiRules_female": "女性",
-  "naiRules_male": "男性",
-  "naiRules_mixed": "混合 / その他",
-  "naiRules_categoryProbability": "カテゴリの確率",
-  "naiRules_dynamicTagWeightTitle": "動的タグ重み調整",
-  "naiRules_dynamicTagWeightSubtitle": "アクション、服装、表情、背景などの複数の要素をランダムに組み合わせて、画像のテーマに基づいてカテゴリの重みを調整します。",
-  "naiRules_specialMechanisms": "特別なメカニズム",
-  "naiRules_tagStrengthening": "タグ強化",
-  "naiRules_seasonalLibraryTitle": "季節ライブラリ",
-  "naiRules_seasonalLibrarySubtitle": "季節の服装、天候、照明、雰囲気などの季節の特徴を自動的に照合します。",
-  "naiRules_v4CharacterPositioning": "V4 複数キャラクター配置",
-  "naiRules_smartPositionTitle": "スマートな位置の割り当て",
-  "naiRules_smartPositionSubtitle": "V4 モデルでは、キャラクター配置構文を使用して複数キャラクターの配置を正確に制御します。",
   "comfyImport_detectedTitle": "ComfyUI の複数キャラクタープロンプトを検出しました",
   "comfyImport_characterList": "キャラクター一覧 ({count})",
   "@comfyImport_characterList": {
@@ -5521,6 +5975,29 @@
   "updateErrorServiceUnavailable": "更新サーバーは一時的に利用できません。しばらくしてからもう一度お試しください。",
   "updateErrorInvalidMetadata": "更新情報を検証できませんでした。後でもう一度試すか、Release ページからダウンロードしてください。",
   "updateErrorUnknown": "現在アップデートを確認できません。しばらくしてからもう一度お試しください。",
+  "updateInstallErrorPackageNotFound": "自動インストールできる更新パッケージが見つかりません。Release ページから手動でダウンロードしてください。",
+  "updateInstallErrorIncompleteMetadata": "更新パッケージに検証情報がないため、安全にインストールできません。Release ページから手動でダウンロードしてください。",
+  "updateInstallErrorDiskFull": "ディスクの空き容量が不足しているため、更新パッケージを保存できません。空き容量を確保してから、もう一度お試しください。",
+  "updateInstallErrorFileSystem": "更新パッケージを書き込めませんでした。ディスクを確認して、もう一度お試しください。",
+  "updateInstallErrorVerificationFailed": "更新パッケージの検証に失敗しました。もう一度ダウンロードしてください。",
+  "updateInstallErrorResumeRejected": "サーバーがダウンロードの再開要求を拒否しました。しばらくしてからもう一度お試しください。",
+  "updateInstallErrorEmptyResponse": "更新サーバーから空の応答が返されました。しばらくしてからもう一度お試しください。",
+  "updateInstallErrorDownloadFailed": "更新パッケージのダウンロードに失敗しました。しばらくしてからもう一度お試しください。",
+  "updateInstallErrorPackageMissing": "更新パッケージは削除されています。もう一度ダウンロードしてください。",
+  "updateInstallErrorPackageCorrupted": "更新パッケージが破損しています。もう一度ダウンロードしてください。",
+  "updateInstallErrorInvalidAndroidPackage": "Android 更新パッケージの形式が正しくありません。Release ページから手動でダウンロードしてください。",
+  "updateInstallErrorAndroidInstaller": "Android のシステムインストーラーを開けませんでした。もう一度お試しください。",
+  "updateInstallErrorUpdaterLaunchFailed": "更新プログラムを起動できませんでした。現在のバージョンは変更されていません。もう一度試すか、新しいバージョンを手動でダウンロードしてください。",
+  "updateInstallErrorUpdaterNotStarted": "更新プログラムが起動しませんでした。現在のバージョンは変更されていません。新しいバージョンを手動でダウンロードして更新してください。",
+  "updateInstallErrorInstallFailed": "前回の更新はインストールされませんでした。もう一度試すか、新しいバージョンを手動でダウンロードしてインストールしてください。",
+  "updateInstallErrorInterrupted": "前回の更新のインストールが完了しませんでした。もう一度試すか、新しいバージョンを手動でダウンロードしてインストールしてください。",
+  "updateInstallErrorUnknown": "更新を完了できませんでした。しばらくしてからもう一度お試しください。",
+  "updateInstallLogPath": "ログ: {path}",
+  "@updateInstallLogPath": {
+    "placeholders": {
+      "path": {}
+    }
+  },
   "currentVersion": "現在のバージョン",
   "latestVersion": "最新バージョン",
   "releaseNotes": "リリースノート",
@@ -5765,14 +6242,17 @@
     }
   },
 
-  "diy_editDependencyTitle": "依存関係を編集",
-  "diy_dependencyTitle": "依存関係設定",
   "diy_dependencySubtitle": "タグ選択間の依存関係を設定します",
   "diy_dependencyType": "依存タイプ",
   "diy_sourceCategory": "ソースカテゴリ",
   "diy_selectSourceCategory": "ソースカテゴリを選択",
-  "diy_sourceCategoryId": "ソースカテゴリ ID",
-  "diy_enterCategoryId": "カテゴリ ID を入力",
+  "diy_sourceCharacterCount": "キャラクター数",
+  "diy_categoryUnavailable": "無効：{reference}",
+  "@diy_categoryUnavailable": {
+    "placeholders": {
+      "reference": {"type": "String"}
+    }
+  },
   "diy_mappingRules": "マッピングルール",
   "diy_noMappingRules": "マッピングルールはありません",
   "diy_deleteRule": "ルールを削除",
@@ -5793,8 +6273,13 @@
   "diy_dependencyExistsDescription": "ソースカテゴリでタグが選択されている場合のみ適用します",
   "diy_dependencyValueDescription": "ソースカテゴリで選択された特定のタグ値に依存します",
   "diy_dependencyExcludesDescription": "ソースカテゴリでタグが選択されている場合は適用しません",
+  "diy_dependencyCountCharacterCountDescription": "今回生成するキャラクター数から結果数を決定します",
+  "diy_dependencyExistsCharacterCountDescription": "キャラクターがいる（キャラクター数が 1 以上）場合のみ適用します",
+  "diy_dependencyValueCharacterCountDescription": "今回生成するキャラクター数の値（1、2、3 など）に依存します",
+  "diy_dependencyExcludesCharacterCountDescription": "キャラクターがいない（キャラクター数が 0）場合のみ適用します",
+  "diy_dependencyOverridesSelectionCount": "このタググループの選択モードは「複数のカウント」ではありません。依存で得た数が選択モードの数を上書きします：重みに従って重複なくその数だけ抽選し、候補が足りない場合はすべて選びます。一致するマッピングも既定値もない場合は抽選しません。",
+  "diy_dependencyOverridesSequentialCount": "このタググループの選択モードは「シーケンシャル」です。依存で得た数が選択モードの数を上書きします：ローテーション順にその数だけ取り、候補が足りない場合はすべて選びます。一致するマッピングも既定値もない場合は抽選しません。",
 
-  "diy_editConditionalTitle": "条件分岐を編集",
   "diy_conditionalDefaultName": "条件分岐",
   "diy_branchDefaultName": "分岐 {index}",
   "@diy_branchDefaultName": {
@@ -5802,7 +6287,6 @@
       "index": {"type": "int"}
     }
   },
-  "diy_conditionalTitle": "条件分岐",
   "diy_conditionalSubtitle": "確率に基づいて分岐を選択します",
   "diy_branchCount": "{count} 件の分岐",
   "@diy_branchCount": {
@@ -5829,6 +6313,42 @@
   "diy_branchName": "分岐名",
   "diy_probability": "確率",
   "diy_enableBranch": "この分岐を有効化",
+  "diy_branchTargets": "出力するタググループ",
+  "diy_branchTargetsHint": "選択したタググループはこの分岐が選ばれたときだけ出力され、このタググループの選択モードで抽選されます。未選択のときはこのタググループ自身のタグを出力します。",
+  "diy_branchTargetsEmpty": "このカテゴリーに他のタググループはありません",
+  "diy_branchTargetChild": "子：{name}",
+  "@diy_branchTargetChild": {
+    "placeholders": {
+      "name": {"type": "String"}
+    }
+  },
+  "diy_branchTargetCycle": "循環参照になります",
+  "diy_branchTargetCycleHint": "グレーのタググループはすでにこのタググループを直接または間接に出力しているため、選ぶと循環参照になります",
+  "diy_branchTargetCount": "{count} 個のタググループを出力",
+  "@diy_branchTargetCount": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "diy_branchConditions": "条件",
+  "diy_branchConditionsHint": "このタググループより前に生成されるカテゴリーと分岐のみ参照できます。値はタグとして比較され、大文字小文字・アンダースコア・重み記法は無視されます。条件のない分岐は常に選択対象です。",
+  "diy_addCondition": "条件を追加",
+  "diy_deleteCondition": "条件を削除",
+  "diy_conditionSource": "変数",
+  "diy_conditionValueRequired": "値を入力してください",
+  "diy_conditionLogicAll": "すべて満たす",
+  "diy_conditionLogicAny": "いずれかを満たす",
+  "diy_conditionSourceGender": "キャラクターの性別",
+  "diy_conditionSourceBranch": "{name} の分岐",
+  "@diy_conditionSourceBranch": {
+    "placeholders": {
+      "name": {"type": "String"}
+    }
+  },
+  "diy_conditionValueHintCategory": "例：blue eyes",
+  "diy_conditionValueHintGender": "例：girl、boy",
+  "diy_conditionValueHintCount": "例：1、2、3",
+  "diy_conditionValueHintBranch": "分岐名を入力",
 
   "diy_ruleDefaultName": "ルール {index}",
   "@diy_ruleDefaultName": {
@@ -5846,7 +6366,6 @@
   "diy_editRule": "ルールを編集",
   "diy_ruleName": "ルール名",
   "diy_enableRule": "このルールを有効化",
-  "diy_postProcessTitle": "後処理ルール",
   "diy_postProcessSubtitle": "タグの競合を自動的に解決します",
   "diy_sleepingRule": "睡眠ルール",
   "diy_sleepingRuleDescription": "キャラクターが眠っているときに目の色の記述を削除します",
@@ -5859,7 +6378,6 @@
   "diy_triggerTags": "トリガータグ",
   "diy_commaSeparatedTagsHint": "カンマ区切りのタグリスト",
   "diy_targetCategories": "対象カテゴリ",
-  "diy_commaSeparatedCategoryIdsHint": "カンマ区切りのカテゴリ ID リスト",
   "diy_targetTags": "対象タグ",
   "diy_actionRemoveTags": "タグを削除",
   "diy_actionReplaceTags": "タグを置換",
@@ -5874,26 +6392,6 @@
     }
   },
 
-  "diy_emphasisTitle": "グローバル強調",
-  "diy_emphasisSubtitle": "タグの強調効果を調整",
-  "diy_emphasisProbability": "強調確率",
-  "diy_emphasisProbabilityHint": "選択された各タグに {percent}% の確率で強調括弧が追加されます",
-  "@diy_emphasisProbabilityHint": {
-    "placeholders": {
-      "percent": {"type": "String"}
-    }
-  },
-  "diy_bracketCount": "括弧の階層数",
-  "diy_bracketLayers": "{count} 層",
-  "@diy_bracketLayers": {
-    "placeholders": {
-      "count": {"type": "int"}
-    }
-  },
-  "diy_effectPreview": "効果プレビュー",
-  "diy_exampleTag": "タグの例",
-  "diy_emphasisExplanation": "強調括弧はタグの重みを増やし、階層が多いほど重みが高くなります",
-
   "diy_presetExportFailed": "プリセットのエクスポートに失敗しました: {error}",
   "@diy_presetExportFailed": {
     "placeholders": {
@@ -5907,6 +6405,12 @@
       "error": {"type": "String"}
     }
   },
+  "diy_presetVersionTooNew": "このプリセットは新しいバージョンのアプリで書き出されています（データバージョン {version}）。アプリを更新してからインポートしてください",
+  "@diy_presetVersionTooNew": {
+    "placeholders": {
+      "version": {"type": "int"}
+    }
+  },
   "diy_presetExportTitle": "プリセットをエクスポート",
   "diy_presetImportTitle": "プリセットをインポート",
   "diy_unknown": "不明",
@@ -5918,12 +6422,12 @@
   "diy_categoryCount": "カテゴリ数",
   "diy_totalTagCount": "タグ総数",
 
-  "diy_visibilityTitle": "表示ルール",
   "diy_visibilitySubtitle": "条件に基づいてカテゴリの表示を制御します",
   "diy_noVisibilityRules": "表示ルールはありません",
   "diy_noVisibilityRulesHint": "ルールを追加して現在の構成からカテゴリの表示を制御します",
   "diy_notSet": "未設定",
   "diy_targetCategory": "対象カテゴリ",
+  "diy_targetCurrentGroup": "このタググループ",
   "diy_conditionType": "条件タイプ",
   "diy_conditionValue": "条件値",
   "diy_conditionValueHint": "タグ名または値",
@@ -5935,9 +6439,7 @@
   "diy_conditionValueInList": "値がリストに含まれる",
   "diy_conditionValueNotInList": "値がリストに含まれない",
 
-  "diy_editTimeConditionTitle": "時間条件を編集",
   "diy_timeDefaultName": "時間条件",
-  "diy_timeTitle": "時間条件",
   "diy_timeSubtitle": "指定した日付範囲内で有効化します",
   "diy_enableTimeCondition": "時間条件を有効化",
   "diy_enableTimeConditionHint": "設定した日付範囲内でのみ適用します",
@@ -5958,6 +6460,9 @@
   "diy_conditionNameHint": "条件名を入力",
   "diy_repeatYearly": "毎年繰り返す",
   "diy_repeatYearlyHint": "毎年同じ日付範囲で自動的に有効化します",
+  "diy_repeatOnceHint": "選択した年の日付範囲内でのみ有効化します",
+  "diy_year": "年",
+  "diy_yearUnsetHint": "年が未選択のため、現在は毎年有効化されます",
   "diy_currentlyActive": "現在有効",
   "diy_inactive": "無効",
   "diy_daysRemaining": "残り {count} 日",
@@ -6174,6 +6679,122 @@
       "max": {"type": "int"}
     }
   },
+  "editor_toolFrame": "フレーム",
+  "editor_toolMove": "移動",
+  "editor_toolGroupInpaint": "インペイント",
+  "editor_toolGroupEdit": "編集",
+  "editor_toolGroupCommon": "共通",
+  "editor_toolbarFlyoutExpand": "同じグループのツールを表示",
+  "editor_toolbarFlyoutHint": "ホバー、右クリック、長押しで同じグループのツールを表示",
+  "editor_toolMaskBrush": "マスクブラシ",
+  "editor_toolMaskEraser": "マスク消しゴム",
+  "editor_toolMaskColorFill": "色でマスクを塗りつぶし",
+  "editor_toolMaskMagicWand": "マスクマジックワンド",
+  "editor_moveLayerHint": "ドラッグして現在のレイヤー全体を移動します。",
+  "editor_moveSelectionHint": "ドラッグして現在のレイヤーの選択範囲内のピクセルを移動します。",
+  "editor_moveBaseLayerHint": "ベース画像は全体を移動できません。先に範囲を選択してから、その中のピクセルを移動してください。",
+  "editor_moveNoLayer": "移動できるレイヤーがありません。",
+  "editor_moveNudgeHint": "矢印キーで 1 ピクセル、Shift を押しながらで 10 ピクセル移動します。",
+  "editor_shortcutNudge": "1 ピクセル移動",
+  "editor_shortcutNudgeFar": "10 ピクセル移動",
+  "editor_transformSection": "変形",
+  "editor_transformWidth": "幅",
+  "editor_transformHeight": "高さ",
+  "editor_transformAngle": "角度",
+  "editor_transformCenterX": "中心 X",
+  "editor_transformCenterY": "中心 Y",
+  "editor_transformKeepAspect": "縦横比を固定",
+  "editor_transformFlipHorizontal": "水平方向に反転",
+  "editor_transformFlipVertical": "垂直方向に反転",
+  "editor_transformApply": "変形を適用",
+  "editor_transformCancel": "変形をキャンセル",
+  "editor_transformSizeReadout": "{width} × {height} ピクセル",
+  "@editor_transformSizeReadout": {
+    "placeholders": {
+      "width": {"type": "int"},
+      "height": {"type": "int"}
+    }
+  },
+  "editor_transformHandlesHint": "四隅または辺をドラッグして拡大縮小し、枠の上の丸をドラッグして回転します。",
+  "editor_transformKeysHint": "Shift で 15° 単位にスナップ、または縦横比の固定を一時的に切り替え、Alt で中心を基準にします。Ctrl+T で変形を開始、Enter で適用、Esc でキャンセルします。",
+  "editor_transformTouchHint": "変形中は 2 本指で拡大縮小・回転・移動できます。終わったら「変形を適用」をタップします。",
+  "editor_shortcutFreeTransform": "自由変形",
+  "editor_shortcutApplyTransform": "変形を適用",
+  "layer_importImage": "画像を読み込む",
+  "selection_clearPixels": "選択範囲の内容を削除",
+  "selection_cutLayerName": "{name} カット",
+  "@selection_cutLayerName": {
+    "placeholders": {
+      "name": {}
+    }
+  },
+  "layer_duplicateName": "{name} のコピー",
+  "@layer_duplicateName": {
+    "placeholders": {
+      "name": {}
+    }
+  },
+  "layer_roleMask": "マスク",
+  "layer_addImage": "画像レイヤーを追加",
+  "layer_addMask": "マスクレイヤーを追加",
+  "img2img_inpaintSourceUpdated": "ベース画像の編集を保存しました。マスクを塗るとインペイントできます。",
+  "editor_frameToolHint": "フレーム内をドラッグすると全体を移動し、端をドラッグするとサイズを変更します。フレーム外の内容は暗く表示されたまま保持され、生成に送られるのはフレーム内だけです。移動後も元画像と 64 ピクセル以上重なるようにします。",
+  "editor_frameSizeReadout": "サイズ: {width} × {height}",
+  "@editor_frameSizeReadout": {
+    "placeholders": {
+      "width": {"type": "int"},
+      "height": {"type": "int"}
+    }
+  },
+  "editor_frameOffsetReadout": "元画像からの位置: X {x}, Y {y}",
+  "@editor_frameOffsetReadout": {
+    "placeholders": {
+      "x": {"type": "int"},
+      "y": {"type": "int"}
+    }
+  },
+  "editor_frameMoveLockedByView": "ビューを回転・反転している間はフレームを移動できません。R でビューをリセットしてから再度お試しください。",
+  "editor_resetFrame": "フレームをリセット",
+  "editor_cropToFrame": "フレームで切り抜き",
+  "editor_cropToFrameHint": "フレーム外の画像とマスクを破棄します。元に戻せます。",
+  "editor_cropToFrameFailed": "フレームでの切り抜きに失敗しました: {error}",
+  "@editor_cropToFrameFailed": {
+    "placeholders": {
+      "error": {}
+    }
+  },
+  "editor_changeFrameSize": "フレームのサイズを変更",
+  "editor_frameResized": "フレームのサイズを {width} × {height} に変更しました",
+  "@editor_frameResized": {
+    "placeholders": {
+      "width": {"type": "int"},
+      "height": {"type": "int"}
+    }
+  },
+  "editor_frameToolHintPasteBack": "フレーム内をドラッグすると 64 ピクセル単位で移動し、端をドラッグするとサイズを変更します。生成に送られるのはフレーム内だけです。フレーム外にも元画像がある場合、結果はマスクに沿って画像全体に貼り戻され、フレーム外はそのまま残ります。フレームは元画像と 64 ピクセル以上重なる必要があります。",
+  "editor_frameRequestReadout": "送信: {width} × {height}",
+  "@editor_frameRequestReadout": {
+    "placeholders": {
+      "width": {"type": "int"},
+      "height": {"type": "int"}
+    }
+  },
+  "editor_frameRequestFree": "無料",
+  "editor_frameRequestCost": "約 {cost} Anlas",
+  "@editor_frameRequestCost": {
+    "placeholders": {
+      "cost": {"type": "int"}
+    }
+  },
+  "editor_frameResizeRejected": "フレームを変更できません：元画像と {overlap} ピクセル以上重なり、元画像と合わせて各辺 {max} ピクセル以内である必要があります。",
+  "@editor_frameResizeRejected": {
+    "placeholders": {
+      "overlap": {"type": "int"},
+      "max": {"type": "int"}
+    }
+  },
+  "editor_compressionFrameLimited": "フレームがリクエスト面積上限を超えるため、これ以上の解像度は選べません。",
+  "img2img_focusOutpaintHint": "フォーカスアウトペイント：フレーム内だけを送信し、生成結果はマスクに沿って画像全体に貼り戻されます。位置はインペイント エディターのフレームツールで調整できます。",
 
   "savePreset_title": "プリセットとして保存",
   "savePreset_nameHint": "プリセット名を入力",
@@ -6186,6 +6807,9 @@
   },
 
   "onlineGallery_videoLoadFailed": "動画を読み込めませんでした",
+  "onlineGallery_videoPositionLabel": "再生位置",
+  "onlineGallery_videoPlay": "再生",
+  "onlineGallery_videoPause": "一時停止",
   "vibe_releaseToAddStyleReference": "離すとスタイル参照を追加",
   "router_backAgainToExit": "もう一度スワイプするか戻るボタンを押すと終了します",
   "router_pageNotFound": "ページが見つかりません: {error}",
@@ -6210,7 +6834,7 @@
   "autocomplete_autoComma": "挿入後にカンマを追加",
   "autocomplete_openOnTagClick": "タグのクリックで補完を表示",
   "autocomplete_openOnTagClickSubtitle": "オンにすると既存タグのクリックで通常の補完を開きます。Ctrl/Command＋クリックでは引き続き関連タグを表示します",
-  "autocomplete_replaceUnderscores": "挿入時にアンダースコアを空白に置換",
+  "autocomplete_replaceUnderscores": "挿入時と自動フォーマット時にアンダースコアを空白に置換",
   "autocomplete_dataSourcesTitle": "データソースとキャッシュ",
   "autocomplete_relatedTagsTitle": "共起・関連タグ候補",
   "autocomplete_relatedTagsSubtitle": "タグ確定後に自動表示。タグ上で Ctrl+Shift+Space または Ctrl+クリックでも表示できます",
@@ -6253,6 +6877,7 @@
   "autocomplete_clearAiCache": "AI 翻訳キャッシュを消去",
   "autocomplete_cacheCleared": "キャッシュを {count} 件消去しました",
   "@autocomplete_cacheCleared": {"placeholders": {"count": {"type": "int"}}},
+  "autocomplete_cacheClearFailed": "キャッシュを消去できませんでした。しばらくしてから再試行してください。",
   "autocomplete_baseCatalog": "基本 Danbooru カタログ",
   "autocomplete_catalogStatus": "{count} タグ · データ版 {version}",
   "@autocomplete_catalogStatus": {"placeholders": {"count": {"type": "String"}, "version": {"type": "String"}}},
@@ -6338,6 +6963,20 @@
   "@localGallery_saveToSystemGalleryFailed": {"placeholders":{"error":{}}},
   "image_savedAppOnly": "アプリ内ギャラリーには保存しましたが、システムギャラリーに書き出せませんでした: {error}",
   "@image_savedAppOnly": {"placeholders":{"error":{}}},
+  "image_savedToAppGallery": "アプリ内ギャラリーに保存しました",
+  "image_saveAs": "名前を付けて保存…",
+  "image_saveAsDialogTitle": "画像に名前を付けて保存",
+  "image_saveAsToFolder": "フォルダーに保存…",
+  "image_saveAsFolderDialogTitle": "保存先フォルダーを選択",
+  "image_savedAs": "{path} に保存しました",
+  "@image_savedAs": {"placeholders":{"path":{}}},
+  "image_savedAsToChosenLocation": "選択した場所に保存しました",
+  "image_savedAsToFolder": "{count} 枚の画像を {path} に保存しました",
+  "@image_savedAsToFolder": {"placeholders":{"count":{"type":"int"},"path":{}}},
+  "image_savedAsToChosenFolder": "{count} 枚の画像を選択したフォルダーに保存しました",
+  "@image_savedAsToChosenFolder": {"placeholders":{"count":{"type":"int"}}},
+  "image_savedAsPartial": "{saved} 枚を保存、{failed} 枚が失敗しました: {error}",
+  "@image_savedAsPartial": {"placeholders":{"saved":{"type":"int"},"failed":{"type":"int"},"error":{}}},
   "image_shareFailed": "共有に失敗しました: {error}",
   "@image_shareFailed": {"placeholders":{"error":{}}},
   "onlineGallery_savedFiles": "{count} 個のファイルを保存しました",
@@ -6356,6 +6995,8 @@
   "@settings_localOnnxManagedFiles": {"placeholders":{"count":{"type":"int"}}},
   "settings_clearLocalOnnxModelsTitle": "ローカル ONNX モデルを消去しますか？",
   "settings_clearLocalOnnxModelsContent": "この端末にインポートした ONNX モデルとラベルファイルを削除します。",
+  "settings_clearLocalOnnxModelsFailed": "ローカル ONNX モデルの削除に失敗しました: {error}",
+  "@settings_clearLocalOnnxModelsFailed": {"placeholders":{"error":{}}},
   "updateAndroidDownloadedHint": "v{version} をダウンロードし、検証が完了しました。Android のシステムインストーラーを開いて更新を続行できます。",
   "@updateAndroidDownloadedHint": {"placeholders":{"version":{}}},
   "updateAndroidInstallingHint": "Android のシステムインストーラーを開いています。システムの案内に従って更新を確認してください。",
@@ -6417,6 +7058,8 @@
   "cloudSync_onlineGalleryFavoritesDescription": "ソース ID と復元に必要な情報のみを保存し、原画像は保存しません",
   "cloudSync_galleryAlbums": "ローカルギャラリーのアルバム",
   "cloudSync_galleryAlbumsDescription": "アルバム構造と画像参照のみを保存し、原画像はアップロードしません",
+  "cloudSync_fixedTagUsage": "固定タグの使用記録",
+  "cloudSync_fixedTagUsageDescription": "各画像がどの固定タグを使ったかの軽量な記録のみを保存し、画像はアップロードしません",
   "cloudSync_optionalResources": "任意のリソース（既定はオフ）",
   "cloudSync_vibes": "Vibe",
   "cloudSync_preciseReferences": "精密参照",
@@ -6568,11 +7211,20 @@
   "agentSettings_densityDescription": "快適はタッチ領域と余白を保ち、コンパクトはデスクトップで多くの情報を表示します。",
   "agentSettings_densityComfortable": "快適",
   "agentSettings_densityCompact": "コンパクト",
+  "agentSettings_chatPlacement": "チャットの配置",
+  "agentSettings_chatPlacementDescription": "ワイド表示でのみ有効です。狭い画面では全画面チャットのままです。",
+  "agentSettings_dockLayout": "右パネルのレイアウト",
+  "agentSettings_dockLayoutDescription": "切り替えでは右パネルにチャットか履歴の一方を表示し、分割では両方を同時に表示します。",
+  "agentSettings_dockExclusive": "切り替え",
+  "agentSettings_dockStacked": "上下に分割",
+  "agentSettings_dockSideBySide": "左右に分割",
+  "agentSettings_floatingWindow": "チャットをフローティングウィンドウで表示",
+  "agentSettings_floatingWindowDescription": "フローティングウィンドウはすべてのページに常駐し、移動とサイズ変更ができます。有効にすると右パネルには履歴のみ表示されます。",
   "agentSettings_chatModel": "チャットモデル",
   "agentSettings_providerModel": "プロバイダー / モデル",
-  "agentSettings_modelManagedInIntegrations": "プロバイダー、API キー、モデル検出は引き続き「連携」で一元管理されます。",
+  "agentSettings_modelManagedInIntegrations": "プロバイダー、API キー、モデルは「連携 → モデルサービス」で管理します。",
   "agentSettings_manageProviders": "プロバイダーを管理",
-  "agentSettings_noModel": "利用可能なチャットモデルがありません。先に「連携」でプロバイダーを追加し、モデルを検出してください。",
+  "agentSettings_noModel": "利用可能なチャットモデルがありません。先に「連携 → モデルサービス」でプロバイダーとモデルを追加してください。",
   "agentSettings_pendingMatch": "照合待ち",
   "agentSettings_contextWindow": "コンテキストウィンドウ（トークン）",
   "agentSettings_contextWindowKnown": "空欄なら内蔵値 {value} を使用します。中継サービスや独自デプロイで実際の値が異なる場合はここで上書きしてください。",
@@ -6598,7 +7250,18 @@
   "agentSettings_permissionAsk": "機密操作の前に確認",
   "agentSettings_permissionAskDescription": "既定。ファイル書き込みや画像生成などの前に確認します。",
   "agentSettings_permissionFull": "フルアクセス",
-  "agentSettings_permissionFullDescription": "ワークスペース外のファイルとツールの直接実行を許可します。信頼できるタスクにのみ使用してください。",
+  "agentSettings_permissionFullDescription": "ワークスペース外のファイルとツールの直接実行を許可します。保存済みデータの削除と Anlas の消費は引き続き確認します。信頼できるタスクにのみ使用してください。",
+  "agentSettings_permissionAutopilot": "全自動",
+  "agentSettings_permissionAutopilotDescription": "フルアクセスのすべての権限に加え、生成など Anlas を消費する操作も直接実行します。1 回の消費が保護モードの高コストしきい値に達した場合と、保存済みデータの削除のみ確認します。無人のバッチ作業向けです。",
+  "agentSettings_autopilotConfirmTitle": "全自動をオンにしますか？",
+  "agentSettings_autopilotConfirmThreshold": "生成、インペイント、キューの開始など Anlas を消費する操作は、毎回確認せずに直接実行されます。1 回の推定消費が {threshold} Anlas（保護モードの高コストしきい値）に達した場合と、保存済みデータの削除は引き続き確認します。",
+  "@agentSettings_autopilotConfirmThreshold": {
+    "placeholders": {
+      "threshold": {}
+    }
+  },
+  "agentSettings_autopilotConfirmUnlimited": "生成、インペイント、キューの開始など Anlas を消費する操作は、毎回確認せずに直接実行されます。保護モードの高コスト警告がオフのため、金額にかかわらず直接消費されます。保存済みデータの削除は引き続き確認します。",
+  "agentSettings_autopilotConfirmAction": "オンにする",
   "agentSettings_webPreference": "Web 接続設定",
   "agentSettings_webEnabled": "エージェントによる Web ツールの使用を許可",
   "agentSettings_webDescription": "有効にすると公開ページを検索・閲覧できます。無効にすると実行時ツールから Web 機能が削除されます。",
@@ -6748,7 +7411,6 @@
   "watermark_undo": "元に戻す",
   "watermark_reset": "リセット",
   "watermark_noLayer": "保存前にテキストまたはロゴを有効にしてください。",
-  "watermark_cancelled": "ウォーターマーク処理をキャンセルしました",
   "watermark_failed": "透かし入りコピーを作成できませんでした：{error}",
   "@watermark_failed": {"placeholders":{"error":{}}},
   "watermark_failedGeneric": "透かし入りコピーを作成できませんでした。画像を確認して再試行してください。",
@@ -6762,6 +7424,19 @@
   "watermark_moveUp": "レイヤーを上へ移動",
   "watermark_moveDown": "レイヤーを下へ移動",
   "watermark_sourceLoadFailed": "この画像を開けませんでした。有効な静止 PNG、JPEG、WebP、または BMP 画像であることを確認して、もう一度お試しください。",
+  "watermark_autoPlacement": "自動配置",
+  "watermark_autoPlacementHint": "設定したアンカーを優先します。別の隅のほうが明らかに空いている場合は、ウォーターマーク全体をそちらへ反転します。",
+  "watermark_autoPlacementKept": "自動配置：優先位置のまま",
+  "watermark_autoPlacementMirroredHorizontal": "自動配置：左右反転",
+  "watermark_autoPlacementMirroredVertical": "自動配置：上下反転",
+  "watermark_autoPlacementMirroredBoth": "自動配置：対角へ移動",
+  "watermark_autoAnalyzing": "画像を解析中…",
+  "watermark_autoAnalysisFailed": "画像を解析できなかったため、プレビューには自動調整が反映されていません。保存時に再解析します。",
+  "watermark_autoTone": "自動グレースケール",
+  "watermark_autoToneTextHint": "テキスト下の背景の明るさからグレーを選び、アウトラインと影は反対側のグレーにします。",
+  "watermark_autoToneLogoHint": "ロゴを下の背景の明るさに合わせたグレーに変換し、ロゴ自体の濃淡は保ちます。",
+  "watermark_toneContrast": "明暗差",
+  "watermark_colorFromAutoTone": "色は自動グレースケールで決まります",
   "promptAssistant_responseTimeoutTitle": "応答待機タイムアウト",
   "promptAssistant_responseTimeoutDescription": "画像からのプロンプト作成、最適化、翻訳、キャラクター置換、カスタム書き換えで共通です。既定は5分。応答が遅いモデルでは延長でき、いつでもキャンセルできます。接続タイムアウトとエージェントチャットには影響しません。",
   "tagMode_label": "タグモード",
@@ -6847,7 +7522,6 @@
   "mosaic_saved": "モザイク済みコピーを保存しました",
   "mosaic_open": "開く",
   "mosaic_share": "共有",
-  "mosaic_cancelled": "処理をキャンセルしました。",
   "mosaic_failedGeneric": "モザイク済みコピーを作成できませんでした。",
   "mosaic_galleryRefreshFailed": "ファイルは保存されましたが、ローカルギャラリーを更新できませんでした。",
   "mosaic_systemGalleryExportFailed": "アプリ内には保存されましたが、システムギャラリーへの書き出しに失敗しました。",
@@ -6862,6 +7536,12 @@
   "promptAssistant_concurrencyAutoDescription": "同時リクエスト数 5 から開始し、応答に応じて自動調整します。このプロバイダーのすべてのプロンプトアシスタントタスクで上限を共有します。",
   "promptAssistant_thinkingLevel": "思考レベル",
   "promptAssistant_thinkingDefault": "モデルの既定値",
+  "promptAssistant_configureReasoning": "推論を設定",
+  "promptAssistant_reasoningFormat": "推論パラメーターの形式",
+  "promptAssistant_reasoningLevelFormat": "レベル",
+  "promptAssistant_reasoningBudgetFormat": "トークン予算",
+  "promptAssistant_reasoningAdaptiveFormat": "適応型",
+  "promptAssistant_reasoningRejectedHint": "「モデルの既定値」に戻してから再試行してください。",
   "promptAssistant_thinkingUnavailable": "調整可能な思考レベルが確認できないため、モデルの既定動作を使用します。",
   "promptAssistant_thinkingReset": "保存されたレベルはこのモデルでは使用できないため、既定値を使用します。",
   "promptAssistant_thinkingEnabled": "オン",
@@ -7006,5 +7686,15 @@
         "format": "yMMMd"
       }
     }
-  }
+  },
+  "nav_switchToLightMode": "ライトに切替",
+  "nav_switchToDarkMode": "ダークに切替",
+  "settings_themeMode": "テーマモード",
+  "settings_themeModeLight": "ライト",
+  "settings_themeModeDark": "ダーク",
+  "settings_themeModeSystem": "システム",
+  "settings_lightTheme": "ライトテーマ",
+  "settings_darkTheme": "ダークテーマ",
+  "settings_selectLightTheme": "ライトテーマを選択",
+  "settings_selectDarkTheme": "ダークテーマを選択"
 }

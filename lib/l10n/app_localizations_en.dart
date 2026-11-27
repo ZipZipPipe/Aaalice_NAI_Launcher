@@ -137,6 +137,10 @@ class AppLocalizationsEn extends AppLocalizations {
   String get common_error => 'Error';
 
   @override
+  String get common_secureStorageUnavailable =>
+      'Secure storage is temporarily unavailable. Antivirus or sync software may be using it; please try again shortly.';
+
+  @override
   String get promptAssistant_completed => 'Prompt assistant finished';
 
   @override
@@ -505,12 +509,31 @@ class AppLocalizationsEn extends AppLocalizations {
   String get auth_selectAccount => 'Select Account';
 
   @override
-  String get auth_deleteAccount => 'Delete Account';
+  String get auth_manageAccounts => 'Manage Accounts';
 
   @override
-  String auth_deleteAccountConfirm(Object name) {
-    return 'Are you sure you want to delete \"$name\"? This cannot be undone.';
+  String get auth_removeSavedAccount => 'Remove Account';
+
+  @override
+  String get auth_removeSavedAccountAction => 'Remove';
+
+  @override
+  String auth_removeSavedAccountConfirm(Object name) {
+    return 'The saved login credentials and avatar for \"$name\" will be removed from this device. Your NovelAI account is not affected, and you can log in again later.';
   }
+
+  @override
+  String get auth_removeSessionAccountNotice =>
+      'You are currently logged in with this account. You will be logged out first.';
+
+  @override
+  String auth_removeSavedAccountSuccess(Object name) {
+    return 'Removed \"$name\"';
+  }
+
+  @override
+  String get auth_removeSavedAccountFailed =>
+      'Couldn\'t remove the account. Please try again.';
 
   @override
   String get auth_removeAvatar => 'Remove Avatar';
@@ -626,9 +649,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settings_appearance => 'Appearance';
 
   @override
-  String get settings_style => 'Style';
-
-  @override
   String get settings_font => 'Font';
 
   @override
@@ -741,9 +761,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settings_comfyUiDesktopOnly => 'Available on desktop only';
 
   @override
-  String get settings_selectStyle => 'Select Style';
-
-  @override
   String get settings_defaultPreset => 'Default';
 
   @override
@@ -766,6 +783,262 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get settings_autoSaveSubtitle =>
       'Automatically save images after generation';
+
+  @override
+  String get settings_syncToSystemGallery => 'Sync to photo gallery';
+
+  @override
+  String get settings_syncToSystemGallerySubtitle =>
+      'When off, images are saved only to the app gallery and won\'t appear in your photo gallery. Images already synced are not affected.';
+
+  @override
+  String get settings_saveNaming => 'Folders & File Names';
+
+  @override
+  String settings_saveNamingSubtitle(Object example) {
+    return 'Example: $example';
+  }
+
+  @override
+  String get settings_saveNamingFolderSection => 'Subfolder';
+
+  @override
+  String get settings_saveNamingFileNameSection => 'File Name';
+
+  @override
+  String get settings_saveNamingFolderByDate => 'By date';
+
+  @override
+  String get settings_saveNamingFolderByMonth => 'By month';
+
+  @override
+  String get settings_saveNamingFolderByYearMonth => 'By year, then month';
+
+  @override
+  String get settings_saveNamingFolderNone => 'No subfolder';
+
+  @override
+  String get settings_saveNamingFolderNoneExample =>
+      'Saved directly in the image save location';
+
+  @override
+  String get settings_saveNamingFileTimeSeed => 'Time + seed';
+
+  @override
+  String get settings_saveNamingFileDateTimeSeed => 'Date and time + seed';
+
+  @override
+  String get settings_saveNamingFilePromptSeed => 'Prompt + seed';
+
+  @override
+  String get settings_saveNamingCustom => 'Custom';
+
+  @override
+  String get settings_saveNamingFolderTemplate => 'Subfolder template';
+
+  @override
+  String get settings_saveNamingFolderTemplateHelper =>
+      'Separate nested folders with /. Leave empty to save without a subfolder.';
+
+  @override
+  String get settings_saveNamingFileNameTemplate => 'File name template';
+
+  @override
+  String get settings_saveNamingFileNameTemplateHelper =>
+      'The .png extension is added automatically.';
+
+  @override
+  String get settings_saveNamingFileNameEmpty =>
+      'File name template can\'t be empty';
+
+  @override
+  String get settings_saveNamingInsertField => 'Insert field';
+
+  @override
+  String get settings_saveNamingPreview => 'Preview';
+
+  @override
+  String get settings_saveNamingPreviewLatest =>
+      'Based on your latest generated image';
+
+  @override
+  String get settings_saveNamingPreviewSample => 'Based on sample data';
+
+  @override
+  String get settings_saveNamingOmitsDateHint =>
+      'The path has no date, so images from different days end up together. Add a date to the subfolder or file name if you need to tell days apart.';
+
+  @override
+  String get settings_saveNamingAppliesToNewHint =>
+      'Applies to images saved from now on. Existing files are not renamed or moved.';
+
+  @override
+  String get settings_saveNamingRestoreDefaults => 'Restore defaults';
+
+  @override
+  String get settings_saveNamingSyntaxHelp => 'Template syntax';
+
+  @override
+  String get settings_saveNamingSyntaxIntro =>
+      'Insert image details with fields. Filters run from left to right; when a field is empty, its pre and suf are skipped too. Type two opening braces for a literal one.';
+
+  @override
+  String get settings_saveNamingSyntaxFields => 'Fields';
+
+  @override
+  String get settings_saveNamingSyntaxFilters => 'Filters';
+
+  @override
+  String get settings_saveNamingSyntaxCharacterFilters =>
+      'Character filters (characters only, before other filters)';
+
+  @override
+  String get settings_saveNamingSyntaxExamples => 'Examples';
+
+  @override
+  String get settings_saveNamingFieldPrompt =>
+      'Prompt (first 80 characters unless a length filter is used)';
+
+  @override
+  String get settings_saveNamingFieldSeed => 'Seed';
+
+  @override
+  String get settings_saveNamingFieldDate => 'Generation date, e.g. 2026-10-12';
+
+  @override
+  String get settings_saveNamingFieldTime => 'Generation time, e.g. 14-30-05';
+
+  @override
+  String get settings_saveNamingFieldYear => 'Year, e.g. 2026';
+
+  @override
+  String get settings_saveNamingFieldMonth => 'Month, e.g. 10';
+
+  @override
+  String get settings_saveNamingFieldDay => 'Day, e.g. 12';
+
+  @override
+  String get settings_saveNamingFieldModel => 'Model ID';
+
+  @override
+  String get settings_saveNamingFieldModelName => 'Model name';
+
+  @override
+  String get settings_saveNamingFieldResolution => 'Resolution, e.g. 832x1216';
+
+  @override
+  String get settings_saveNamingFieldWidth => 'Width';
+
+  @override
+  String get settings_saveNamingFieldHeight => 'Height';
+
+  @override
+  String get settings_saveNamingFieldIndex =>
+      'Position within one save, starting at 1';
+
+  @override
+  String get settings_saveNamingFieldId => 'Image ID';
+
+  @override
+  String get settings_saveNamingFieldType =>
+      'Generation method: inpaint, image2image or vibe-transfer; empty for text-to-image';
+
+  @override
+  String get settings_saveNamingFieldCharacters =>
+      'Character names, first 3 joined with +';
+
+  @override
+  String get settings_saveNamingFilterFirst => 'Keep the first N characters';
+
+  @override
+  String get settings_saveNamingFilterLast => 'Keep the last N characters';
+
+  @override
+  String get settings_saveNamingFilterWords =>
+      'Keep the first N words; a negative number keeps the last ones';
+
+  @override
+  String get settings_saveNamingFilterTags =>
+      'Keep the first N comma-separated tags; a negative number keeps the last ones';
+
+  @override
+  String get settings_saveNamingFilterPre => 'Add X before a non-empty value';
+
+  @override
+  String get settings_saveNamingFilterSuf => 'Add X after a non-empty value';
+
+  @override
+  String get settings_saveNamingFilterPad =>
+      'Pad numbers with leading zeros to N digits';
+
+  @override
+  String get settings_saveNamingFilterLower => 'Lowercase';
+
+  @override
+  String get settings_saveNamingFilterUpper => 'Uppercase';
+
+  @override
+  String get settings_saveNamingFilterMax =>
+      'Use up to N characters (default 3)';
+
+  @override
+  String get settings_saveNamingFilterAt => 'Use only character N';
+
+  @override
+  String get settings_saveNamingFilterEach =>
+      'Keep the first N characters of each name';
+
+  @override
+  String get settings_saveNamingFilterJoin => 'Join names with X (default +)';
+
+  @override
+  String get settings_saveNamingFilterFull =>
+      'Use full character prompts instead of names';
+
+  @override
+  String settings_saveNamingErrorUnclosedBrace(int position) {
+    return 'Unclosed opening brace at character $position';
+  }
+
+  @override
+  String settings_saveNamingErrorUnknownField(Object name) {
+    return 'Unknown field \"$name\"';
+  }
+
+  @override
+  String settings_saveNamingErrorUnknownFilter(Object name) {
+    return 'Unknown filter \"$name\"';
+  }
+
+  @override
+  String settings_saveNamingErrorFilterOnlyForCharacters(Object name) {
+    return 'Filter \"$name\" only works with characters';
+  }
+
+  @override
+  String settings_saveNamingErrorCharacterFilterOrder(Object name) {
+    return 'Filter \"$name\" must come before filters like first or pre';
+  }
+
+  @override
+  String settings_saveNamingErrorFilterTakesNoValue(Object name) {
+    return 'Filter \"$name\" doesn\'t take a value';
+  }
+
+  @override
+  String settings_saveNamingErrorFilterNeedsValue(Object name) {
+    return 'Filter \"$name\" needs a value, e.g. $name:-';
+  }
+
+  @override
+  String settings_saveNamingErrorFilterNeedsPositiveNumber(Object name) {
+    return 'Filter \"$name\" needs a positive whole number';
+  }
+
+  @override
+  String settings_saveNamingErrorFilterNeedsNonZeroNumber(Object name) {
+    return 'Filter \"$name\" needs a non-zero whole number';
+  }
 
   @override
   String get settings_about => 'About';
@@ -973,6 +1246,18 @@ class AppLocalizationsEn extends AppLocalizations {
   String get agentChat_tab => 'Chat';
 
   @override
+  String get agentChat_popOutFloating => 'Pop out as floating window';
+
+  @override
+  String get agentChat_dockToSidePanel => 'Dock to side panel';
+
+  @override
+  String get agentChat_hideFloating => 'Hide floating window';
+
+  @override
+  String get agentChat_resizeDockSplit => 'Resize chat and history';
+
+  @override
   String get nav_agent => 'Agent';
 
   @override
@@ -1051,6 +1336,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String agentChat_unsupportedImageFormat(Object fileName) {
     return 'Unsupported image format: $fileName';
   }
+
+  @override
+  String get agentChat_dropHint => 'Drop to add to the chat';
 
   @override
   String get agentChat_newChat => 'New chat';
@@ -1295,6 +1583,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get agentChat_toolSubmitGeneration => 'Submit generation';
 
   @override
+  String get agentChat_toolUpscaleImage => 'Upscale image';
+
+  @override
   String get agentChat_toolCreateInpaint => 'Create manual inpaint draft';
 
   @override
@@ -1347,6 +1638,11 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String agentChat_approvalFileTarget(String path) {
+    return 'Will write file: $path';
+  }
+
+  @override
   String get agentChat_needSetup =>
       'No chat model configured. Add a provider with tool-calling support in Settings first.';
 
@@ -1393,6 +1689,25 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get agentChat_errorDetails => 'Error details';
+
+  @override
+  String agentChat_autoRetryCountdown(
+    int attempt,
+    int maxAttempts,
+    int seconds,
+  ) {
+    return 'Retrying ($attempt/$maxAttempts) in ${seconds}s';
+  }
+
+  @override
+  String agentChat_autoRetryStarting(int attempt, int maxAttempts) {
+    return 'Retrying ($attempt/$maxAttempts)…';
+  }
+
+  @override
+  String agentChat_autoRetryExhausted(int count) {
+    return 'Automatic retries: $count';
+  }
 
   @override
   String get agentChat_modelLabel => 'Model';
@@ -1452,7 +1767,14 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get agentChat_permissionFullDescription =>
-      'Run without prompts and allow files outside the workspace';
+      'Ask only to delete saved data or spend Anlas; allow outside files';
+
+  @override
+  String get agentChat_permissionAutopilot => 'Autopilot';
+
+  @override
+  String get agentChat_permissionAutopilotDescription =>
+      'Spend Anlas without asking; ask only to delete saved data or at the high-cost threshold';
 
   @override
   String agentChat_approvalTitle(Object toolName) {
@@ -1468,6 +1790,19 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get agentChat_approvalDeny => 'Deny';
+
+  @override
+  String mcpApproval_title(Object client) {
+    return 'External agent $client is requesting approval';
+  }
+
+  @override
+  String mcpApproval_expiresIn(Object seconds) {
+    return 'Auto-declines in ${seconds}s';
+  }
+
+  @override
+  String get mcpApproval_unknownClient => 'Unknown client';
 
   @override
   String get generation_failedStreamSnapshot => 'Failed snapshot';
@@ -1487,7 +1822,67 @@ class AppLocalizationsEn extends AppLocalizations {
       'Are you sure you want to clear all history records? This action cannot be undone.';
 
   @override
+  String get generation_deleteImageConfirm =>
+      'Delete this image from history? This action cannot be undone.';
+
+  @override
+  String generation_deleteImageWithFileConfirm(Object fileName) {
+    return 'Delete this image from history and permanently delete the file \"$fileName\" from the local gallery? This action cannot be undone.';
+  }
+
+  @override
+  String generation_deleteImagesConfirm(Object count) {
+    return 'Delete the $count selected images from history? This action cannot be undone.';
+  }
+
+  @override
+  String generation_deleteImagesWithFilesConfirm(
+    Object count,
+    Object fileCount,
+  ) {
+    return 'Delete the $count selected images from history and permanently delete $fileCount of their files saved in the local gallery? This action cannot be undone.';
+  }
+
+  @override
+  String get generation_deleteConfirmSkipForSession =>
+      'Don\'t ask again until the app restarts';
+
+  @override
+  String generation_deleteImageFilesFailed(Object count, Object error) {
+    return 'Removed from history, but $count local files could not be deleted: $error';
+  }
+
+  @override
   String get generation_model => 'Model';
+
+  @override
+  String get generation_modelMode => 'Mode';
+
+  @override
+  String get generation_modelModeAnime => 'Anime';
+
+  @override
+  String get generation_modelModeFurry => 'Furry';
+
+  @override
+  String get generation_effort => 'Effort';
+
+  @override
+  String get generation_effortMedium => 'Medium';
+
+  @override
+  String get generation_effortHigh => 'High';
+
+  @override
+  String get generation_effortUnavailableHint => 'Not used on Medium effort';
+
+  @override
+  String get generation_effortNegativeLocked => 'Not sent on Medium';
+
+  @override
+  String generation_effortNegativeLockedHint(Object ucPreset) {
+    return 'Medium effort does not send Undesired Content and only uses the \"$ucPreset\" Undesired Content Preset. Your text is kept and applies again on High effort';
+  }
 
   @override
   String generation_opusUsageRemaining(Object percent) {
@@ -1500,12 +1895,35 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String get generation_opusUsageRefill =>
-      'The allowance refills automatically over time';
+  String generation_opusUsageRefillRate(Object percent, Object count) {
+    return 'Currently refills at $percent% per day (~$count images)';
+  }
+
+  @override
+  String get generation_opusUsageRefillPaused =>
+      'Recovery is paused above 100%';
 
   @override
   String get generation_opusUsageExhausted =>
       'Your Opus allowance is used up. V5 generations will cost Anlas until it refills.';
+
+  @override
+  String get generation_opusUsagePoolsTitle => 'Opus Generations remaining';
+
+  @override
+  String generation_opusUsageRegularPool(Object percent) {
+    return 'Regular: $percent%';
+  }
+
+  @override
+  String generation_opusUsageExtraPool(Object percent) {
+    return 'Extra Usage: +$percent% (does not refill)';
+  }
+
+  @override
+  String generation_opusUsageCombinedEstimate(Object count) {
+    return 'About $count images left across both';
+  }
 
   @override
   String get generation_imageSize => 'Image Size';
@@ -1527,9 +1945,15 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String get generation_stepsLabel => 'Steps';
+
+  @override
   String generation_cfgScale(Object scale) {
     return 'CFG Scale: $scale';
   }
+
+  @override
+  String get generation_cfgScaleLabel => 'CFG Scale';
 
   @override
   String get generation_seed => 'Seed';
@@ -1615,6 +2039,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String generation_cfgRescale(Object value) {
     return 'CFG Rescale: $value';
   }
+
+  @override
+  String get generation_cfgRescaleLabel => 'CFG Rescale';
 
   @override
   String get generation_noiseSchedule => 'Noise Schedule';
@@ -1768,7 +2195,14 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get prompt_autoFormatSubtitle =>
-      'Convert Chinese commas and tag spaces while preserving line breaks';
+      'Normalize commas and tag spacing by your preference; keeps line breaks and quoted text';
+
+  @override
+  String get prompt_replaceUnderscores => 'Use Spaces Instead of Underscores';
+
+  @override
+  String get prompt_replaceUnderscoresSubtitle =>
+      'Shared by autocomplete and auto format; kaomoji keep their underscores';
 
   @override
   String get prompt_highlightEmphasis => 'Highlight Emphasis';
@@ -1785,11 +2219,25 @@ class AppLocalizationsEn extends AppLocalizations {
       'Convert SD weight syntax to NAI format on blur';
 
   @override
+  String get prompt_separateNumericWeightClosing => 'Space After Numeric Tags';
+
+  @override
+  String get prompt_separateNumericWeightClosingSubtitle =>
+      'Add a space before :: so year_2025:: is not read as a new weight';
+
+  @override
   String get prompt_resolveAliasOnCopy => 'Expand Library On Copy';
 
   @override
   String get prompt_resolveAliasOnCopySubtitle =>
       'Replace <library name> with its content when copying or cutting';
+
+  @override
+  String get prompt_detectMultiCharacterOnPaste => 'Detect Characters On Paste';
+
+  @override
+  String get prompt_detectMultiCharacterOnPasteSubtitle =>
+      'Offer to import characters when pasting | or COUPLE multi-character syntax';
 
   @override
   String get prompt_cooccurrenceRecommendation =>
@@ -1893,6 +2341,9 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get prompt_formatted => 'Formatted';
+
+  @override
+  String get prompt_numericWeightClosingSeparated => 'Weight closings spaced';
 
   @override
   String get image_save => 'Save';
@@ -2015,7 +2466,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get img2img_directorPromptHint =>
-      'Add guidance when needed, such as target emotion or color direction';
+      'Optional. Describe the effect you want';
 
   @override
   String img2img_directorRun(Object tool) {
@@ -2042,8 +2493,50 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String img2img_directorResultSaveFailed(Object tool) {
+    return '$tool completed, but the result could not be saved';
+  }
+
+  @override
+  String img2img_directorResultSelectedSaveFailed(
+    Object tool,
+    int failed,
+    int total,
+  ) {
+    return '$tool completed, but the selected result could not be saved ($failed of $total failed)';
+  }
+
+  @override
+  String img2img_directorResultPartiallySaved(
+    Object tool,
+    int failed,
+    int total,
+  ) {
+    return '$tool completed, but $failed of $total results could not be saved';
+  }
+
+  @override
   String get img2img_directorApplied =>
       'Applied the Director Tool result as the new source image';
+
+  @override
+  String get img2img_directorResultMasked => 'Masked';
+
+  @override
+  String get img2img_directorResultGenerated => 'Generated';
+
+  @override
+  String get img2img_directorResultBlend => 'Blend';
+
+  @override
+  String img2img_directorResultNumbered(int index) {
+    return 'Result $index';
+  }
+
+  @override
+  String img2img_directorResultWithVariant(String result, String variant) {
+    return '$result · $variant';
+  }
 
   @override
   String get img2img_directorDefry => 'Defry';
@@ -2057,10 +2550,82 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get img2img_directorEmotionLevelHint =>
-      'How strongly the emotion is applied (0 = subtle, 5 = strong)';
+      'Higher values make the emotion weaker (0 = normal, 5 = weakest)';
 
   @override
-  String get img2img_directorEmotionPresets => 'Presets';
+  String get img2img_directorEmotionMood => 'Emotion';
+
+  @override
+  String get img2img_directorEmotionNeutral => 'Neutral';
+
+  @override
+  String get img2img_directorEmotionHappy => 'Happy';
+
+  @override
+  String get img2img_directorEmotionSad => 'Sad';
+
+  @override
+  String get img2img_directorEmotionAngry => 'Angry';
+
+  @override
+  String get img2img_directorEmotionScared => 'Scared';
+
+  @override
+  String get img2img_directorEmotionSurprised => 'Surprised';
+
+  @override
+  String get img2img_directorEmotionTired => 'Tired';
+
+  @override
+  String get img2img_directorEmotionExcited => 'Excited';
+
+  @override
+  String get img2img_directorEmotionNervous => 'Nervous';
+
+  @override
+  String get img2img_directorEmotionThinking => 'Thinking';
+
+  @override
+  String get img2img_directorEmotionConfused => 'Confused';
+
+  @override
+  String get img2img_directorEmotionShy => 'Shy';
+
+  @override
+  String get img2img_directorEmotionDisgusted => 'Disgusted';
+
+  @override
+  String get img2img_directorEmotionSmug => 'Smug';
+
+  @override
+  String get img2img_directorEmotionBored => 'Bored';
+
+  @override
+  String get img2img_directorEmotionLaughing => 'Laughing';
+
+  @override
+  String get img2img_directorEmotionIrritated => 'Irritated';
+
+  @override
+  String get img2img_directorEmotionAroused => 'Aroused';
+
+  @override
+  String get img2img_directorEmotionEmbarrassed => 'Embarrassed';
+
+  @override
+  String get img2img_directorEmotionWorried => 'Worried';
+
+  @override
+  String get img2img_directorEmotionLove => 'Love';
+
+  @override
+  String get img2img_directorEmotionDetermined => 'Determined';
+
+  @override
+  String get img2img_directorEmotionHurt => 'Hurt';
+
+  @override
+  String get img2img_directorEmotionPlayful => 'Playful';
 
   @override
   String get img2img_directorApplyAsSource => 'Use as Source';
@@ -2088,6 +2653,88 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get img2img_directorDeclutter => 'Declutter';
+
+  @override
+  String get img2img_directorPixelSnap => 'Pixel Snap';
+
+  @override
+  String get img2img_directorPixelSnapHint =>
+      'Runs entirely on your computer. No Anlas, no network. Large images can take a few seconds.';
+
+  @override
+  String get img2img_directorPixelSnapPalette => 'Palettize';
+
+  @override
+  String get img2img_directorPixelSnapPaletteOff => 'Off';
+
+  @override
+  String get img2img_directorPixelSnapPaletteAuto => 'Auto';
+
+  @override
+  String get img2img_directorPixelSnapPaletteCustom => 'Custom';
+
+  @override
+  String get img2img_directorPixelSnapColors => 'Colors';
+
+  @override
+  String get img2img_directorPixelSnapAvoidOverRefining =>
+      'Avoid Over-Refining';
+
+  @override
+  String get img2img_directorPixelSnapAvoidOverRefiningOn =>
+      'The detected pixel size is always kept.';
+
+  @override
+  String get img2img_directorPixelSnapAvoidOverRefiningOff =>
+      'A finer pixel size may be used when it matches the image better.';
+
+  @override
+  String get img2img_directorPixelSnapUpscale => 'Upscale';
+
+  @override
+  String get img2img_directorPixelSnapUpscaleOn =>
+      'The result is scaled back up to roughly the input size.';
+
+  @override
+  String get img2img_directorPixelSnapUpscaleOff =>
+      'The result is kept at its snapped pixel size.';
+
+  @override
+  String img2img_directorPixelSnapSummary(int width, int height, int colors) {
+    return '$width×$height pixels · $colors colors';
+  }
+
+  @override
+  String img2img_directorPixelSnapSummaryNoPalette(int width, int height) {
+    return '$width×$height pixels';
+  }
+
+  @override
+  String get img2img_directorPixelSnapNoGrid =>
+      'No repeating pixel grid was found in this image.';
+
+  @override
+  String get img2img_directorPixelSnapBlank =>
+      'This image is fully transparent.';
+
+  @override
+  String get img2img_directorPixelSnapDownscaled =>
+      'The image was downscaled before analysis because it exceeds the size limit.';
+
+  @override
+  String get img2img_directorCancel => 'Cancel';
+
+  @override
+  String get img2img_directorStageAnalyzing => 'Analyzing image';
+
+  @override
+  String get img2img_directorStageSearchingPitch => 'Searching pixel size';
+
+  @override
+  String get img2img_directorStageRefiningGrid => 'Refining grid';
+
+  @override
+  String get img2img_directorStageFinishing => 'Building result';
 
   @override
   String get img2img_enhance => 'Enhance';
@@ -2282,7 +2929,24 @@ class AppLocalizationsEn extends AppLocalizations {
   String get editor_intensity => 'Intensity';
 
   @override
-  String get editor_sourcePoint => 'Alt+Click to set source point';
+  String get editor_cloneStampSetSource => 'Set Source';
+
+  @override
+  String get editor_cloneStampSetSourceTooltip =>
+      'When on, the next point you pick on the canvas becomes the source. Alt+click on the canvas also sets it.';
+
+  @override
+  String get editor_cloneStampPickingHint =>
+      'Pick a point on the canvas to clone from.';
+
+  @override
+  String get editor_cloneStampNoSourceHint =>
+      'No source point yet. Turn on Set Source, then pick a point on the canvas.';
+
+  @override
+  String editor_cloneStampSourceReadout(int x, int y) {
+    return 'Source point: X $x, Y $y';
+  }
 
   @override
   String get editor_brushPresets => 'Brush Presets';
@@ -2330,10 +2994,10 @@ class AppLocalizationsEn extends AppLocalizations {
   String get editor_magicWandMode => 'Selection method';
 
   @override
-  String get editor_magicWandSmartObject => 'Smart object (EfficientViT)';
+  String get editor_magicWandSmartObject => 'Smart object';
 
   @override
-  String get editor_magicWandColorArea => 'Color area (flood fill)';
+  String get editor_magicWandColorArea => 'Color area';
 
   @override
   String get editor_magicWandSmartHelp =>
@@ -2401,6 +3065,15 @@ class AppLocalizationsEn extends AppLocalizations {
   String get editor_fitToWindow => 'Fit to Window';
 
   @override
+  String get editor_viewOptions => 'View Options';
+
+  @override
+  String get editor_menuGroupView => 'View';
+
+  @override
+  String get editor_menuGroupCanvas => 'Canvas';
+
+  @override
   String get editor_tempColorPickerShortcut =>
       'Alt+Click: temporary color picker';
 
@@ -2433,6 +3106,9 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get editor_shortcutTemporaryColorPicker => 'Temporary Color Picker';
+
+  @override
+  String get editor_shortcutCloneStampSource => 'Set Clone Stamp Source';
 
   @override
   String get editor_shortcutRectSelection => 'Rectangle Selection';
@@ -2576,6 +3252,10 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get editor_effectCropToSelection => 'Crop to Selection';
+
+  @override
+  String get editor_cropNeedsSelection =>
+      'Make a selection first; only the pixels inside its bounding box are kept, in place.';
 
   @override
   String get editor_effectRotateLeft => 'Rotate Left 90°';
@@ -2872,6 +3552,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String editor_focusMinimumContextArea(Object value) {
     return 'Minimum Context Area: $value';
   }
+
+  @override
+  String get editor_focusMinimumContextAreaLabel => 'Minimum Context Area';
 
   @override
   String get editor_canvasSizeTitle => 'Canvas Size';
@@ -3193,13 +3876,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get gallery_upscale => 'Upscale';
-
-  @override
-  String get gallery_sentToImg2Img => 'Image sent to Image2Image';
-
-  @override
-  String get gallery_sentToReversePrompt =>
-      'Image sent to reverse-prompt module';
 
   @override
   String gallery_sendFailed(Object error) {
@@ -3580,6 +4256,14 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get onlineGallery_tagContextMenuTooltip =>
       'Right-click to add to the blacklist or output filter';
+
+  @override
+  String get onlineGallery_outputFilteredTagTooltipTouch =>
+      'Removed when copying, sending, or adding to queue; long-press to manage';
+
+  @override
+  String get onlineGallery_tagContextMenuTooltipTouch =>
+      'Long-press to add to the blacklist or output filter';
 
   @override
   String onlineGallery_outputFilterTagAdded(Object tag) {
@@ -4126,19 +4810,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get tooltip_increaseWeight => 'Increase Weight [+5%]';
 
   @override
-  String get tooltip_edit => 'Edit';
-
-  @override
   String get tooltip_copy => 'Copy';
-
-  @override
-  String get tooltip_delete => 'Delete';
-
-  @override
-  String get tooltip_enable => 'Enable';
-
-  @override
-  String get tooltip_disable => 'Disable';
 
   @override
   String get tooltip_resetWeight => 'Click to reset to 100%';
@@ -4244,33 +4916,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get weight_title => 'Weight';
-
-  @override
-  String get weight_reset => 'Reset';
-
-  @override
-  String get weight_done => 'Done';
-
-  @override
-  String get weight_noBrackets => 'No brackets';
-
-  @override
-  String get weight_editTag => 'Edit Tag';
-
-  @override
-  String get weight_tagName => 'Tag Name';
-
-  @override
-  String get weight_tagNameHint => 'Enter tag name...';
-
-  @override
-  String get tag_enable => 'Enable';
-
-  @override
-  String get tag_disable => 'Disable';
-
-  @override
-  String get tag_delete => 'Delete';
 
   @override
   String get tag_addTag => 'Add Tag';
@@ -4597,6 +5242,23 @@ class AppLocalizationsEn extends AppLocalizations {
     int suggestedHeight,
   ) {
     return '$width×$height cannot be used for generation. Both dimensions must be multiples of 64, neither side can exceed 4096, and the total pixel count cannot exceed 3,145,728. The nearest valid size is $suggestedWidth×$suggestedHeight.';
+  }
+
+  @override
+  String get generation_invalidInpaintFrameHint =>
+      'Keep the frame inside the image and paint a mask large enough to remain visible inside the frame at the output size.';
+
+  @override
+  String get generation_unreadableInpaintImageHint =>
+      'The source image or mask could not be read. Reload the image or mask and try again.';
+
+  @override
+  String get generation_emptyInpaintMask =>
+      'Inpaint mask is empty after sampling';
+
+  @override
+  String generation_emptyInpaintMaskHint(int gridSize) {
+    return 'The mask is too thin or too small: nothing is left to repaint after sampling it on the $gridSize-pixel grid. Make the mask thicker or larger and try again.';
   }
 
   @override
@@ -5077,6 +5739,25 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String randomManager_branchOutputBadge(String name) {
+    return 'Output by a branch of “$name”';
+  }
+
+  @override
+  String randomManager_branchOutputBadgeMultiple(String name, int count) {
+    return 'Output by $count branches, including “$name”';
+  }
+
+  @override
+  String get randomManager_branchOutputTooltip =>
+      'This group is not drawn on its own; it is output only when a branch that references it is chosen. It returns to normal drawing once those branches are disabled or deleted. Tap to open the branch.';
+
+  @override
+  String randomManager_deleteBranchTargetWarning(String names) {
+    return 'Branches of “$names” reference this group. After deletion, that entry in those branches will show as unavailable.';
+  }
+
+  @override
   String randomManager_tagGroupCount(Object count) {
     return '$count tag groups';
   }
@@ -5085,16 +5766,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get randomManager_categories => 'Categories';
 
   @override
-  String get randomManager_tagGroups => 'Tag Groups';
-
-  @override
-  String get randomManager_tags => 'Tags';
-
-  @override
   String get randomManager_addTagGroup => 'Add Tag Group';
-
-  @override
-  String get randomManager_locked => 'Locked';
 
   @override
   String get randomManager_addCategory => 'Add Category';
@@ -5419,25 +6091,10 @@ class AppLocalizationsEn extends AppLocalizations {
   String get randomManager_moreActions => 'More Actions';
 
   @override
-  String get scope_global => 'Main';
-
-  @override
-  String get scope_globalTooltip =>
-      'Prompt will appear in main prompt area\nSuitable for: background, scene, style, etc.';
-
-  @override
   String get scope_character => 'Char';
 
   @override
-  String get scope_characterTooltip =>
-      'Prompt will only appear in character prompts\nGenerated separately for each character\nSuitable for: hair color, eye color, clothing, expression, etc.';
-
-  @override
   String get scope_all => 'Both';
-
-  @override
-  String get scope_allTooltip =>
-      'Prompt appears in both main and character prompts\nSuitable for: pose, interaction, and other universal tags';
 
   @override
   String get vibeParseFailed => 'Failed to parse Vibe file';
@@ -5461,6 +6118,9 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get localGallery_emptyTitle => 'No local images';
+
+  @override
+  String get localGallery_emptyScopeTitle => 'No images here yet';
 
   @override
   String get localGallery_emptySubtitle =>
@@ -5567,6 +6227,19 @@ class AppLocalizationsEn extends AppLocalizations {
   String get localGallery_imageDeleted => 'Image deleted';
 
   @override
+  String localGallery_deleteCleanupFailed(Object error) {
+    return 'The image files are gone. Cleanup of their gallery records failed. $error';
+  }
+
+  @override
+  String get localGallery_deleteRegistryCleanupFailed =>
+      'The derivative records could not be cleared.';
+
+  @override
+  String get localGallery_deleteIndexCleanupFailed =>
+      'The gallery records could not be updated.';
+
+  @override
   String localGallery_deleteFailed(Object error) {
     return 'Delete failed: $error';
   }
@@ -5599,9 +6272,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get localGallery_imageMovedToCategory => 'Image moved to category';
-
-  @override
-  String get localGallery_categoriesSynced => 'Categories synced with folders';
 
   @override
   String get localGallery_saveDirectoryNotSet => 'Save directory is not set';
@@ -5852,9 +6522,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get statistics_noData => 'No statistics available';
 
   @override
-  String get statistics_noTagData => 'No tag data';
-
-  @override
   String get statistics_generateFirst => 'Generate some images first';
 
   @override
@@ -5867,7 +6534,10 @@ class AppLocalizationsEn extends AppLocalizations {
   String get statistics_favorites => 'Favorites';
 
   @override
-  String get statistics_samplerDistribution => 'Sampler Distribution';
+  String get statistics_parameterDistribution => 'Parameter Distribution';
+
+  @override
+  String get statistics_parameterOther => 'Other';
 
   @override
   String get statistics_additionalStats => 'Additional Statistics';
@@ -6315,26 +6985,7 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String get collectionSelect_dialogTitle => 'Select Collection';
-
-  @override
   String get collectionSelect_filterHint => 'Search collections...';
-
-  @override
-  String get collectionSelect_noCollections => 'No collections';
-
-  @override
-  String get collectionSelect_createCollectionHint =>
-      'Create a collection first';
-
-  @override
-  String get collectionSelect_noFilterResults =>
-      'No matching collections found';
-
-  @override
-  String collectionSelect_imageCount(int count) {
-    return '$count images';
-  }
 
   @override
   String get statistics_chartTopTags => 'Top Tags';
@@ -6732,8 +7383,11 @@ class AppLocalizationsEn extends AppLocalizations {
   String get reversePrompt_characterThreshold => 'Character tag threshold';
 
   @override
-  String get reversePrompt_taggerFilterHint =>
-      'Only General / Character tags are output. Rating, Artist, Copyright, Meta, and other categories are filtered.';
+  String get reversePrompt_taggerCategories => 'Output categories';
+
+  @override
+  String get reversePrompt_keepOneTaggerCategory =>
+      'Keep at least one output category selected';
 
   @override
   String get reversePrompt_replacementEmptyHint =>
@@ -7022,20 +7676,219 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get promptAssistant_noModelsPullFirst =>
-      'No models yet. Pull the model list first';
+      'No models yet. Add some in Model services first';
 
   @override
-  String get promptAssistant_providerManagement => 'Provider Management';
+  String get settings_modelServices => 'Model services';
 
   @override
-  String get promptAssistant_providerManagementSubtitle =>
-      'Supports OpenAI Chat / Responses, Anthropic, Gemini, DeepSeek, LM Studio, Ollama, Pollinations, and custom compatible endpoints';
+  String get modelServices_searchProviders => 'Search providers';
 
   @override
-  String get promptAssistant_apiKeyConfigured => 'API Key: configured';
+  String get modelServices_noProviderMatches => 'No matching providers';
 
   @override
-  String get promptAssistant_apiKeyNotConfigured => 'API Key: not configured';
+  String get modelServices_emptyTitle => 'Add your first provider';
+
+  @override
+  String get modelServices_emptyBody =>
+      'Providers supply the models used by the prompt assistant and Agent.';
+
+  @override
+  String get modelServices_disabled => 'Off';
+
+  @override
+  String get modelServices_enableProvider => 'Enable provider';
+
+  @override
+  String get modelServices_moreActions => 'More actions';
+
+  @override
+  String get modelServices_connection => 'Connection';
+
+  @override
+  String get modelServices_apiKey => 'API key';
+
+  @override
+  String get modelServices_apiKeySavedHint =>
+      'Saved. Enter a new key to replace it.';
+
+  @override
+  String get modelServices_apiKeyOptional => 'Optional for this provider';
+
+  @override
+  String get modelServices_showApiKey => 'Show key';
+
+  @override
+  String get modelServices_hideApiKey => 'Hide key';
+
+  @override
+  String get modelServices_clearApiKey => 'Remove saved key';
+
+  @override
+  String get modelServices_apiKeyCleared => 'API key removed';
+
+  @override
+  String get modelServices_vertexCredential => 'Credential';
+
+  @override
+  String get modelServices_vertexCredentialHint =>
+      'Service account JSON, gcloud ADC JSON or API key';
+
+  @override
+  String modelServices_vertexCredentialInvalid(Object error) {
+    return 'Invalid credential: $error';
+  }
+
+  @override
+  String get modelServices_vertexImportCredential => 'Import from file';
+
+  @override
+  String get modelServices_vertexCredentialImported => 'Credential imported';
+
+  @override
+  String get modelServices_vertexCredentialReadFailed =>
+      'Couldn\'t read the selected file';
+
+  @override
+  String get modelServices_vertexCredentialCleared => 'Credential removed';
+
+  @override
+  String get modelServices_vertexProjectId => 'Project ID';
+
+  @override
+  String get modelServices_vertexProjectIdHint =>
+      'Leave empty to use the project in the credential';
+
+  @override
+  String get modelServices_vertexLocation => 'Location';
+
+  @override
+  String get modelServices_vertexLocationHint => 'global, us-central1, etc.';
+
+  @override
+  String get modelServices_vertexLocationInvalid =>
+      'Use lowercase letters, digits and hyphens only';
+
+  @override
+  String get modelServices_vertexBaseUrlHint =>
+      'Leave empty to choose by location';
+
+  @override
+  String get modelServices_baseUrl => 'API address';
+
+  @override
+  String get modelServices_checkConnection => 'Check connection';
+
+  @override
+  String modelServices_connectionOk(Object count) {
+    return 'Connected. The provider lists $count models.';
+  }
+
+  @override
+  String modelServices_connectionFailed(Object error) {
+    return 'Couldn\'t connect: $error';
+  }
+
+  @override
+  String get modelServices_models => 'Models';
+
+  @override
+  String modelServices_modelCount(Object count) {
+    return '$count models';
+  }
+
+  @override
+  String get modelServices_noModels =>
+      'No models yet. Pick from the provider\'s list or add a model ID.';
+
+  @override
+  String get modelServices_manageModels => 'Manage models';
+
+  @override
+  String get modelServices_addModel => 'Add model';
+
+  @override
+  String modelServices_manageModelsTitle(Object provider) {
+    return '$provider models';
+  }
+
+  @override
+  String modelServices_addGroup(Object group) {
+    return 'Add all $group models';
+  }
+
+  @override
+  String modelServices_removeGroup(Object group) {
+    return 'Remove all $group models';
+  }
+
+  @override
+  String get modelServices_notListed => 'No longer listed';
+
+  @override
+  String get modelServices_reasoning => 'Reasoning';
+
+  @override
+  String get modelServices_vision => 'Vision';
+
+  @override
+  String modelServices_contextWindow(Object size) {
+    return '$size context';
+  }
+
+  @override
+  String get modelServices_modelId => 'Model ID';
+
+  @override
+  String get modelServices_modelIdRequired => 'Enter a model ID';
+
+  @override
+  String get modelServices_modelExists =>
+      'This provider already has this model';
+
+  @override
+  String get modelServices_displayName => 'Display name';
+
+  @override
+  String modelServices_displayNameHint(Object name) {
+    return 'Leave empty to use $name';
+  }
+
+  @override
+  String get modelServices_editModel => 'Edit model';
+
+  @override
+  String get modelServices_removeModel => 'Remove model';
+
+  @override
+  String modelServices_removeModelConfirm(Object name) {
+    return 'Remove $name from this provider?';
+  }
+
+  @override
+  String modelServices_removeModelInUse(Object name, Object usages) {
+    return '$name is used by $usages. Task routing switches to this provider\'s next model, and Agent asks you to pick a model again.';
+  }
+
+  @override
+  String get modelServices_usageSeparator => ', ';
+
+  @override
+  String get modelServices_cleanStaleModels => 'Remove delisted models';
+
+  @override
+  String get modelServices_addAllModels => 'Add all models';
+
+  @override
+  String modelServices_staleModelCount(Object count) {
+    return '$count delisted models';
+  }
+
+  @override
+  String modelServices_addAllConfirm(Object count) {
+    return 'Add $count models to this provider?';
+  }
 
   @override
   String get promptAssistant_supportsImageInput => 'Supports image input';
@@ -7044,28 +7897,14 @@ class AppLocalizationsEn extends AppLocalizations {
   String get promptAssistant_textOnly => 'Text only';
 
   @override
-  String get promptAssistant_connectionConfig => 'Connection Config';
-
-  @override
-  String get promptAssistant_pullModelList => 'Pull model list';
-
-  @override
   String get promptAssistant_editProvider => 'Edit provider';
 
   @override
   String get promptAssistant_deleteProvider => 'Delete provider';
 
   @override
-  String get promptAssistant_pullingModels => 'Pulling model list...';
-
-  @override
   String get promptAssistant_emptyModelList =>
       'Provider returned an empty model list';
-
-  @override
-  String promptAssistant_modelsSynced(Object count) {
-    return 'Synced $count models';
-  }
 
   @override
   String promptAssistant_pullModelsFailed(Object error) {
@@ -7106,24 +7945,8 @@ class AppLocalizationsEn extends AppLocalizations {
       'API Key (leave empty to keep unchanged)';
 
   @override
-  String promptAssistant_connectionTitle(Object name) {
-    return '$name Connection Config';
-  }
-
-  @override
   String get promptAssistant_baseUrlHint =>
       'Example: https://api.openai.com/v1';
-
-  @override
-  String get promptAssistant_clearCurrentApiKey => 'Clear current API Key';
-
-  @override
-  String get promptAssistant_protocolSupportsImagePayload =>
-      'The current protocol supports image payloads; the model itself must still support vision input';
-
-  @override
-  String get promptAssistant_protocolTextOnlyWarning =>
-      'The current protocol is text-only by default; enabling this may still be rejected by the server';
 
   @override
   String get promptAssistant_addRuleTitle => 'Add Rule';
@@ -7638,8 +8461,8 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String get settings_proxyRestartHint =>
-      'Proxy settings changed, restart recommended';
+  String get settings_proxyAppliedHint =>
+      'Proxy settings applied to new requests';
 
   @override
   String get tagLibrary_categoryNameExists => 'Category name already exists';
@@ -7719,6 +8542,10 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get queue_executionProgress => 'Execution Progress';
+
+  @override
+  String get queue_stoppedStorageWriteFailed =>
+      'The queue stopped because saving it to local storage failed. Check disk space or permissions, then start it again.';
 
   @override
   String get queue_totalTasks => 'Total';
@@ -7853,6 +8680,52 @@ class AppLocalizationsEn extends AppLocalizations {
   String get queue_taskAdded => 'Added to queue';
 
   @override
+  String get queue_imagesUnavailable =>
+      'Queued images can\'t be read right now';
+
+  @override
+  String get queue_imagesUnavailableHint =>
+      'The image files may be in use by another program, such as antivirus software. Try again later';
+
+  @override
+  String queue_enqueueStartedUnsaved(Object count) {
+    return 'Couldn\'t save the queue, but $count task(s) already started running. Don\'t add them again';
+  }
+
+  @override
+  String queue_enqueueStartedAndWithdrawn(Object started, Object withdrawn) {
+    return 'Couldn\'t save the queue: $started task(s) already started, so don\'t add them again; $withdrawn other task(s) were withdrawn before execution';
+  }
+
+  @override
+  String queue_enqueueQueued(Object count) {
+    return '$count task(s) were saved in the queue';
+  }
+
+  @override
+  String queue_enqueueWithdrawn(Object count) {
+    return 'Couldn\'t save the queue; $count task(s) were withdrawn before execution';
+  }
+
+  @override
+  String queue_enqueueRemoved(Object count) {
+    return '$count task(s) were removed before the save finished and are not counted as added';
+  }
+
+  @override
+  String queue_enqueueFailedBeforeSaved(Object count) {
+    return '$count task(s) failed before the save finished and are not counted as successfully added. Check the queue or Failed tab';
+  }
+
+  @override
+  String get queue_enqueueIndexUnsaved =>
+      'The queue index still isn\'t saved. Withdrawn or removed tasks may reappear after a restart. Check the queue before adding tasks again';
+
+  @override
+  String get queue_enqueueUnexpectedError =>
+      'An unexpected enqueue error occurred. Check the queue before trying again';
+
+  @override
   String get queue_negativePromptFromMain =>
       'Undesired Content will use main page settings';
 
@@ -7913,6 +8786,16 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String settings_queueRetryIntervalValue(Object seconds) {
     return '$seconds seconds';
+  }
+
+  @override
+  String settings_decreaseValue(Object field) {
+    return 'Decrease $field';
+  }
+
+  @override
+  String settings_increaseValue(Object field) {
+    return 'Increase $field';
   }
 
   @override
@@ -8133,6 +9016,34 @@ class AppLocalizationsEn extends AppLocalizations {
   String get metadataImport_negativePrompt => 'Undesired Content';
 
   @override
+  String get metadataImport_characterMode => 'Character import mode';
+
+  @override
+  String get metadataImport_characterReplace => 'Replace existing characters';
+
+  @override
+  String get metadataImport_characterAppend => 'Append to the end';
+
+  @override
+  String metadataImport_characterAppendResult(
+    int added,
+    int skipped,
+    int limit,
+  ) {
+    return 'Characters added: $added. Skipped: $skipped. Limit: $limit.';
+  }
+
+  @override
+  String metadataImport_characterModelConflict(int limit) {
+    return 'This model supports up to $limit characters. Choose another model or turn off character import.';
+  }
+
+  @override
+  String metadataImport_characterAppendModelConflict(int count, int limit) {
+    return 'You already have $count characters, exceeding the selected model’s limit of $limit. Uncheck “Model” to append, or choose “Replace existing characters”.';
+  }
+
+  @override
   String metadataImport_characterPromptsCount(int count) {
     return 'Character Prompts ($count)';
   }
@@ -8302,6 +9213,12 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get shortcut_action_next_image => 'Next Image';
+
+  @override
+  String get shortcut_action_first_image => 'First Image';
+
+  @override
+  String get shortcut_action_last_image => 'Last Image';
 
   @override
   String get shortcut_action_zoom_in => 'Zoom In';
@@ -8742,8 +9659,8 @@ class AppLocalizationsEn extends AppLocalizations {
   String get preciseRef_fidelity => 'Fidelity';
 
   @override
-  String get preciseRef_v4Only =>
-      'This feature is only available on V4.5 models';
+  String get preciseRef_supportedModels =>
+      'Precise Reference is available on V4.5 and V5 models';
 
   @override
   String get preciseRef_typeCharacter => 'Character';
@@ -8753,6 +9670,25 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get preciseRef_typeCharacterAndStyle => 'Character + Style';
+
+  @override
+  String get preciseRef_typeOutfit => 'Outfit';
+
+  @override
+  String get preciseRef_preferSameOutfit => 'Prefer the same outfit';
+
+  @override
+  String get preciseRef_outfitUnsupported =>
+      'This model skips outfit references during generation.';
+
+  @override
+  String get preciseRef_inpaintUnsupported =>
+      'This model skips Precise Reference during inpainting.';
+
+  @override
+  String preciseRef_limitExceeded(int max) {
+    return 'Use at most $max precise references. Remove or disable the extras.';
+  }
 
   @override
   String get preciseRef_costHint =>
@@ -9030,85 +9966,6 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String categoryError_reorderFailed(String error) {
     return 'Failed to reorder categories: $error';
-  }
-
-  @override
-  String vibeBulk_errorEntryNotFoundOrDeleteFailed(String item) {
-    return '$item was not found or could not be deleted';
-  }
-
-  @override
-  String vibeBulk_errorDeleteFailed(String item, String error) {
-    return 'Failed to delete $item: $error';
-  }
-
-  @override
-  String vibeBulk_errorEntryNotFound(String item) {
-    return 'Entry not found: $item';
-  }
-
-  @override
-  String vibeBulk_errorMoveFailed(String item, String error) {
-    return 'Failed to move $item: $error';
-  }
-
-  @override
-  String vibeBulk_errorFavoriteFailed(String item) {
-    return 'Failed to update favorite status: $item';
-  }
-
-  @override
-  String vibeBulk_errorFavoriteFailedWithDetails(String item, String error) {
-    return 'Failed to update favorite status for $item: $error';
-  }
-
-  @override
-  String vibeBulk_errorAddTagsFailed(String item) {
-    return 'Failed to add tags: $item';
-  }
-
-  @override
-  String vibeBulk_errorAddTagsFailedWithDetails(String item, String error) {
-    return 'Failed to add tags to $item: $error';
-  }
-
-  @override
-  String vibeBulk_errorRemoveTagsFailed(String item) {
-    return 'Failed to remove tags: $item';
-  }
-
-  @override
-  String vibeBulk_errorRemoveTagsFailedWithDetails(String item, String error) {
-    return 'Failed to remove tags from $item: $error';
-  }
-
-  @override
-  String get vibeBulk_errorExportNoFile =>
-      'Export failed because no file was created';
-
-  @override
-  String vibeBulk_errorExportFailed(String error) {
-    return 'Export failed: $error';
-  }
-
-  @override
-  String vibeBulk_errorFileNotFound(String item) {
-    return 'File not found: $item';
-  }
-
-  @override
-  String vibeBulk_errorNoVibeData(String item) {
-    return 'No valid Vibe data was found in $item';
-  }
-
-  @override
-  String vibeBulk_errorImportFailed(String item, String error) {
-    return 'Failed to import Vibe from $item: $error';
-  }
-
-  @override
-  String vibeBulk_errorProcessFileFailed(String item, String error) {
-    return 'Failed to process $item: $error';
   }
 
   @override
@@ -9630,11 +10487,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get vibe_maxReached => 'Maximum 16 vibes reached';
 
   @override
-  String vibe_addedNamed(String name) {
-    return 'Added Vibe: $name';
-  }
-
-  @override
   String vibe_addedCount(int count) {
     return 'Added $count vibes';
   }
@@ -9838,6 +10690,179 @@ class AppLocalizationsEn extends AppLocalizations {
   String settings_kritaBridgeClient(Object client) {
     return 'Client: $client';
   }
+
+  @override
+  String get settings_mcpServerPermissionSection => 'Permissions';
+
+  @override
+  String get settings_mcpServerClientsSection => 'Clients';
+
+  @override
+  String get settings_mcpServerEnable => 'Enable MCP server';
+
+  @override
+  String get settings_mcpServerDisabledText =>
+      'Off by default; listens only on local 127.0.0.1 when enabled';
+
+  @override
+  String get settings_mcpServerStartingText =>
+      'Starting the local MCP server...';
+
+  @override
+  String get settings_mcpServerListeningText =>
+      'Waiting for MCP client connections';
+
+  @override
+  String get settings_mcpServerErrorText =>
+      'Startup failed, check the error message';
+
+  @override
+  String get settings_mcpServerDisabled => 'Disabled';
+
+  @override
+  String get settings_mcpServerStarting => 'Starting';
+
+  @override
+  String get settings_mcpServerListening => 'Listening';
+
+  @override
+  String get settings_mcpServerError => 'Error';
+
+  @override
+  String get settings_mcpServerEndpoint => 'Endpoint';
+
+  @override
+  String get settings_mcpServerCopyEndpoint => 'Copy endpoint';
+
+  @override
+  String get settings_mcpServerPort => 'Port';
+
+  @override
+  String get settings_mcpServerPortHelper =>
+      'Changing it disconnects connected clients';
+
+  @override
+  String settings_mcpServerPortInvalid(Object min, Object max) {
+    return 'Enter a port between $min and $max';
+  }
+
+  @override
+  String settings_mcpServerPortInUseHint(Object port) {
+    return 'Port $port is already in use, pick another port below';
+  }
+
+  @override
+  String get settings_mcpServerDiscoveryFile => 'Discovery file';
+
+  @override
+  String get settings_mcpServerToken => 'Access token';
+
+  @override
+  String get settings_mcpServerRevealToken => 'Show token';
+
+  @override
+  String get settings_mcpServerHideToken => 'Hide token';
+
+  @override
+  String get settings_mcpServerCopyToken => 'Copy token';
+
+  @override
+  String get settings_mcpServerRegenerateToken => 'Regenerate token';
+
+  @override
+  String get settings_mcpServerRegenerateTokenTitle =>
+      'Regenerate access token';
+
+  @override
+  String get settings_mcpServerRegenerateTokenMessage =>
+      'The current token stops working immediately and connected clients are disconnected. Update every client configuration with the new token.';
+
+  @override
+  String get settings_mcpServerAnlasNotice =>
+      'Anything that may spend Anlas is confirmed separately inside the launcher. In Autopilot, only a single request reaching the Protection Mode high-cost threshold asks first.';
+
+  @override
+  String settings_mcpServerPendingApproval(Object client, Object tool) {
+    return '$client is requesting $tool';
+  }
+
+  @override
+  String get settings_mcpServerPendingApprovalHint =>
+      'Respond in the approval banner at the top of the page';
+
+  @override
+  String get settings_mcpServerConnectedClients => 'Connected clients';
+
+  @override
+  String get settings_mcpServerSessionsEmpty => 'No clients connected yet';
+
+  @override
+  String settings_mcpServerSessionConnectedAt(Object time) {
+    return 'Connected at $time';
+  }
+
+  @override
+  String settings_mcpServerSessionLastActivity(Object time) {
+    return 'Last activity $time';
+  }
+
+  @override
+  String get settings_mcpServerClientConfigs => 'Client configuration';
+
+  @override
+  String get settings_mcpServerConfigUnavailable =>
+      'Client configuration appears once the server is running';
+
+  @override
+  String get settings_mcpServerCopyConfig => 'Copy configuration';
+
+  @override
+  String get settings_mcpServerTokenMaskNotice =>
+      'The token is masked in the preview; copying writes the real token.';
+
+  @override
+  String settings_mcpServerCliMissing(Object path) {
+    return 'Bundled CLI not found (expected at $path), which is normal in development runs';
+  }
+
+  @override
+  String get settings_mcpServerViewDocs => 'View documentation';
+
+  @override
+  String get settings_mcpServerAgentPromptTitle =>
+      'Recommended: let the agent configure itself';
+
+  @override
+  String get settings_mcpServerAgentPromptHint =>
+      'Send this prompt to the agent you want to connect; it reads the setup documentation and installs the configuration itself. The prompt carries no token — the bundled CLI reads it locally.';
+
+  @override
+  String get settings_mcpServerClaudeCodeHint =>
+      'Run this command in a terminal to register the server.';
+
+  @override
+  String get settings_mcpServerCodexHint =>
+      'Run the command to register the server, then set the token in the environment variable below.';
+
+  @override
+  String get settings_mcpServerCursorHint =>
+      'Merge this into the Cursor mcp.json configuration file.';
+
+  @override
+  String get settings_mcpServerCherryStudioHint =>
+      'Paste this into Cherry Studio\'s MCP server settings with “Import from JSON”; timeout is in seconds and already covers the in-app approval wait.';
+
+  @override
+  String get settings_mcpServerPiHint =>
+      'Pi has no built-in MCP: install the pi-mcp-adapter package first, then merge this into ~/.pi/agent/mcp.json.';
+
+  @override
+  String get settings_mcpServerAntigravityHint =>
+      'Merge this into Antigravity\'s global ~/.gemini/config/mcp_config.json; timeoutSeconds already covers the in-app approval wait.';
+
+  @override
+  String get settings_mcpServerClaudeDesktopHint =>
+      'Merge this into the Claude Desktop configuration; it connects over stdio through the bundled CLI.';
 
   @override
   String get settings_fontScale => 'Font Size';
@@ -10094,7 +11119,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settings_stripMetadataSubtitle =>
-      'Create a sanitized copy, remove PNG text chunks, EXIF, and NAI steganographic watermark data, and avoid exposing the original path while dragging.';
+      'Remove PNG text chunks, EXIF, and NAI steganographic watermark data when copying, dragging, or returning MCP images. Local originals stay unchanged; MCP keeps the original resolution, and the gallery original it reports as saved_path is not sanitized.';
 
   @override
   String get settings_confirmDangerousActionsTitle =>
@@ -10197,6 +11222,14 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String settings_highAnlasCostContent(Object cost, Object threshold) {
     return 'This request is estimated to cost $cost Anlas, which reaches or exceeds your $threshold Anlas warning threshold. Continue generation?';
+  }
+
+  @override
+  String settings_highAnlasCostUnverifiedContent(
+    Object cost,
+    Object threshold,
+  ) {
+    return 'Your subscription could not be verified yet. If the free Opus allowance has run out, this request costs up to $cost Anlas, which reaches or exceeds your $threshold Anlas warning threshold. Continue generation?';
   }
 
   @override
@@ -10859,9 +11892,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get toast_imageHasNoPrompt => 'This image has no Prompt';
 
   @override
-  String get toast_useDeleteButton => 'Use the delete button in the UI';
-
-  @override
   String get toast_imageHasNoMetadata => 'This image has no metadata';
 
   @override
@@ -11089,6 +12119,12 @@ class AppLocalizationsEn extends AppLocalizations {
   String get detail_imageLoadFailed => 'Failed to load image';
 
   @override
+  String get detail_lockZoom => 'Lock zoom';
+
+  @override
+  String get detail_unlockZoom => 'Unlock zoom';
+
+  @override
   String get detail_noImage => 'No image';
 
   @override
@@ -11179,6 +12215,12 @@ class AppLocalizationsEn extends AppLocalizations {
   String get detail_saveToVibeLibrary => 'Save to Vibe Library';
 
   @override
+  String get detail_collapseThumbnails => 'Collapse thumbnails';
+
+  @override
+  String get detail_expandThumbnails => 'Expand thumbnails';
+
+  @override
   String get pagination_firstPage => 'First page';
 
   @override
@@ -11201,206 +12243,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get pagination_itemUnit => 'items';
-
-  @override
-  String get diyGuide_title => 'DIY Feature Guide';
-
-  @override
-  String get diyGuide_subtitle =>
-      'Learn advanced features and create your own library';
-
-  @override
-  String get diyGuide_intro =>
-      'This guide explains the core concepts and advanced features of the DIY system, helping you build powerful dynamic prompt libraries.';
-
-  @override
-  String get diyGuide_exampleLabel => 'Example';
-
-  @override
-  String get diyGuide_hierarchyTitle => 'Hierarchy';
-
-  @override
-  String get diyGuide_hierarchyDescription =>
-      'The DIY system uses a three-level category structure to organize prompts for easier management and lookup.';
-
-  @override
-  String get diyGuide_hierarchyExample =>
-      'Category: Character features\n  -> Group: Hairstyle\n      -> Tag: long hair, short hair, twintails';
-
-  @override
-  String get diyGuide_selectionModeTitle => 'Selection Mode';
-
-  @override
-  String get diyGuide_selectionModeDescription =>
-      'Controls how many tags are selected from a group.';
-
-  @override
-  String get diyGuide_selectionModeExample =>
-      '• Random: select one item each time, such as a random hair color\n• All: select every tag in the group, such as a fixed feature set';
-
-  @override
-  String get diyGuide_weightTitle => 'Weight Control';
-
-  @override
-  String get diyGuide_weightDescription =>
-      'Adjusts the influence of specific prompts during generation.';
-
-  @override
-  String get diyGuide_weightExample =>
-      '• Boost: curly brackets around masterpiece = 1.05x weight\n• Strong boost: triple curly brackets around masterpiece = 1.16x weight\n• Weaken: [bad hands] = 0.95x weight';
-
-  @override
-  String get diyGuide_genderTitle => 'Gender Restriction';
-
-  @override
-  String get diyGuide_genderDescription =>
-      'Limits tags to specific character genders to avoid incompatible generated features.';
-
-  @override
-  String get diyGuide_genderExample =>
-      '• Female: only female characters, such as skirt\n• Male: only male characters, such as beard\n• Any: universal, such as T-shirt';
-
-  @override
-  String get diyGuide_scopeTitle => 'Scope';
-
-  @override
-  String get diyGuide_scopeDescription =>
-      'Defines whether a tag applies to the character, background, or the whole image.';
-
-  @override
-  String get diyGuide_scopeExample =>
-      '• Character: character features, such as eyes and hair\n• Background: environment descriptions, such as blue sky and indoors\n• Global: art style and quality tags, such as best quality';
-
-  @override
-  String get diyGuide_conditionalTitle => 'Conditional Branch';
-
-  @override
-  String get diyGuide_conditionalDescription =>
-      'Dynamically chooses later tags based on selected tags or other conditions.';
-
-  @override
-  String get diyGuide_conditionalExample =>
-      'IF selected \"rain\"\n  THEN add \"umbrella\" and \"wet clothes\"\n  ELSE add \"sunny\"';
-
-  @override
-  String get diyGuide_dependenciesTitle => 'Dependencies';
-
-  @override
-  String get diyGuide_dependenciesDescription =>
-      'Creates links between tags so related tags are automatically introduced when one tag is selected.';
-
-  @override
-  String get diyGuide_dependenciesExample =>
-      'Selecting \"JK uniform\" -> automatically adds \"school background\" and \"school bag\"';
-
-  @override
-  String get diyGuide_visibilityTitle => 'Visibility Rules';
-
-  @override
-  String get diyGuide_visibilityDescription =>
-      'Controls when tags are shown in the UI or become active during generation.';
-
-  @override
-  String get diyGuide_visibilityExample =>
-      'Only show the \"magic wand\" option group when the \"magical girl\" category is selected';
-
-  @override
-  String get diyGuide_timeTitle => 'Time Condition';
-
-  @override
-  String get diyGuide_timeDescription =>
-      'Triggers specific tags based on real time or configured simulated time.';
-
-  @override
-  String get diyGuide_timeExample =>
-      '• 06:00-18:00 -> add \"daylight\"\n• 18:00-06:00 -> add \"night\"';
-
-  @override
-  String get diyGuide_postProcessingTitle => 'Post-processing Rules';
-
-  @override
-  String get diyGuide_postProcessingDescription =>
-      'Runs text replacement or cleanup at the final stage of prompt generation.';
-
-  @override
-  String get diyGuide_postProcessingExample =>
-      'Replace every \"blue eyes\" with \"azure eyes\" for a more distinctive description';
-
-  @override
-  String get diyGuide_emphasisTitle => 'Emphasis Probability';
-
-  @override
-  String get diyGuide_emphasisDescription =>
-      'Randomly adds weight syntax to tags to increase output variety.';
-
-  @override
-  String get diyGuide_emphasisExample =>
-      'Set a 30% probability: about 1/3 of outputs use a weighted tag and 2/3 output the plain tag';
-
-  @override
-  String get naiRules_title => 'NAI Random Rules';
-
-  @override
-  String get naiRules_characterCountProbability =>
-      'Character Count Probability';
-
-  @override
-  String get naiRules_solo => '1 person (Solo)';
-
-  @override
-  String get naiRules_duo => '2 people (Duo)';
-
-  @override
-  String get naiRules_trio => '3 people (Trio)';
-
-  @override
-  String get naiRules_group => '4 people (Group)';
-
-  @override
-  String get naiRules_genderRules => 'Gender Rules';
-
-  @override
-  String get naiRules_female => 'Female';
-
-  @override
-  String get naiRules_male => 'Male';
-
-  @override
-  String get naiRules_mixed => 'Mixed / Other';
-
-  @override
-  String get naiRules_categoryProbability => 'Category Probability';
-
-  @override
-  String get naiRules_dynamicTagWeightTitle => 'Dynamic Tag Weight Adjustment';
-
-  @override
-  String get naiRules_dynamicTagWeightSubtitle =>
-      'Randomly combines multiple dimensions such as action, clothing, expression, and background, then adjusts category weights based on the image theme.';
-
-  @override
-  String get naiRules_specialMechanisms => 'Special Mechanisms';
-
-  @override
-  String get naiRules_tagStrengthening => 'Tag Strengthening';
-
-  @override
-  String get naiRules_seasonalLibraryTitle => 'Seasonal Library';
-
-  @override
-  String get naiRules_seasonalLibrarySubtitle =>
-      'Automatically matches seasonal features, including seasonal clothing, weather, lighting, and atmosphere.';
-
-  @override
-  String get naiRules_v4CharacterPositioning =>
-      'V4 Multi-character Positioning';
-
-  @override
-  String get naiRules_smartPositionTitle => 'Smart Position Assignment';
-
-  @override
-  String get naiRules_smartPositionSubtitle =>
-      'With V4 models, character positioning syntax is used to precisely control multi-character placement.';
 
   @override
   String get comfyImport_detectedTitle =>
@@ -11508,6 +12350,79 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get updateErrorUnknown =>
       'Unable to check for updates right now. Please try again later.';
+
+  @override
+  String get updateInstallErrorPackageNotFound =>
+      'No update package that can be installed automatically was found. Please download it manually from the Release page.';
+
+  @override
+  String get updateInstallErrorIncompleteMetadata =>
+      'The update package is missing verification information and cannot be installed safely. Please download it manually from the Release page.';
+
+  @override
+  String get updateInstallErrorDiskFull =>
+      'Not enough disk space to save the update package. Free up some space and try again.';
+
+  @override
+  String get updateInstallErrorFileSystem =>
+      'Failed to write the update package. Check your disk and try again.';
+
+  @override
+  String get updateInstallErrorVerificationFailed =>
+      'The update package failed verification. Please download it again.';
+
+  @override
+  String get updateInstallErrorResumeRejected =>
+      'The server rejected the request to resume the download. Please try again later.';
+
+  @override
+  String get updateInstallErrorEmptyResponse =>
+      'The update server returned an empty response. Please try again later.';
+
+  @override
+  String get updateInstallErrorDownloadFailed =>
+      'Failed to download the update package. Please try again later.';
+
+  @override
+  String get updateInstallErrorPackageMissing =>
+      'The update package has been cleaned up. Please download it again.';
+
+  @override
+  String get updateInstallErrorPackageCorrupted =>
+      'The update package is damaged. Please download it again.';
+
+  @override
+  String get updateInstallErrorInvalidAndroidPackage =>
+      'The Android update package has an invalid format. Please download it manually from the Release page.';
+
+  @override
+  String get updateInstallErrorAndroidInstaller =>
+      'Could not open Android\'s system installer. Please try again.';
+
+  @override
+  String get updateInstallErrorUpdaterLaunchFailed =>
+      'Could not launch the updater. The current version is unchanged; try again or download the new version manually.';
+
+  @override
+  String get updateInstallErrorUpdaterNotStarted =>
+      'The updater did not start. The current version is unchanged; please download the new version manually to update.';
+
+  @override
+  String get updateInstallErrorInstallFailed =>
+      'The previous update was not installed. You can try again or download and install the new version manually.';
+
+  @override
+  String get updateInstallErrorInterrupted =>
+      'The previous update did not finish installing. You can try again or download and install the new version manually.';
+
+  @override
+  String get updateInstallErrorUnknown =>
+      'The update could not be completed. Please try again later.';
+
+  @override
+  String updateInstallLogPath(Object path) {
+    return 'Log: $path';
+  }
 
   @override
   String get currentVersion => 'Current Version';
@@ -12007,12 +12922,6 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String get diy_editDependencyTitle => 'Edit Dependency';
-
-  @override
-  String get diy_dependencyTitle => 'Dependency Settings';
-
-  @override
   String get diy_dependencySubtitle =>
       'Configure dependencies between tag selections';
 
@@ -12026,10 +12935,12 @@ class AppLocalizationsEn extends AppLocalizations {
   String get diy_selectSourceCategory => 'Select a source category';
 
   @override
-  String get diy_sourceCategoryId => 'Source Category ID';
+  String get diy_sourceCharacterCount => 'Character count';
 
   @override
-  String get diy_enterCategoryId => 'Enter a category ID';
+  String diy_categoryUnavailable(String reference) {
+    return 'Unavailable: $reference';
+  }
 
   @override
   String get diy_mappingRules => 'Mapping Rules';
@@ -12097,7 +13008,28 @@ class AppLocalizationsEn extends AppLocalizations {
       'Do not apply when the source category has a selected tag';
 
   @override
-  String get diy_editConditionalTitle => 'Edit Conditional Branches';
+  String get diy_dependencyCountCharacterCountDescription =>
+      'Use the number of characters in this generation to determine the result count';
+
+  @override
+  String get diy_dependencyExistsCharacterCountDescription =>
+      'Apply only when the image has characters (character count above 0)';
+
+  @override
+  String get diy_dependencyValueCharacterCountDescription =>
+      'Depend on the character count in this generation, such as 1, 2, or 3';
+
+  @override
+  String get diy_dependencyExcludesCharacterCountDescription =>
+      'Apply only when the image has no characters (character count is 0)';
+
+  @override
+  String get diy_dependencyOverridesSelectionCount =>
+      'This group does not use Multiple Count mode. The count from this dependency overrides the selection mode: that many items are drawn by weight without repeats, or all of them if there are fewer. Nothing is drawn when no mapping matches and no default is set.';
+
+  @override
+  String get diy_dependencyOverridesSequentialCount =>
+      'This group uses Sequential mode. The count from this dependency overrides the selection mode: that many items are taken in rotation order, or all of them if there are fewer. Nothing is drawn when no mapping matches and no default is set.';
 
   @override
   String get diy_conditionalDefaultName => 'Conditional Branches';
@@ -12106,9 +13038,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String diy_branchDefaultName(int index) {
     return 'Branch $index';
   }
-
-  @override
-  String get diy_conditionalTitle => 'Conditional Branches';
 
   @override
   String get diy_conditionalSubtitle => 'Choose a branch by probability';
@@ -12151,6 +13080,78 @@ class AppLocalizationsEn extends AppLocalizations {
   String get diy_enableBranch => 'Enable This Branch';
 
   @override
+  String get diy_branchTargets => 'Output tag groups';
+
+  @override
+  String get diy_branchTargetsHint =>
+      'Selected groups are output only when this branch is chosen, drawn with this group\'s selection mode. With none selected, this group\'s own tags are output.';
+
+  @override
+  String get diy_branchTargetsEmpty => 'No other tag groups in this category';
+
+  @override
+  String diy_branchTargetChild(String name) {
+    return 'Child: $name';
+  }
+
+  @override
+  String get diy_branchTargetCycle => 'Would create a loop';
+
+  @override
+  String get diy_branchTargetCycleHint =>
+      'Greyed-out groups already output this group directly or indirectly; selecting them would create a loop';
+
+  @override
+  String diy_branchTargetCount(int count) {
+    return 'Outputs $count groups';
+  }
+
+  @override
+  String get diy_branchConditions => 'Conditions';
+
+  @override
+  String get diy_branchConditionsHint =>
+      'Only categories and branches generated before this group can be referenced. Values are compared as tags, ignoring case, underscores, and weight syntax. A branch without conditions is always eligible.';
+
+  @override
+  String get diy_addCondition => 'Add condition';
+
+  @override
+  String get diy_deleteCondition => 'Delete condition';
+
+  @override
+  String get diy_conditionSource => 'Variable';
+
+  @override
+  String get diy_conditionValueRequired => 'Enter a value';
+
+  @override
+  String get diy_conditionLogicAll => 'Match all';
+
+  @override
+  String get diy_conditionLogicAny => 'Match any';
+
+  @override
+  String get diy_conditionSourceGender => 'Character gender';
+
+  @override
+  String diy_conditionSourceBranch(String name) {
+    return 'Branch of $name';
+  }
+
+  @override
+  String get diy_conditionValueHintCategory => 'e.g. blue eyes';
+
+  @override
+  String get diy_conditionValueHintGender => 'e.g. girl, boy';
+
+  @override
+  String get diy_conditionValueHintCount => 'e.g. 1, 2, 3';
+
+  @override
+  String get diy_conditionValueHintBranch => 'Enter a branch name';
+
+  @override
   String diy_ruleDefaultName(int index) {
     return 'Rule $index';
   }
@@ -12171,9 +13172,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get diy_enableRule => 'Enable This Rule';
-
-  @override
-  String get diy_postProcessTitle => 'Post-processing Rules';
 
   @override
   String get diy_postProcessSubtitle => 'Automatically resolve tag conflicts';
@@ -12215,10 +13213,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get diy_targetCategories => 'Target Categories';
 
   @override
-  String get diy_commaSeparatedCategoryIdsHint =>
-      'Comma-separated category ID list';
-
-  @override
   String get diy_targetTags => 'Target Tags';
 
   @override
@@ -12242,38 +13236,6 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String get diy_emphasisTitle => 'Global Emphasis';
-
-  @override
-  String get diy_emphasisSubtitle => 'Adjust tag emphasis effects';
-
-  @override
-  String get diy_emphasisProbability => 'Emphasis Probability';
-
-  @override
-  String diy_emphasisProbabilityHint(String percent) {
-    return 'Each selected tag has a $percent% chance of receiving emphasis brackets';
-  }
-
-  @override
-  String get diy_bracketCount => 'Bracket Layers';
-
-  @override
-  String diy_bracketLayers(int count) {
-    return '$count layers';
-  }
-
-  @override
-  String get diy_effectPreview => 'Effect Preview';
-
-  @override
-  String get diy_exampleTag => 'example tag';
-
-  @override
-  String get diy_emphasisExplanation =>
-      'Emphasis brackets increase tag weight; more layers apply a higher weight';
-
-  @override
   String diy_presetExportFailed(String error) {
     return 'Failed to export preset: $error';
   }
@@ -12284,6 +13246,11 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String diy_presetInvalidData(String error) {
     return 'Invalid preset data: $error';
+  }
+
+  @override
+  String diy_presetVersionTooNew(int version) {
+    return 'This preset was exported by a newer app version (data version $version). Update the app, then import it again';
   }
 
   @override
@@ -12318,9 +13285,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get diy_totalTagCount => 'Total Tags';
 
   @override
-  String get diy_visibilityTitle => 'Visibility Rules';
-
-  @override
   String get diy_visibilitySubtitle =>
       'Control category visibility with conditions';
 
@@ -12336,6 +13300,9 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get diy_targetCategory => 'Target Category';
+
+  @override
+  String get diy_targetCurrentGroup => 'This tag group';
 
   @override
   String get diy_conditionType => 'Condition Type';
@@ -12368,13 +13335,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get diy_conditionValueNotInList => 'Value Is Not in List';
 
   @override
-  String get diy_editTimeConditionTitle => 'Edit Time Condition';
-
-  @override
   String get diy_timeDefaultName => 'Time Condition';
-
-  @override
-  String get diy_timeTitle => 'Time Condition';
 
   @override
   String get diy_timeSubtitle => 'Activate within a specific date range';
@@ -12441,6 +13402,17 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get diy_repeatYearlyHint =>
       'Activate automatically during the same date range every year';
+
+  @override
+  String get diy_repeatOnceHint =>
+      'Activate only during the date range of the selected year';
+
+  @override
+  String get diy_year => 'Year';
+
+  @override
+  String get diy_yearUnsetHint =>
+      'No year selected yet, so it currently activates every year';
 
   @override
   String get diy_currentlyActive => 'Currently Active';
@@ -12667,6 +13639,220 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String get editor_toolFrame => 'Frame';
+
+  @override
+  String get editor_toolMove => 'Move';
+
+  @override
+  String get editor_toolGroupInpaint => 'Inpaint';
+
+  @override
+  String get editor_toolGroupEdit => 'Edit';
+
+  @override
+  String get editor_toolGroupCommon => 'General';
+
+  @override
+  String get editor_toolbarFlyoutExpand => 'Show related tools';
+
+  @override
+  String get editor_toolbarFlyoutHint =>
+      'Hover, right-click or long-press for related tools';
+
+  @override
+  String get editor_toolMaskBrush => 'Mask Brush';
+
+  @override
+  String get editor_toolMaskEraser => 'Mask Eraser';
+
+  @override
+  String get editor_toolMaskColorFill => 'Fill Mask by Color';
+
+  @override
+  String get editor_toolMaskMagicWand => 'Mask Magic Wand';
+
+  @override
+  String get editor_moveLayerHint => 'Drag to move the whole current layer.';
+
+  @override
+  String get editor_moveSelectionHint =>
+      'Drag to move the pixels of the current layer inside the selection.';
+
+  @override
+  String get editor_moveBaseLayerHint =>
+      'The base image cannot be moved as a whole. Make a selection first, then move the pixels inside it.';
+
+  @override
+  String get editor_moveNoLayer => 'There is no layer to move.';
+
+  @override
+  String get editor_moveNudgeHint =>
+      'Arrow keys move 1 pixel; hold Shift to move 10 pixels.';
+
+  @override
+  String get editor_shortcutNudge => 'Move 1 pixel';
+
+  @override
+  String get editor_shortcutNudgeFar => 'Move 10 pixels';
+
+  @override
+  String get editor_transformSection => 'Transform';
+
+  @override
+  String get editor_transformWidth => 'Width';
+
+  @override
+  String get editor_transformHeight => 'Height';
+
+  @override
+  String get editor_transformAngle => 'Angle';
+
+  @override
+  String get editor_transformCenterX => 'Center X';
+
+  @override
+  String get editor_transformCenterY => 'Center Y';
+
+  @override
+  String get editor_transformKeepAspect => 'Lock Aspect Ratio';
+
+  @override
+  String get editor_transformFlipHorizontal => 'Flip Horizontal';
+
+  @override
+  String get editor_transformFlipVertical => 'Flip Vertical';
+
+  @override
+  String get editor_transformApply => 'Apply Transform';
+
+  @override
+  String get editor_transformCancel => 'Cancel Transform';
+
+  @override
+  String editor_transformSizeReadout(int width, int height) {
+    return '$width × $height px';
+  }
+
+  @override
+  String get editor_transformHandlesHint =>
+      'Drag a corner or edge to scale; drag the dot above the box to rotate.';
+
+  @override
+  String get editor_transformKeysHint =>
+      'Shift snaps to 15° or toggles the aspect lock; Alt scales from the center. Ctrl+T starts a transform, Enter applies it and Esc cancels it.';
+
+  @override
+  String get editor_transformTouchHint =>
+      'While transforming, use two fingers to scale, rotate and move; tap Apply Transform when done.';
+
+  @override
+  String get editor_shortcutFreeTransform => 'Free transform';
+
+  @override
+  String get editor_shortcutApplyTransform => 'Apply transform';
+
+  @override
+  String get layer_importImage => 'Import Image';
+
+  @override
+  String get selection_clearPixels => 'Delete Selected Pixels';
+
+  @override
+  String selection_cutLayerName(Object name) {
+    return '$name Cut';
+  }
+
+  @override
+  String layer_duplicateName(Object name) {
+    return '$name Copy';
+  }
+
+  @override
+  String get layer_roleMask => 'Mask';
+
+  @override
+  String get layer_addImage => 'Add Image Layer';
+
+  @override
+  String get layer_addMask => 'Add Mask Layer';
+
+  @override
+  String get img2img_inpaintSourceUpdated =>
+      'Base image edits saved. Paint a mask to start inpainting.';
+
+  @override
+  String get editor_frameToolHint =>
+      'Drag inside the frame to move it, or drag its edges to resize. Content outside the frame is kept and dimmed; only the area inside is sent for generation. A moved frame keeps at least 64 px of overlap with the image.';
+
+  @override
+  String editor_frameSizeReadout(int width, int height) {
+    return 'Size: $width x $height';
+  }
+
+  @override
+  String editor_frameOffsetReadout(int x, int y) {
+    return 'Offset from image: X $x, Y $y';
+  }
+
+  @override
+  String get editor_frameMoveLockedByView =>
+      'The frame can\'t be moved while the view is rotated or mirrored. Press R to reset the view, then try again.';
+
+  @override
+  String get editor_resetFrame => 'Reset Frame';
+
+  @override
+  String get editor_cropToFrame => 'Crop to Frame';
+
+  @override
+  String get editor_cropToFrameHint =>
+      'Discard the image and mask outside the frame. This can be undone.';
+
+  @override
+  String editor_cropToFrameFailed(Object error) {
+    return 'Crop to frame failed: $error';
+  }
+
+  @override
+  String get editor_changeFrameSize => 'Change Frame Size';
+
+  @override
+  String editor_frameResized(int width, int height) {
+    return 'Frame resized to $width x $height';
+  }
+
+  @override
+  String get editor_frameToolHintPasteBack =>
+      'Drag inside the frame to move it in 64 px steps, or drag its edges to resize. Only the area inside is sent for generation; when part of the image lies outside the frame, the result is pasted back into the full image through the mask and the outside stays unchanged. The frame keeps at least 64 px of overlap with the image.';
+
+  @override
+  String editor_frameRequestReadout(int width, int height) {
+    return 'Request: $width x $height';
+  }
+
+  @override
+  String get editor_frameRequestFree => 'Free';
+
+  @override
+  String editor_frameRequestCost(int cost) {
+    return '~$cost Anlas';
+  }
+
+  @override
+  String editor_frameResizeRejected(int overlap, int max) {
+    return 'Can\'t resize the frame: it must overlap the image by at least $overlap px, and the frame and image together can\'t exceed $max px per side.';
+  }
+
+  @override
+  String get editor_compressionFrameLimited =>
+      'Higher resolutions are unavailable because the frame would exceed the request area limit.';
+
+  @override
+  String get img2img_focusOutpaintHint =>
+      'Focus outpaint: only the frame is sent, and the result is pasted back into the full image through the mask. Adjust the frame with the Frame tool in the inpaint editor.';
+
+  @override
   String get savePreset_title => 'Save as Preset';
 
   @override
@@ -12682,6 +13868,15 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get onlineGallery_videoLoadFailed => 'Failed to load video';
+
+  @override
+  String get onlineGallery_videoPositionLabel => 'Playback position';
+
+  @override
+  String get onlineGallery_videoPlay => 'Play';
+
+  @override
+  String get onlineGallery_videoPause => 'Pause';
 
   @override
   String get vibe_releaseToAddStyleReference =>
@@ -12742,7 +13937,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get autocomplete_replaceUnderscores =>
-      'Replace underscores with spaces on insertion';
+      'Replace underscores with spaces on insertion and auto format';
 
   @override
   String get autocomplete_dataSourcesTitle => 'Data Sources & Cache';
@@ -12885,6 +14080,10 @@ class AppLocalizationsEn extends AppLocalizations {
   String autocomplete_cacheCleared(int count) {
     return 'Cleared $count cached entries';
   }
+
+  @override
+  String get autocomplete_cacheClearFailed =>
+      'The cache could not be cleared. Try again later.';
 
   @override
   String get autocomplete_baseCatalog => 'Base Danbooru catalog';
@@ -13155,6 +14354,44 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String get image_savedToAppGallery => 'Saved to the app gallery';
+
+  @override
+  String get image_saveAs => 'Save as…';
+
+  @override
+  String get image_saveAsDialogTitle => 'Save image as';
+
+  @override
+  String get image_saveAsToFolder => 'Save to folder…';
+
+  @override
+  String get image_saveAsFolderDialogTitle => 'Choose a folder to save to';
+
+  @override
+  String image_savedAs(Object path) {
+    return 'Saved as $path';
+  }
+
+  @override
+  String get image_savedAsToChosenLocation => 'Saved to the chosen location';
+
+  @override
+  String image_savedAsToFolder(int count, Object path) {
+    return 'Saved $count images to $path';
+  }
+
+  @override
+  String image_savedAsToChosenFolder(int count) {
+    return 'Saved $count images to the chosen folder';
+  }
+
+  @override
+  String image_savedAsPartial(int saved, int failed, Object error) {
+    return 'Saved $saved, $failed failed: $error';
+  }
+
+  @override
   String image_shareFailed(Object error) {
     return 'Share failed: $error';
   }
@@ -13209,6 +14446,11 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get settings_clearLocalOnnxModelsContent =>
       'This removes the ONNX models and label files imported on this device.';
+
+  @override
+  String settings_clearLocalOnnxModelsFailed(Object error) {
+    return 'Failed to clear local ONNX models: $error';
+  }
 
   @override
   String updateAndroidDownloadedHint(Object version) {
@@ -13409,6 +14651,13 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get cloudSync_galleryAlbumsDescription =>
       'Stores album structure and image references, never original images';
+
+  @override
+  String get cloudSync_fixedTagUsage => 'Fixed-tag usage records';
+
+  @override
+  String get cloudSync_fixedTagUsageDescription =>
+      'Stores a lightweight record of which fixed tags each image used, never the images';
 
   @override
   String get cloudSync_optionalResources =>
@@ -13908,6 +15157,36 @@ class AppLocalizationsEn extends AppLocalizations {
   String get agentSettings_densityCompact => 'Compact';
 
   @override
+  String get agentSettings_chatPlacement => 'Chat placement';
+
+  @override
+  String get agentSettings_chatPlacementDescription =>
+      'Applies to wide windows only; narrow screens keep the full-screen chat.';
+
+  @override
+  String get agentSettings_dockLayout => 'Right panel layout';
+
+  @override
+  String get agentSettings_dockLayoutDescription =>
+      'Switch shows either chat or history in the right panel; split layouts show both at once.';
+
+  @override
+  String get agentSettings_dockExclusive => 'Switch';
+
+  @override
+  String get agentSettings_dockStacked => 'Stacked';
+
+  @override
+  String get agentSettings_dockSideBySide => 'Side by side';
+
+  @override
+  String get agentSettings_floatingWindow => 'Show chat in a floating window';
+
+  @override
+  String get agentSettings_floatingWindowDescription =>
+      'The floating window stays on every page and can be moved and resized; the right panel then shows only history.';
+
+  @override
   String get agentSettings_chatModel => 'Chat model';
 
   @override
@@ -13915,14 +15194,14 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get agentSettings_modelManagedInIntegrations =>
-      'Providers, API keys, and model discovery remain centrally managed in Integrations.';
+      'Providers, API keys, and models are managed in Integrations > Model services.';
 
   @override
   String get agentSettings_manageProviders => 'Manage providers';
 
   @override
   String get agentSettings_noModel =>
-      'No chat model is available. Add a provider and discover models in Integrations first.';
+      'No chat model is available. Add a provider and its models in Integrations > Model services first.';
 
   @override
   String get agentSettings_pendingMatch => 'pending match';
@@ -14010,7 +15289,29 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get agentSettings_permissionFullDescription =>
-      'Allow direct tool use and files outside the workspace. Use only for trusted tasks.';
+      'Allow direct tool use and files outside the workspace; deleting saved data or spending Anlas still asks first. Use only for trusted tasks.';
+
+  @override
+  String get agentSettings_permissionAutopilot => 'Autopilot';
+
+  @override
+  String get agentSettings_permissionAutopilotDescription =>
+      'Everything in Full access, plus generations and other Anlas spending run directly. Only a single request reaching the Protection Mode high-cost threshold, or deleting saved data, still asks first. For unattended batch work.';
+
+  @override
+  String get agentSettings_autopilotConfirmTitle => 'Turn on Autopilot?';
+
+  @override
+  String agentSettings_autopilotConfirmThreshold(Object threshold) {
+    return 'Generations, inpainting, queue runs and other Anlas spending will run without asking each time. A single request estimated at $threshold Anlas or more (the Protection Mode high-cost threshold) still asks first, and so does deleting saved data.';
+  }
+
+  @override
+  String get agentSettings_autopilotConfirmUnlimited =>
+      'Generations, inpainting, queue runs and other Anlas spending will run without asking each time. The Protection Mode high-cost warning is off, so any amount is spent directly; deleting saved data still asks first.';
+
+  @override
+  String get agentSettings_autopilotConfirmAction => 'Turn on';
 
   @override
   String get agentSettings_webPreference => 'Web preference';
@@ -14481,9 +15782,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get watermark_noLayer => 'Enable text or logo before saving.';
 
   @override
-  String get watermark_cancelled => 'Watermark rendering cancelled';
-
-  @override
   String watermark_failed(Object error) {
     return 'Could not create watermark copy: $error';
   }
@@ -14526,6 +15824,53 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get watermark_sourceLoadFailed =>
       'This image could not be opened. Check that it is a valid, static PNG, JPEG, WebP, or BMP image, then try again.';
+
+  @override
+  String get watermark_autoPlacement => 'Auto placement';
+
+  @override
+  String get watermark_autoPlacementHint =>
+      'The anchor you set is preferred; when another corner is clearly cleaner, the whole watermark is mirrored there.';
+
+  @override
+  String get watermark_autoPlacementKept =>
+      'Auto placement: kept at the preferred position';
+
+  @override
+  String get watermark_autoPlacementMirroredHorizontal =>
+      'Auto placement: mirrored left to right';
+
+  @override
+  String get watermark_autoPlacementMirroredVertical =>
+      'Auto placement: mirrored top to bottom';
+
+  @override
+  String get watermark_autoPlacementMirroredBoth =>
+      'Auto placement: moved to the opposite corner';
+
+  @override
+  String get watermark_autoAnalyzing => 'Analyzing image…';
+
+  @override
+  String get watermark_autoAnalysisFailed =>
+      'The image could not be analyzed, so the preview shows no automatic adjustments. Saving analyzes it again.';
+
+  @override
+  String get watermark_autoTone => 'Auto grayscale';
+
+  @override
+  String get watermark_autoToneTextHint =>
+      'Picks a gray from the background under the text; the outline and shadow take the opposite side.';
+
+  @override
+  String get watermark_autoToneLogoHint =>
+      'Converts the logo to a gray matched to the background beneath it, keeping the logo’s own shading.';
+
+  @override
+  String get watermark_toneContrast => 'Tone difference';
+
+  @override
+  String get watermark_colorFromAutoTone => 'Color is set by auto grayscale';
 
   @override
   String get promptAssistant_responseTimeoutTitle => 'Response wait timeout';
@@ -14802,9 +16147,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get mosaic_share => 'Share';
 
   @override
-  String get mosaic_cancelled => 'Redaction rendering was cancelled.';
-
-  @override
   String get mosaic_failedGeneric => 'The redacted copy could not be created.';
 
   @override
@@ -14848,6 +16190,25 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get promptAssistant_thinkingDefault => 'Model default';
+
+  @override
+  String get promptAssistant_configureReasoning => 'Configure reasoning';
+
+  @override
+  String get promptAssistant_reasoningFormat => 'Reasoning format';
+
+  @override
+  String get promptAssistant_reasoningLevelFormat => 'Level';
+
+  @override
+  String get promptAssistant_reasoningBudgetFormat => 'Token budget';
+
+  @override
+  String get promptAssistant_reasoningAdaptiveFormat => 'Adaptive';
+
+  @override
+  String get promptAssistant_reasoningRejectedHint =>
+      'Switch back to Model default and retry.';
 
   @override
   String get promptAssistant_thinkingUnavailable =>
@@ -15285,4 +16646,34 @@ class AppLocalizationsEn extends AppLocalizations {
 
     return 'Subscription expiry: $dateString';
   }
+
+  @override
+  String get nav_switchToLightMode => 'Switch to light';
+
+  @override
+  String get nav_switchToDarkMode => 'Switch to dark';
+
+  @override
+  String get settings_themeMode => 'Theme Mode';
+
+  @override
+  String get settings_themeModeLight => 'Light';
+
+  @override
+  String get settings_themeModeDark => 'Dark';
+
+  @override
+  String get settings_themeModeSystem => 'System';
+
+  @override
+  String get settings_lightTheme => 'Light Theme';
+
+  @override
+  String get settings_darkTheme => 'Dark Theme';
+
+  @override
+  String get settings_selectLightTheme => 'Select Light Theme';
+
+  @override
+  String get settings_selectDarkTheme => 'Select Dark Theme';
 }

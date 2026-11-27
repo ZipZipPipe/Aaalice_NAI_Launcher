@@ -1,14 +1,15 @@
-import 'dart:convert';
-import 'dart:math';
 import 'dart:typed_data';
 
-import 'package:crypto/crypto.dart' as crypto;
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart' show visibleForTesting;
 
 import '../../../core/constants/api_constants.dart';
+import '../../../core/network/browser_multipart_body.dart';
+import '../../../core/network/dio_error_response_parser.dart';
 import '../../../core/network/nai_api_endpoint_service.dart';
 import '../../../core/utils/app_logger.dart';
+import 'nai_generation_upload.dart';
+import 'nai_image_upload_cache.dart';
 
 /// Owns every transport request started by one generation run.
 ///
@@ -36,17 +37,15 @@ class NaiGenerationRequest {
 }
 
 class NaiGenerationTransport {
-  NaiGenerationTransport(this._dio, this._endpointService);
+  NaiGenerationTransport(this._dio, this._endpointService, [this._uploadCache]);
 
-  static const String _correlationIdAlphabet =
-      'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz123456789';
-  static final Random _correlationIdRandom = Random.secure();
-  static final Uint8List _imageCacheHmacKey = Uint8List.fromList(
-    List<int>.generate(32, (_) => Random.secure().nextInt(256)),
-  );
+  static const int _badRequestStatus = 400;
 
   final Dio _dio;
   final NaiApiEndpointService _endpointService;
+
+  /// Without it every request carries the bytes of all its images.
+  final NaiImageUploadCache? _uploadCache;
   final Set<NaiGenerationRequest> _activeRequests = {};
   NaiGenerationRequest? _currentRequest;
 
@@ -122,15 +121,19 @@ class NaiGenerationTransport {
     Map<String, dynamic> requestData,
     NaiGenerationRequest request, {
     void Function(int, int)? onProgress,
-  }) {
-    return _dio.post<Uint8List>(
-      _endpointService.imageUrl(ApiConstants.generateImageEndpoint),
-      data: buildGenerationFormData(requestData),
-      cancelToken: request.cancelToken,
-      onReceiveProgress: onProgress,
-      options: Options(
-        responseType: ResponseType.bytes,
-        headers: _requestHeaders('application/x-zip-compressed'),
+  }) async {
+    final upload = await _prepareUpload(requestData);
+    return _sendRestoringCacheMisses(
+      upload,
+      (body) => _dio.post<Uint8List>(
+        _endpointService.imageUrl(ApiConstants.generateImageEndpoint),
+        data: body.bytes,
+        cancelToken: request.cancelToken,
+        onReceiveProgress: onProgress,
+        options: Options(
+          responseType: ResponseType.bytes,
+          contentType: body.contentType,
+        ),
       ),
     );
   }
@@ -138,206 +141,122 @@ class NaiGenerationTransport {
   Future<Response<ResponseBody>> sendStream(
     Map<String, dynamic> requestData,
     NaiGenerationRequest request,
-  ) {
-    return _dio.post<ResponseBody>(
-      _endpointService.imageUrl(ApiConstants.generateImageStreamEndpoint),
-      data: buildGenerationFormData(requestData),
-      cancelToken: request.cancelToken,
-      options: Options(
-        responseType: ResponseType.stream,
-        headers: _requestHeaders('application/x-msgpack'),
-      ),
-    );
-  }
-
-  static Map<String, String> _requestHeaders(String accept) {
-    return {
-      'Accept': accept,
-      'x-correlation-id': List.generate(
-        6,
-        (_) =>
-            _correlationIdAlphabet[_correlationIdRandom.nextInt(
-              _correlationIdAlphabet.length,
-            )],
-        growable: false,
-      ).join(),
-      'x-initiated-at': DateTime.now().toUtc().toIso8601String(),
-    };
-  }
-
-  /// Encodes the official multipart layout while preserving image-part order.
-  static FormData buildGenerationFormData(Map<String, dynamic> requestData) {
-    // Copies only the rewritten containers: encoding and parsing every base64
-    // payload again just to obtain a writable copy costs more than the request.
-    final transformedRequest = Map<String, dynamic>.of(requestData);
-
-    final formData = FormData();
-    final partNamesByPayload = <String, String>{};
-
-    String appendImagePart(String encodedImage, String requestedPartName) {
-      final existingPartName = partNamesByPayload[encodedImage];
-      if (existingPartName != null) return existingPartName;
-      formData.files.add(
-        MapEntry(
-          requestedPartName,
-          MultipartFile.fromBytes(
-            base64Decode(encodedImage),
-            filename: 'blob',
-            contentType: DioMediaType('image', 'png'),
-          ),
-        ),
-      );
-      partNamesByPayload[encodedImage] = requestedPartName;
-      return requestedPartName;
-    }
-
-    void prepareCachedValue(
-      Map<String, dynamic> parameters,
-      String valueKey,
-      String cacheKey,
-    ) {
-      final value = parameters[valueKey];
-      if (value is! String || value.isEmpty) return;
-      parameters[cacheKey] = _imageCacheSecretKey(value);
-    }
-
-    void prepareCachedList(
-      Map<String, dynamic> parameters,
-      String sourceKey,
-      String cachedKey,
-    ) {
-      final source = parameters[sourceKey];
-      if (source is! List || source.isEmpty) return;
-      parameters[cachedKey] = source
-          .map((value) {
-            if (value is! String) {
-              throw ArgumentError.value(
-                value,
-                sourceKey,
-                'Expected base64 strings',
-              );
-            }
-            return <String, dynamic>{
-              'cache_secret_key': _imageCacheSecretKey(value),
-              'data': value,
-            };
-          })
-          .toList(growable: false);
-      parameters.remove(sourceKey);
-    }
-
-    void extractValue(
-      Map<String, dynamic> container,
-      String valueKey,
-      String partName,
-    ) {
-      final value = container[valueKey];
-      if (value is! String || value.isEmpty) return;
-      container[valueKey] = appendImagePart(value, partName);
-    }
-
-    void extractCachedList(
-      Map<String, dynamic> parameters,
-      String cachedKey,
-      String partPrefix,
-    ) {
-      final cachedValues = parameters[cachedKey];
-      if (cachedValues is! List) return;
-      final extractedValues = <dynamic>[];
-      for (var index = 0; index < cachedValues.length; index += 1) {
-        final cachedValue = cachedValues[index];
-        if (cachedValue is! Map) {
-          extractedValues.add(cachedValue);
-          continue;
-        }
-        final data = cachedValue['data'];
-        if (data is! String || data.isEmpty) {
-          extractedValues.add(cachedValue);
-          continue;
-        }
-        final extractedValue = _copyStringKeyedMap(cachedValue, cachedKey);
-        extractedValue['data'] = appendImagePart(data, '$partPrefix$index');
-        extractedValues.add(extractedValue);
-      }
-      parameters[cachedKey] = extractedValues;
-    }
-
-    final parametersValue = transformedRequest['parameters'];
-    final parameters = parametersValue is Map
-        ? _copyStringKeyedMap(parametersValue, 'parameters')
-        : null;
-    if (parameters != null) {
-      transformedRequest['parameters'] = parameters;
-      prepareCachedValue(parameters, 'image', 'image_cache_secret_key');
-      prepareCachedValue(parameters, 'mask', 'mask_cache_secret_key');
-      prepareCachedValue(
-        parameters,
-        'reference_image',
-        'reference_image_cache_secret_key',
-      );
-      prepareCachedList(
-        parameters,
-        'reference_image_multiple',
-        'reference_image_multiple_cached',
-      );
-      prepareCachedList(
-        parameters,
-        'director_reference_images',
-        'director_reference_images_cached',
-      );
-    }
-
-    extractValue(transformedRequest, 'image', 'image');
-    extractValue(transformedRequest, 'mask', 'mask');
-    if (parameters != null) {
-      extractValue(parameters, 'image', 'image');
-      extractValue(parameters, 'mask', 'mask');
-      extractValue(parameters, 'reference_image', 'reference_image');
-      extractCachedList(
-        parameters,
-        'reference_image_multiple_cached',
-        'ref_multiple_',
-      );
-      extractCachedList(
-        parameters,
-        'director_reference_images_cached',
-        'director_ref_',
-      );
-    }
-
-    formData.files.add(
-      MapEntry(
-        'request',
-        MultipartFile.fromBytes(
-          utf8.encode(jsonEncode(transformedRequest)),
-          filename: 'blob',
-          contentType: DioMediaType('application', 'json'),
+  ) async {
+    final upload = await _prepareUpload(requestData);
+    return _sendRestoringCacheMisses(
+      upload,
+      (body) => _dio.post<ResponseBody>(
+        _endpointService.imageUrl(ApiConstants.generateImageStreamEndpoint),
+        data: body.bytes,
+        cancelToken: request.cancelToken,
+        options: Options(
+          responseType: ResponseType.stream,
+          contentType: body.contentType,
         ),
       ),
     );
-    return formData;
   }
 
-  /// Copies one JSON object container; nested values stay shared with [source].
-  static Map<String, dynamic> _copyStringKeyedMap(
-    Map<dynamic, dynamic> source,
-    String name,
-  ) {
-    final copy = <String, dynamic>{};
-    for (final entry in source.entries) {
-      final key = entry.key;
-      if (key is! String) {
-        throw ArgumentError.value(key, name, 'Expected string keys');
+  /// Encodes the official multipart layout with the bytes of every image.
+  static BrowserMultipartBody buildGenerationMultipart(
+    Map<String, dynamic> requestData,
+  ) => NaiGenerationUpload.prepare(requestData).encode();
+
+  Future<NaiGenerationUpload> _prepareUpload(
+    Map<String, dynamic> requestData,
+  ) async {
+    final scope = await _uploadCache?.scopeFor(_endpointService.current);
+    return NaiGenerationUpload.prepare(requestData, scope: scope);
+  }
+
+  /// Resends once with the bytes of the images the server no longer holds.
+  static Future<Response<T>> _sendRestoringCacheMisses<T>(
+    NaiGenerationUpload upload,
+    Future<Response<T>> Function(BrowserMultipartBody body) post,
+  ) async {
+    try {
+      return await post(_encode(upload));
+    } on DioException catch (error, stackTrace) {
+      if (error.response?.statusCode != _badRequestStatus) rethrow;
+      final rejection = await _readRejection(error);
+      final invalidKeys = NaiGenerationUpload.invalidCacheKeysIn(
+        rejection.body,
+      );
+      if (invalidKeys == null || !upload.restoreImages(invalidKeys)) {
+        upload.forgetUploads();
+        Error.throwWithStackTrace(rejection.error, stackTrace);
       }
-      copy[key] = entry.value;
+      AppLogger.w(
+        'Image server no longer holds ${invalidKeys.length} cached image(s), '
+            'resending with their data',
+        'ImgGen',
+      );
     }
-    return copy;
+    try {
+      return await post(_encode(upload));
+    } on DioException catch (error) {
+      if (error.response?.statusCode == _badRequestStatus) {
+        upload.forgetUploads();
+      }
+      rethrow;
+    }
   }
 
-  static String _imageCacheSecretKey(String encodedImage) {
-    return crypto.Hmac(
-      crypto.sha256,
-      _imageCacheHmacKey,
-    ).convert(utf8.encode(encodedImage)).toString();
+  static BrowserMultipartBody _encode(NaiGenerationUpload upload) {
+    final body = upload.encode();
+    AppLogger.d(
+      () =>
+          'Generation body ${body.bytes.length} bytes: '
+          '${upload.reusedImageCount} image(s) by cache key, '
+          '${upload.uploadedImageCount} with data',
+      'ImgGen',
+    );
+    return body;
+  }
+
+  /// Decodes a rejected body; a streamed body is buffered and handed back so
+  /// downstream error formatting can still read it.
+  static Future<({DioException error, Object? body})> _readRejection(
+    DioException error,
+  ) async {
+    final response = error.response!;
+    final data = response.data;
+    if (data is! ResponseBody) {
+      return (error: error, body: decodeDioErrorResponse(data));
+    }
+
+    final bytes = BytesBuilder(copy: false);
+    try {
+      await for (final chunk in data.stream) {
+        bytes.add(chunk);
+      }
+    } catch (readError) {
+      AppLogger.w(
+        'Failed to read rejected generation body: $readError',
+        'ImgGen',
+      );
+      return (error: error, body: null);
+    }
+    final buffered = bytes.takeBytes();
+    final replayableResponse = Response<dynamic>(
+      data: ResponseBody.fromBytes(
+        buffered,
+        data.statusCode,
+        statusMessage: data.statusMessage,
+        isRedirect: data.isRedirect,
+        headers: data.headers,
+      ),
+      requestOptions: response.requestOptions,
+      statusCode: response.statusCode,
+      statusMessage: response.statusMessage,
+      isRedirect: response.isRedirect,
+      redirects: response.redirects,
+      extra: response.extra,
+      headers: response.headers,
+    );
+    return (
+      error: error.copyWith(response: replayableResponse),
+      body: decodeDioErrorResponse(buffered),
+    );
   }
 }

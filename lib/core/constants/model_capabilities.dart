@@ -1,5 +1,39 @@
 import 'api_constants.dart';
 
+class PreciseReferenceCapabilities {
+  const PreciseReferenceCapabilities({
+    this.supported = false,
+    this.availableInInpainting = false,
+    this.resizesImages = false,
+    this.bucketsImages = false,
+    this.supportsFidelity = false,
+    this.strengthSliderMax = 1.0,
+    this.supportsOutfit = false,
+  });
+
+  static const none = PreciseReferenceCapabilities();
+  static const v45 = PreciseReferenceCapabilities(
+    supported: true,
+    availableInInpainting: true,
+    resizesImages: true,
+    supportsFidelity: true,
+  );
+  static const v5 = PreciseReferenceCapabilities(
+    supported: true,
+    bucketsImages: true,
+    strengthSliderMax: 5.0,
+    supportsOutfit: true,
+  );
+
+  final bool supported;
+  final bool availableInInpainting;
+  final bool resizesImages;
+  final bool bucketsImages;
+  final bool supportsFidelity;
+  final double strengthSliderMax;
+  final bool supportsOutfit;
+}
+
 /// 请求体使用的提示词结构。
 enum PromptStructure {
   /// V3 及更早：顶层 `uc`、`sm`、`sm_dyn`。
@@ -33,6 +67,21 @@ enum AnlasFormula {
   modern,
 }
 
+/// 模型强制使用的生成参数；请求以此覆盖用户设置，用户原值保留在状态里。
+class FixedGenerationSettings {
+  const FixedGenerationSettings({
+    required this.steps,
+    required this.sampler,
+    required this.ucPreset,
+  });
+
+  final int steps;
+  final String sampler;
+
+  /// 请求字段 `ucPreset` 的取值，与 `ImageParams.ucPreset` 同一编号体系。
+  final int ucPreset;
+}
+
 /// 单个模型家族的能力描述。
 ///
 /// 新增模型时只需在 [ModelCapabilityRegistry] 补一条记录，业务代码统一读能力位，
@@ -51,7 +100,7 @@ class ModelCapabilities {
     this.maxCharacters = 0,
     this.supportsVibeTransfer = false,
     this.supportsEncodedVibeTransfer = false,
-    this.supportsPreciseReference = false,
+    this.preciseReference = PreciseReferenceCapabilities.none,
     this.hasInpaintingVariant = true,
     this.supportsImg2ImgInpainting = false,
     this.supportsTransparentBackground = false,
@@ -63,9 +112,13 @@ class ModelCapabilities {
     this.supportsNoiseSchedule = true,
     this.supportsVarietyPlus = false,
     this.retainsVarietyPlus = true,
+    this.supportsCfgRescale = true,
+    this.hasFurryMode = false,
     this.cfgDelaySigma = 19.0,
     this.anlasMultiplier = 1.0,
+    this.stepCostFactor = 1.0,
     this.hasOpusUsageLimit = false,
+    this.fixedSettings,
   });
 
   /// 条目的代表模型 ID，用于日志与调试。
@@ -98,9 +151,8 @@ class ModelCapabilities {
   /// V3 支持传统 Vibe Transfer，但直接在生成请求中携带原图；只有 V4+
   /// 需要先调用编码接口，并支持缓存编码、强度标准化及相应 Anlas 费用。
   final bool supportsEncodedVibeTransfer;
-  final bool supportsPreciseReference;
+  final PreciseReferenceCapabilities preciseReference;
 
-  /// 是否存在独立的 inpainting 权重。V5 没有，infill 直接用基础模型。
   final bool hasInpaintingVariant;
 
   /// inpainting 时是否可以复用原图潜空间。
@@ -144,6 +196,12 @@ class ModelCapabilities {
   /// 模型时一律关闭，避免从别的模型带着开启状态静默生效。
   final bool retainsVarietyPlus;
 
+  /// 是否发送 `cfg_rescale`。网页端能力位 `cfgRescale`，为 false 时直接删字段。
+  final bool supportsCfgRescale;
+
+  /// 是否提供 Anime / Furry 模式。网页端能力位 `hasFurryMode`，V4 起为 true。
+  final bool hasFurryMode;
+
   /// Variety+ 的 sigma 基数，实际发送值再按分辨率缩放。
   ///
   /// 网页端能力位 `cfgDelaySigma`：V4.5 起 58，更早的模型 19。
@@ -158,10 +216,16 @@ class ModelCapabilities {
   /// Anlas 基础价倍率。V5 正式版在现代公式之上乘 1.5。
   final double anlasMultiplier;
 
+  /// 现代公式里步数项的系数，在取整之前生效。
+  final double stepCostFactor;
+
   /// Opus 免费生成是否受配额池限制（V5 专属）。
   ///
   /// 配额随 `/user/subscription` 的 `usage` 字段返回，透支后按正常价扣 Anlas。
   final bool hasOpusUsageLimit;
+
+  /// 模型强制的生成参数，null 表示全部由用户决定。
+  final FixedGenerationSettings? fixedSettings;
 
   /// 是否支持多角色提示词与角色定位。
   bool get supportsCharacterPositioning => maxCharacters > 0;
@@ -235,6 +299,7 @@ class ModelCapabilityRegistry {
     supportsEncodedVibeTransfer: true,
     supportsImg2ImgInpainting: true,
     supportsTextRendering: true,
+    hasFurryMode: true,
     supportsVarietyPlus: true,
   );
 
@@ -252,6 +317,7 @@ class ModelCapabilityRegistry {
     supportsEncodedVibeTransfer: true,
     supportsImg2ImgInpainting: true,
     supportsTextRendering: true,
+    hasFurryMode: true,
     supportsVarietyPlus: true,
   );
 
@@ -267,10 +333,11 @@ class ModelCapabilityRegistry {
     maxCharacters: 6,
     supportsVibeTransfer: true,
     supportsEncodedVibeTransfer: true,
-    supportsPreciseReference: true,
+    preciseReference: PreciseReferenceCapabilities.v45,
     supportsImg2ImgInpainting: true,
     supportsEnhancePromptAdd: true,
     supportsTextRendering: true,
+    hasFurryMode: true,
     supportsVarietyPlus: true,
     cfgDelaySigma: 58.0,
   );
@@ -287,18 +354,16 @@ class ModelCapabilityRegistry {
     maxCharacters: 6,
     supportsVibeTransfer: true,
     supportsEncodedVibeTransfer: true,
-    supportsPreciseReference: true,
+    preciseReference: PreciseReferenceCapabilities.v45,
     supportsImg2ImgInpainting: true,
     supportsEnhancePromptAdd: true,
     supportsTextRendering: true,
+    hasFurryMode: true,
     supportsVarietyPlus: true,
     cfgDelaySigma: 58.0,
   );
 
-  /// V5 Curated（正式版，网页端 build 65441ab-production 实测）。
-  ///
-  /// Vibe 与角色参考正式版明确不支持；端到端 ×2 放大未上线，增强 max 档
-  /// 保留。基础价在现代公式之上乘 1.5，Opus 免费受配额池限制。
+  /// V5 精准参考能力按正式站构建 b2fe159 登记。
   static const ModelCapabilities v5Curated = ModelCapabilities(
     id: ImageModels.animeDiffusionV5Curated,
     promptStructure: PromptStructure.v4,
@@ -310,11 +375,13 @@ class ModelCapabilityRegistry {
     defaultSteps: 28,
     randomPromptProfile: RandomPromptProfile.characterPrompts,
     maxCharacters: maximumCharacterCount,
+    preciseReference: PreciseReferenceCapabilities.v5,
     supportsImg2ImgInpainting: true,
     supportsTransparentBackground: true,
     supportsMaxEnhance: true,
     supportsEnhancePromptAdd: true,
     supportsTextRendering: true,
+    hasFurryMode: true,
     supportsAutoText: true,
     // 网页端对 V5 隐藏了噪声调度与 Variety+，这里刻意放开供手动尝试。
     supportsNoiseSchedule: true,
@@ -336,11 +403,13 @@ class ModelCapabilityRegistry {
     defaultSteps: 28,
     randomPromptProfile: RandomPromptProfile.characterPrompts,
     maxCharacters: maximumCharacterCount,
+    preciseReference: PreciseReferenceCapabilities.v5,
     supportsImg2ImgInpainting: true,
     supportsTransparentBackground: true,
     supportsMaxEnhance: true,
     supportsEnhancePromptAdd: true,
     supportsTextRendering: true,
+    hasFurryMode: true,
     supportsAutoText: true,
     // 网页端对 V5 隐藏了噪声调度与 Variety+，这里刻意放开供手动尝试。
     supportsNoiseSchedule: true,
@@ -349,6 +418,41 @@ class ModelCapabilityRegistry {
     cfgDelaySigma: 58.0,
     anlasMultiplier: 1.5,
     hasOpusUsageLimit: true,
+  );
+
+  /// V5 Full 的 Medium 档：噪声调度与 Variety+ 照官网隐藏，不沿用 V5 Full 的手动放开。
+  static const ModelCapabilities v5FullMedium = ModelCapabilities(
+    id: ImageModels.animeDiffusionV5FullMedium,
+    promptStructure: PromptStructure.v4,
+    anlasFormula: AnlasFormula.modern,
+    tokenizer: TokenizerKind.qwen35,
+    tokenLimit: 1471,
+    paramsVersion: 4,
+    defaultScale: 4.0,
+    // 实际步数由 fixedSettings 决定；这里与 V5 Full 一致，切换档位不改写用户步数。
+    defaultSteps: 28,
+    randomPromptProfile: RandomPromptProfile.characterPrompts,
+    maxCharacters: maximumCharacterCount,
+    preciseReference: PreciseReferenceCapabilities.v5,
+    supportsImg2ImgInpainting: true,
+    supportsTransparentBackground: true,
+    supportsMaxEnhance: true,
+    supportsEnhancePromptAdd: true,
+    supportsTextRendering: true,
+    hasFurryMode: true,
+    supportsAutoText: true,
+    supportsNoiseSchedule: false,
+    retainsVarietyPlus: false,
+    supportsCfgRescale: false,
+    cfgDelaySigma: 58.0,
+    anlasMultiplier: 1.5,
+    stepCostFactor: 1 / 1.06521739,
+    hasOpusUsageLimit: true,
+    fixedSettings: FixedGenerationSettings(
+      steps: 14,
+      sampler: Samplers.kEulerAncestral,
+      ucPreset: UcPresets.heavyApiValue,
+    ),
   );
 
   /// 精确匹配表，inpainting 变体与测试期别名都指向所属家族。
@@ -373,6 +477,8 @@ class ModelCapabilityRegistry {
     ImageModels.animeDiffusionV5CuratedInpainting: v5Curated,
     ImageModels.animeDiffusionV5Full: v5Full,
     ImageModels.animeDiffusionV5FullInpainting: v5Full,
+    ImageModels.animeDiffusionV5FullMedium: v5FullMedium,
+    ImageModels.animeDiffusionV5FullMediumInpainting: v5FullMedium,
     ImageModels.v5StagingKey: v5Curated,
   };
 
@@ -391,6 +497,7 @@ class ModelCapabilityRegistry {
     if (exact != null) return exact;
 
     if (model.contains('diffusion-5')) {
+      if (model.contains('full-medium')) return v5FullMedium;
       return model.contains('full') ? v5Full : v5Curated;
     }
     if (model.contains('diffusion-4-5')) {
@@ -427,10 +534,11 @@ class ModelSwitchFollowUps {
       varietyPlus == null;
 }
 
-/// 计算模型切换后应当跟随的默认参数。
+/// 计算切到尚无参数存档的模型时应当跟随的默认参数。
 ///
-/// CFG 与步数只有当前值仍停留在旧模型的出厂默认时才跟随，用户手动调过的一律
-/// 保留——V5 默认 CFG 是 7 而 V4.5 是 5，不跟随会让用户在没察觉的情况下废图。
+/// 有存档的模型直接恢复存档，不经过这里。CFG 与步数只有当前值仍停留在旧模型
+/// 的出厂默认时才跟随，用户手动调过的一律保留——V5 默认 CFG 是 4 而 V4.5 是
+/// 5，不跟随会让用户在没察觉的情况下废图。
 /// 噪声调度与 Variety+ 是另一套规则：目标模型上不合法或不推荐的取值必须无条件
 /// 纠正，否则界面显示的和实际发送的会对不上。
 ModelSwitchFollowUps resolveModelSwitchFollowUps({

@@ -4,11 +4,12 @@ import 'package:dio/dio.dart';
 
 import '../../../../core/agent/agent_types.dart';
 import '../../models/agent_protocol.dart';
-import '../../models/prompt_assistant_models.dart';
+import '../../../../data/models/prompt_assistant/prompt_assistant_models.dart';
 import 'agent_wire_helpers.dart';
 import 'openai_chat_completions_adapter.dart';
 import 'prompt_assistant_adapter.dart';
 import 'reasoning_payload.dart';
+import 'reasoning_rejection.dart';
 
 class OpenAiResponsesAdapter extends PromptAssistantProviderAdapter {
   const OpenAiResponsesAdapter();
@@ -64,7 +65,7 @@ class OpenAiResponsesAdapter extends PromptAssistantProviderAdapter {
       cancelToken: cancelToken,
     );
 
-    return _extractResponseContent(response.data);
+    return _extractResponseContent(checkedProviderResponse(response));
   }
 
   @override
@@ -83,6 +84,7 @@ class OpenAiResponsesAdapter extends PromptAssistantProviderAdapter {
     final reasoningItems = <String, Map<String, dynamic>>{};
     final reasoningTextSeen = <String>{};
     String? activeReasoningId;
+    final payload = _buildAgentPayload(request);
 
     final parser = AgentSseParser(
       onEvent: (event, data) {
@@ -207,10 +209,26 @@ class OpenAiResponsesAdapter extends PromptAssistantProviderAdapter {
               }
               final usageRaw = response['usage'];
               if (usageRaw is Map<String, dynamic>) {
+                final rawInput =
+                    (usageRaw['input_tokens'] as num?)?.toInt() ?? 0;
+                final inputDetails = usageRaw['input_tokens_details'];
+                final cacheRead =
+                    ((inputDetails is Map<String, dynamic>
+                                ? inputDetails['cached_tokens']
+                                : null)
+                            as num?)
+                        ?.toInt() ??
+                    0;
+                final input = rawInput - cacheRead;
+                final output =
+                    (usageRaw['output_tokens'] as num?)?.toInt() ?? 0;
                 usage = Usage(
-                  input: (usageRaw['input_tokens'] as num?)?.toInt() ?? 0,
-                  output: (usageRaw['output_tokens'] as num?)?.toInt() ?? 0,
-                  totalTokens: (usageRaw['total_tokens'] as num?)?.toInt() ?? 0,
+                  input: input < 0 ? 0 : input,
+                  output: output,
+                  cacheRead: cacheRead,
+                  totalTokens:
+                      (usageRaw['total_tokens'] as num?)?.toInt() ??
+                      (rawInput + output),
                 );
               }
             }
@@ -221,24 +239,14 @@ class OpenAiResponsesAdapter extends PromptAssistantProviderAdapter {
           case 'error':
             sawTerminalEvent = true;
             sawError = true;
-            final error = json;
-            final response = error['response'];
-            Map<String, dynamic>? errorBody;
-            if (response is Map<String, dynamic>) {
-              final inner = response['error'];
-              if (inner is Map<String, dynamic>) {
-                errorBody = inner;
-              }
-            }
-            final direct = error['error'];
-            if (errorBody == null && direct is Map<String, dynamic>) {
-              errorBody = direct;
-            }
-            final message =
-                errorBody?['message'] as String? ??
-                'LLM stream failed with event $event';
+            final response = json['response'];
+            final body =
+                response is Map &&
+                    providerErrorDetail(response['error']) != null
+                ? response
+                : json;
             pending.add(
-              AgentWireError('LLM service returned an error: $message'),
+              agentWireErrorFrom(ProviderResponseError(body, payload), request),
             );
           default:
             break;
@@ -250,8 +258,12 @@ class OpenAiResponsesAdapter extends PromptAssistantProviderAdapter {
       final stream = agentStreamPost(
         dio,
         endpoint: _resolveEndpoint(request.provider),
-        payload: _buildAgentPayload(request),
-        headers: _agentHeaders(request.apiKey),
+        payload: payload,
+        headers: _agentHeaders(
+          request.apiKey,
+          provider: request.provider,
+          sessionId: request.sessionId,
+        ),
         cancelToken: cancelToken,
       );
       await for (final chunk in stream) {
@@ -270,7 +282,7 @@ class OpenAiResponsesAdapter extends PromptAssistantProviderAdapter {
       if (pending.isNotEmpty) {
         yield* Stream.fromIterable(List.of(pending));
       }
-      yield agentWireErrorFrom(error, request.provider);
+      yield agentWireErrorFrom(error, request);
       return;
     }
 
@@ -279,7 +291,7 @@ class OpenAiResponsesAdapter extends PromptAssistantProviderAdapter {
     }
     if (!sawTerminalEvent) {
       yield const AgentWireError(
-        'OpenAI Responses stream ended before its terminal event.',
+        'OpenAI Responses stream ended before a terminal response event.',
       );
       return;
     }
@@ -366,9 +378,15 @@ class OpenAiResponsesAdapter extends PromptAssistantProviderAdapter {
       'store': false,
       if (request.effectiveMaxOutputTokens case final maxTokens?)
         'max_output_tokens': maxTokens < 16 ? 16 : maxTokens,
-      if (effort != null) 'reasoning': {'effort': effort, 'summary': 'auto'},
+      if (effort != null)
+        'reasoning': {
+          'effort': effort,
+          if (reasoning?.requestReasoningReplay != false) 'summary': 'auto',
+        },
       if (reasoning?.api == AgentReasoningApi.openAiResponses &&
-          (reasoning!.enabled || reasoning.alwaysIncludeEncryptedReasoning))
+          reasoning!.requestReasoningReplay &&
+          (reasoning.enabled == true ||
+              reasoning.alwaysIncludeEncryptedReasoning))
         'include': ['reasoning.encrypted_content'],
       if (request.systemPrompt.trim().isNotEmpty)
         'instructions': request.systemPrompt.trim(),
@@ -389,7 +407,15 @@ class OpenAiResponsesAdapter extends PromptAssistantProviderAdapter {
   Map<String, dynamic>? _decodeReasoningItem(String signature) {
     try {
       final value = jsonDecode(signature);
-      return value is Map<String, dynamic> ? value : null;
+      if (value is! Map<String, dynamic> || value['type'] != 'reasoning') {
+        return null;
+      }
+      final encrypted = value['encrypted_content'];
+      if ((encrypted is String && encrypted.trim().isNotEmpty) ||
+          _responseReasoningText(value['content']).trim().isNotEmpty) {
+        return value;
+      }
+      return null;
     } on FormatException {
       return null;
     }
@@ -412,11 +438,26 @@ class OpenAiResponsesAdapter extends PromptAssistantProviderAdapter {
     return 'data:$mimeType;base64,$data';
   }
 
-  Map<String, dynamic> _agentHeaders(String? apiKey) {
+  Map<String, dynamic> _agentHeaders(
+    String? apiKey, {
+    required ProviderConfig provider,
+    required String sessionId,
+  }) {
+    final trimmedSession = sessionId.trim();
+    final baseUrl = provider.baseUrl.toLowerCase();
+    final isOpenRouter =
+        provider.preset == ProviderPreset.openRouter ||
+        baseUrl.contains('openrouter.ai');
+    final isOpenAi =
+        provider.preset == ProviderPreset.openaiResponses ||
+        baseUrl.contains('api.openai.com');
     return {
       'Content-Type': 'application/json',
       if (apiKey != null && apiKey.trim().isNotEmpty)
         'Authorization': 'Bearer ${apiKey.trim()}',
+      if (trimmedSession.isNotEmpty && isOpenRouter)
+        'x-session-id': trimmedSession,
+      if (trimmedSession.isNotEmpty && isOpenAi) 'session-id': trimmedSession,
     };
   }
 
@@ -449,10 +490,6 @@ class OpenAiResponsesAdapter extends PromptAssistantProviderAdapter {
 
   String _extractResponseContent(dynamic raw) {
     if (raw is Map<String, dynamic>) {
-      final error = extractErrorMessage(raw);
-      if (error != null) {
-        throw StateError('LLM service returned an error: $error');
-      }
       final outputText = contentToText(raw['output_text']);
       if (outputText.isNotEmpty) return outputText;
 

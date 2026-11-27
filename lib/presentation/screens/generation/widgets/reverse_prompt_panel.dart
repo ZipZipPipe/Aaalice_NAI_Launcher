@@ -1,22 +1,25 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import '../../../widgets/common/ink_host.dart';
 import '../../../widgets/common/model_family_icon.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:super_drag_and_drop/super_drag_and_drop.dart';
 
+import '../../../../core/platform/image_file_picker.dart';
 import '../../../../core/platform/platform_capabilities.dart';
 import '../../../../data/models/character/character_prompt.dart';
 import '../../../../data/services/local_onnx_model_service.dart';
 import '../../../providers/generation/generation_panel_expansion_provider.dart';
 import '../../../providers/generation/generation_params_notifier.dart';
+import '../../../providers/local_tagger_models_provider.dart';
 import '../../../providers/reverse_prompt_provider.dart';
 import '../../../providers/tag_library_page_provider.dart';
 import '../../../prompt_assistant/providers/prompt_assistant_history_provider.dart';
 import '../../../utils/asset_protection_guard.dart';
 import '../../../utils/card_drop_reader.dart';
+import '../../../utils/native_drop_callback.dart';
 import '../../../widgets/common/image_card_action.dart';
 import '../../../../core/utils/localization_extension.dart';
 import '../../../widgets/common/app_toast.dart';
@@ -24,7 +27,9 @@ import '../../../widgets/common/translated_tag_text.dart';
 import '../../../widgets/common/collapsible_image_panel.dart';
 import '../../../widgets/common/decoded_memory_image.dart';
 import '../../../widgets/common/themed_divider.dart';
+import '../../../widgets/common/labeled_slider_rows.dart';
 import '../../../widgets/tag_library/tag_library_picker_dialog.dart';
+import 'reverse_prompt_tagger_category_chips.dart';
 
 class ReversePromptPanel extends ConsumerStatefulWidget {
   const ReversePromptPanel({super.key});
@@ -190,9 +195,12 @@ class _ReversePromptPanelState extends ConsumerState<ReversePromptPanel> {
           setState(() => _isDragging = false);
         }
       },
-      onPerformDrop: (event) async {
+      onPerformDrop: (event) {
         setState(() => _isDragging = false);
-        await _handleDrop(event);
+        return releaseNativeDropCallback(
+          () => _handleDrop(event),
+          library: 'ReversePromptPanel',
+        );
       },
       child: button,
     );
@@ -224,26 +232,28 @@ class _ReversePromptPanelState extends ConsumerState<ReversePromptPanel> {
               Positioned(
                 top: 0,
                 right: 0,
-                child: InkWell(
-                  onTap: () => ref
-                      .read(reversePromptProvider.notifier)
-                      .removeImage(image.id),
-                  borderRadius: BorderRadius.circular(24),
-                  child: SizedBox.square(
-                    dimension: 48,
-                    child: Align(
-                      alignment: Alignment.topRight,
-                      child: Container(
-                        decoration: BoxDecoration(
-                          color: Colors.black.withValues(alpha: 0.65),
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        padding: const EdgeInsets.all(2),
-                        // 固定深色底必须搭配固定浅色图标，避免浅色主题下失去对比。
-                        child: const Icon(
-                          Icons.close,
-                          size: 14,
-                          color: Colors.white,
+                child: InkHost(
+                  child: InkWell(
+                    onTap: () => ref
+                        .read(reversePromptProvider.notifier)
+                        .removeImage(image.id),
+                    borderRadius: BorderRadius.circular(24),
+                    child: SizedBox.square(
+                      dimension: 48,
+                      child: Align(
+                        alignment: Alignment.topRight,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.65),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          padding: const EdgeInsets.all(2),
+                          // 固定深色底必须搭配固定浅色图标，避免浅色主题下失去对比。
+                          child: const Icon(
+                            Icons.close,
+                            size: 14,
+                            color: Colors.white,
+                          ),
                         ),
                       ),
                     ),
@@ -286,62 +296,84 @@ class _ReversePromptPanelState extends ConsumerState<ReversePromptPanel> {
 
   Widget _buildTaggerControls(ReversePromptState state) {
     return FutureBuilder<List<LocalOnnxModelDescriptor>>(
-      future: ref.read(localOnnxModelServiceProvider).scanTaggerModels(),
+      // 缓存失效前始终是同一个 Future，重建不会重新扫描模型目录
+      future: ref.watch(localTaggerModelsProvider.future),
       builder: (context, snapshot) {
         final models = snapshot.data ?? const <LocalOnnxModelDescriptor>[];
         final selected =
             models.any((m) => m.path == state.selectedTaggerModelPath)
             ? state.selectedTaggerModelPath
             : null;
+        // 未选择时运行会落到第一个模型，分类跟随实际要用的模型
+        final effectiveModel =
+            models.where((model) => model.path == selected).firstOrNull ??
+            models.firstOrNull;
+        final labelsPath = effectiveModel?.labelsPath;
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            DropdownButtonFormField<String>(
-              initialValue: selected,
-              isExpanded: true,
-              items: models
-                  .map(
-                    (model) => DropdownMenuItem(
-                      value: model.path,
-                      child: ModelNameLabel(modelId: model.name),
+            Row(
+              children: [
+                Expanded(
+                  child: DropdownButtonFormField<String>(
+                    initialValue: selected,
+                    isExpanded: true,
+                    items: models
+                        .map(
+                          (model) => DropdownMenuItem(
+                            value: model.path,
+                            child: ModelNameLabel(modelId: model.name),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: state.isProcessing
+                        ? null
+                        : ref
+                              .read(reversePromptProvider.notifier)
+                              .setSelectedTaggerModelPath,
+                    decoration: InputDecoration(
+                      labelText: context.l10n.reversePrompt_localTaggerModel,
+                      hintText: context.l10n.reversePrompt_localTaggerModelHint,
+                      isDense: true,
                     ),
-                  )
-                  .toList(),
-              onChanged: state.isProcessing
-                  ? null
-                  : ref
-                        .read(reversePromptProvider.notifier)
-                        .setSelectedTaggerModelPath,
-              decoration: InputDecoration(
-                labelText: context.l10n.reversePrompt_localTaggerModel,
-                hintText: context.l10n.reversePrompt_localTaggerModelHint,
-                isDense: true,
-              ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: context.l10n.common_refresh,
+                  onPressed: () => ref.invalidate(localTaggerModelsProvider),
+                  icon: const Icon(Icons.refresh_rounded),
+                ),
+              ],
             ),
+            if (labelsPath != null) ...[
+              const SizedBox(height: 8),
+              ReversePromptTaggerCategoryChips(
+                labelsPath: labelsPath,
+                enabled: !state.isProcessing,
+              ),
+            ],
             const SizedBox(height: 6),
-            _ThresholdSlider(
-              label: context.l10n.reversePrompt_generalThreshold,
-              value: state.taggerGeneralThreshold,
-              onChanged: state.isProcessing
-                  ? null
-                  : ref
-                        .read(reversePromptProvider.notifier)
-                        .setTaggerGeneralThreshold,
-            ),
-            _ThresholdSlider(
-              label: context.l10n.reversePrompt_characterThreshold,
-              value: state.taggerCharacterThreshold,
-              onChanged: state.isProcessing
-                  ? null
-                  : ref
-                        .read(reversePromptProvider.notifier)
-                        .setTaggerCharacterThreshold,
-            ),
-            Text(
-              context.l10n.reversePrompt_taggerFilterHint,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
+            LabeledSliderRows(
+              sliders: [
+                _thresholdSlider(
+                  label: context.l10n.reversePrompt_generalThreshold,
+                  value: state.taggerGeneralThreshold,
+                  onChanged: state.isProcessing
+                      ? null
+                      : ref
+                            .read(reversePromptProvider.notifier)
+                            .setTaggerGeneralThreshold,
+                ),
+                _thresholdSlider(
+                  label: context.l10n.reversePrompt_characterThreshold,
+                  value: state.taggerCharacterThreshold,
+                  onChanged: state.isProcessing
+                      ? null
+                      : ref
+                            .read(reversePromptProvider.notifier)
+                            .setTaggerCharacterThreshold,
+                ),
+              ],
             ),
           ],
         );
@@ -533,11 +565,7 @@ class _ReversePromptPanelState extends ConsumerState<ReversePromptPanel> {
   }
 
   Future<void> _pickImages() async {
-    final result = await FilePicker.platform.pickFiles(
-      type: FileType.image,
-      allowMultiple: true,
-      withData: false,
-    );
+    final result = await pickImageFiles(allowMultiple: true);
     if (result == null) {
       return;
     }
@@ -605,35 +633,19 @@ class _ReversePromptPanelState extends ConsumerState<ReversePromptPanel> {
   }
 }
 
-class _ThresholdSlider extends StatelessWidget {
-  const _ThresholdSlider({
-    required this.label,
-    required this.value,
-    required this.onChanged,
-  });
-
-  final String label;
-  final double value;
-  final ValueChanged<double>? onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        SizedBox(width: 104, child: Text('$label ${value.toStringAsFixed(2)}')),
-        Expanded(
-          child: Slider(
-            value: value,
-            min: 0.05,
-            max: 0.95,
-            divisions: 18,
-            onChanged: onChanged,
-          ),
-        ),
-      ],
-    );
-  }
-}
+LabeledSlider _thresholdSlider({
+  required String label,
+  required double value,
+  required ValueChanged<double>? onChanged,
+}) => LabeledSlider(
+  label: label,
+  value: value,
+  min: 0.05,
+  max: 0.95,
+  divisions: 18,
+  valueText: (value) => value.toStringAsFixed(2),
+  onChanged: onChanged,
+);
 
 class _PromptOutputBlock extends StatelessWidget {
   const _PromptOutputBlock({required this.title, required this.text});

@@ -2,10 +2,13 @@ import 'dart:async';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:flutter/scheduler.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../../core/constants/api_constants.dart';
 import '../../../core/constants/model_capabilities.dart';
+import '../../../core/enums/generation_effort.dart';
+import '../../../core/enums/image_model_mode.dart';
 import '../../../core/enums/precise_ref_type.dart';
 import '../../../core/storage/local_storage_service.dart';
 import '../../../core/utils/app_logger.dart';
@@ -16,11 +19,12 @@ import '../../../data/models/image/image_params.dart';
 import '../../../data/models/vibe/vibe_library_entry.dart';
 import '../../../data/models/vibe/vibe_reference.dart';
 import '../../../data/services/vibe_library_storage_service.dart';
-import '../auth_provider.dart';
+import '../../../data/services/auth_provider.dart';
 import '../quality_preset_provider.dart';
 import '../subscription_provider.dart';
 import '../uc_preset_provider.dart';
 import 'generation_params_persistence_service.dart';
+import 'model_sampling_memory.dart';
 import 'vibe_reference_service.dart';
 
 part 'generation_params_notifier.g.dart';
@@ -56,13 +60,13 @@ class GenerationParamsNotifier extends _$GenerationParamsNotifier {
   /// 加载最近使用的 Vibes
   Future<void> loadRecentVibes() async {
     await _vibeReferences.loadRecent();
-    if (!_isDisposed) state = state.copyWith();
+    if (!_isDisposed) ref.notifyListeners();
   }
 
   /// 记录 Vibe 使用并更新最近列表
   Future<void> _recordVibeUsage(VibeReference vibe) async {
     await _vibeReferences.recordUsage(vibe);
-    if (!_isDisposed) state = state.copyWith();
+    if (!_isDisposed) ref.notifyListeners();
   }
 
   VibeReferenceService _createVibeReferenceService({
@@ -128,21 +132,30 @@ class GenerationParamsNotifier extends _$GenerationParamsNotifier {
           : currentSeed;
       _storage.setLockedSeedValue(seedToLock);
       _storage.setSeedLocked(true);
-      state = state.copyWith(seed: seedToLock);
+      if (seedToLock != currentSeed) {
+        state = state.copyWith(seed: seedToLock);
+      } else {
+        ref.notifyListeners();
+      }
     } else {
       // 解锁：保留当前种子值，只取消锁定状态
       _storage.setSeedLocked(false);
       _storage.setLockedSeedValue(null);
       // 触发 state 变化以刷新 UI（保持种子值不变）
-      state = state.copyWith();
+      ref.notifyListeners();
     }
   }
 
   /// 更新提示词
+  ///
+  /// 用户输入路径同步写入状态。若一律用 `Future.microtask` 延后，同一事件内
+  /// 连续两次文本更新（输入法组合串、快速连删）会留下两个过期写入，与
+  /// prompt_input 的 state→controller 回写监听形成新旧值永久振荡：微任务队列
+  /// 永不排空，应用整体卡死。只在构建/布局阶段延后到帧尾，以免在构建期间
+  /// 修改 provider。
   void updatePrompt(String prompt) {
     final storage = _storage;
-    // 使用 Future.microtask 延迟更新，避免在 widget tree 构建期间修改 provider
-    Future.microtask(() {
+    _applyPromptUpdate(() {
       if (_isDisposed) return;
       state = state.copyWith(prompt: prompt);
       storage.setLastPrompt(prompt);
@@ -150,69 +163,117 @@ class GenerationParamsNotifier extends _$GenerationParamsNotifier {
   }
 
   /// 更新负向提示词
+  ///
+  /// 写入时机同 [updatePrompt]。
   void updateNegativePrompt(String negativePrompt) {
     final storage = _storage;
-    // 使用 Future.microtask 延迟更新，避免在 widget tree 构建期间修改 provider
-    Future.microtask(() {
+    _applyPromptUpdate(() {
       if (_isDisposed) return;
       state = state.copyWith(negativePrompt: negativePrompt);
       storage.setLastNegativePrompt(negativePrompt);
     });
   }
 
+  void _applyPromptUpdate(void Function() apply) {
+    final binding = SchedulerBinding.instance;
+    if (binding.schedulerPhase == SchedulerPhase.persistentCallbacks) {
+      // 构建/布局回调期间不允许修改 provider，延后到帧结束
+      binding.addPostFrameCallback((_) => apply());
+      return;
+    }
+    apply();
+  }
+
   /// 更新模型
   ///
-  /// [followDefaults] 为 true 时，若 CFG 与步数仍停留在旧模型的出厂默认值，
-  /// 会一并切到新模型的默认值；用户手动调过的参数不会被覆盖。元数据导入等
-  /// 需要还原历史参数的场景应传 false。
+  /// 切走时为旧模型存档采样参数，切到有存档的模型时恢复，否则跟随出厂默认值。
+  /// [followDefaults] 为 false 时只换模型，供元数据导入等还原历史参数的场景使用。
   void updateModel(
     String model, {
     bool persist = true,
     bool followDefaults = true,
   }) {
-    final previousModel = state.model;
-    var next = state.copyWith(model: model);
+    final previous = state;
+    final memory = ModelSamplingMemory(_storage);
+    final switchesSlot =
+        ModelSamplingMemory.slotOf(previous.model) !=
+        ModelSamplingMemory.slotOf(model);
+    if (persist && switchesSlot) memory.remember(previous);
 
-    final followUps = followDefaults
-        ? resolveModelSwitchFollowUps(
-            from: ModelCapabilityRegistry.of(previousModel),
-            to: ModelCapabilityRegistry.of(model),
-            currentScale: state.scale,
-            currentSteps: state.steps,
-            currentNoiseSchedule: state.noiseSchedule,
-            currentVarietyPlus: state.varietyPlus,
-          )
-        : const ModelSwitchFollowUps();
-
-    if (followUps.scale != null) {
-      next = next.copyWith(scale: followUps.scale!);
-    }
-    if (followUps.steps != null) {
-      next = next.copyWith(steps: followUps.steps!);
-    }
-    if (followUps.noiseSchedule != null) {
-      next = next.copyWith(noiseSchedule: followUps.noiseSchedule!);
-    }
-    if (followUps.varietyPlus != null) {
-      next = next.copyWith(varietyPlus: followUps.varietyPlus!);
+    final remembered = followDefaults && switchesSlot
+        ? memory.recall(model)
+        : null;
+    var next = previous.copyWith(model: model);
+    if (followDefaults) {
+      next =
+          remembered?.applyTo(next) ??
+          _applyModelSwitchFollowUps(next, from: previous.model);
     }
     state = next;
 
     if (persist) {
       _storage.setDefaultModel(model);
-      if (followUps.scale != null) {
-        _storage.setDefaultScale(followUps.scale!);
-      }
-      if (followUps.steps != null) {
-        _storage.setDefaultSteps(followUps.steps!);
-      }
-      if (followUps.noiseSchedule != null) {
-        _storage.setLastNoiseSchedule(followUps.noiseSchedule!);
-      }
-      if (followUps.varietyPlus != null) {
-        _storage.setLastVarietyPlus(followUps.varietyPlus!);
-      }
+      _persistSamplingSettings(previous, next, restoreAll: remembered != null);
     }
+  }
+
+  ImageParams _applyModelSwitchFollowUps(
+    ImageParams params, {
+    required String from,
+  }) {
+    final followUps = resolveModelSwitchFollowUps(
+      from: ModelCapabilityRegistry.of(from),
+      to: params.capabilities,
+      currentScale: params.scale,
+      currentSteps: params.steps,
+      currentNoiseSchedule: params.noiseSchedule,
+      currentVarietyPlus: params.varietyPlus,
+    );
+    return params.copyWith(
+      scale: followUps.scale ?? params.scale,
+      steps: followUps.steps ?? params.steps,
+      noiseSchedule: followUps.noiseSchedule ?? params.noiseSchedule,
+      varietyPlus: followUps.varietyPlus ?? params.varietyPlus,
+    );
+  }
+
+  /// 写回上次使用的设置，重启后与界面一致。
+  void _persistSamplingSettings(
+    ImageParams previous,
+    ImageParams next, {
+    required bool restoreAll,
+  }) {
+    if (restoreAll || next.steps != previous.steps) {
+      _storage.setDefaultSteps(next.steps);
+    }
+    if (restoreAll || next.scale != previous.scale) {
+      _storage.setDefaultScale(next.scale);
+    }
+    if (restoreAll || next.cfgRescale != previous.cfgRescale) {
+      _storage.setLastCfgRescale(next.cfgRescale);
+    }
+    if (restoreAll || next.sampler != previous.sampler) {
+      _storage.setDefaultSampler(next.sampler);
+    }
+    if (restoreAll || next.noiseSchedule != previous.noiseSchedule) {
+      _storage.setLastNoiseSchedule(next.noiseSchedule);
+    }
+    if (restoreAll || next.varietyPlus != previous.varietyPlus) {
+      _storage.setLastVarietyPlus(next.varietyPlus);
+    }
+  }
+
+  /// 切换 Effort 档位；不跟随默认值，Medium 锁定的参数留在状态里供切回 High 使用。
+  void updateEffort(GenerationEffort effort) {
+    final target = ImageModels.withEffort(state.model, effort);
+    if (target == state.model) return;
+    updateModel(target, followDefaults: false);
+  }
+
+  /// 更新 Anime / Furry 模式
+  void updateModelMode(ImageModelMode modelMode) {
+    state = state.copyWith(modelMode: modelMode);
+    _storage.setImageModelMode(modelMode);
   }
 
   /// 更新尺寸
@@ -293,6 +354,7 @@ class GenerationParamsNotifier extends _$GenerationParamsNotifier {
       scale: storage.getDefaultScale(),
       width: storage.getDefaultWidth(),
       height: storage.getDefaultHeight(),
+      modelMode: storage.getImageModelMode(),
     );
     _scheduleGenerationStateSave(immediate: true);
   }
@@ -621,7 +683,7 @@ class GenerationParamsNotifier extends _$GenerationParamsNotifier {
     final vibe = await _vibeReferences.useLibraryEntry(entryId);
     if (vibe == null || _isDisposed) return false;
     addVibeReference(vibe);
-    state = state.copyWith();
+    ref.notifyListeners();
     return true;
   }
 
@@ -639,7 +701,7 @@ class GenerationParamsNotifier extends _$GenerationParamsNotifier {
     final references = [...state.vibeReferencesV4];
     references[index] = vibe;
     _applyVibeReferences(references);
-    state = state.copyWith();
+    ref.notifyListeners();
     return true;
   }
 
@@ -652,6 +714,7 @@ class GenerationParamsNotifier extends _$GenerationParamsNotifier {
     double strength = 1.0,
     double fidelity = 1.0,
     bool isNormalizedPng = false,
+    bool? preferSameOutfit,
   }) {
     if (isNormalizedPng) {
       NAIApiUtils.markNormalizedPreciseReferencePng(image);
@@ -662,6 +725,7 @@ class GenerationParamsNotifier extends _$GenerationParamsNotifier {
         PreciseReference(
           image: image,
           type: type,
+          preferSameOutfit: preferSameOutfit,
           strength: strength,
           fidelity: fidelity,
         ),
@@ -670,39 +734,25 @@ class GenerationParamsNotifier extends _$GenerationParamsNotifier {
     _scheduleGenerationStateSave(immediate: true);
   }
 
-  /// 添加原始图片形式的 Precise Reference，并在后台完成 Director PNG 规范化。
-  ///
-  /// 原图会先进入状态，保证用户快速点击生成时请求构建器仍能读取到参考图；
-  /// 规范化完成后再替换为可直接提交的 PNG，避免后续生成重复处理。
+  /// 保留原图，后台准备需要缩放的请求载荷。
   Future<void> addPreciseReferenceFromImage(
     Uint8List image, {
     required PreciseRefType type,
     double strength = 1.0,
     double fidelity = 1.0,
+    bool? preferSameOutfit,
   }) async {
-    final index = state.preciseReferences.length;
     addPreciseReference(
       image,
       type: type,
+      preferSameOutfit: preferSameOutfit,
       strength: strength,
       fidelity: fidelity,
     );
 
-    final normalization = await _vibeReferences.normalizePrecisePng(image);
-    final normalizedImage = normalization.image;
-    if (normalizedImage == null ||
-        _isDisposed ||
-        index >= state.preciseReferences.length) {
-      return;
+    if (state.requestPreciseReferenceCapabilities.resizesImages) {
+      await _vibeReferences.normalizePrecisePng(image);
     }
-
-    final current = state.preciseReferences[index];
-    if (!identical(current.image, image)) return;
-
-    final newList = [...state.preciseReferences];
-    newList[index] = current.copyWith(image: normalizedImage);
-    state = state.copyWith(preciseReferences: newList);
-    _scheduleGenerationStateSave(immediate: true);
   }
 
   /// 移除 Precise Reference
@@ -727,6 +777,7 @@ class GenerationParamsNotifier extends _$GenerationParamsNotifier {
     final current = newList[index];
     newList[index] = current.copyWith(
       type: type ?? current.type,
+      preferSameOutfit: type == null ? current.preferSameOutfit : null,
       strength: strength ?? current.strength,
       fidelity: fidelity ?? current.fidelity,
       enabled: enabled ?? current.enabled,
@@ -740,7 +791,15 @@ class GenerationParamsNotifier extends _$GenerationParamsNotifier {
     if (index < 0 || index >= state.preciseReferences.length) return;
     final newList = [...state.preciseReferences];
     final current = newList[index];
-    newList[index] = current.copyWith(type: type);
+    newList[index] = current.copyWith(type: type, preferSameOutfit: null);
+    state = state.copyWith(preciseReferences: newList);
+    _scheduleGenerationStateSave(immediate: true);
+  }
+
+  void updatePreciseReferencePreferSameOutfit(int index, bool? value) {
+    if (index < 0 || index >= state.preciseReferences.length) return;
+    final newList = [...state.preciseReferences];
+    newList[index] = newList[index].copyWith(preferSameOutfit: value);
     state = state.copyWith(preciseReferences: newList);
     _scheduleGenerationStateSave(immediate: true);
   }
@@ -790,6 +849,11 @@ class GenerationParamsNotifier extends _$GenerationParamsNotifier {
         normalizeVibeStrength: restored.normalizeVibeStrength,
       );
       if (restored.shouldRewrite) unawaited(saveGenerationState());
+      if (state.requestPreciseReferenceCapabilities.resizesImages) {
+        for (final reference in restored.preciseReferences) {
+          unawaited(_vibeReferences.normalizePrecisePng(reference.image));
+        }
+      }
     } catch (error, stackTrace) {
       AppLogger.e('恢复生成状态失败', error, stackTrace, 'GenerationParams');
     }

@@ -1,32 +1,50 @@
 import 'dart:async';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 
+import '../database/database_error_summary.dart';
+import '../database/utils/lru_cache.dart';
 import '../utils/app_logger.dart';
 import 'autocomplete_cache_database.dart';
 import 'completion_models.dart';
 
 class DanbooruCompletionSource implements CompletionSource {
-  DanbooruCompletionSource({Dio? dio, required AutocompleteCacheDatabase cache})
-    : _cache = cache,
-      _dio =
-          dio ??
-          Dio(
-            BaseOptions(
-              baseUrl: 'https://danbooru.donmai.us',
-              connectTimeout: const Duration(seconds: 3),
-              receiveTimeout: const Duration(seconds: 3),
-              sendTimeout: const Duration(seconds: 3),
-              headers: const {
-                'Accept': 'application/json',
-                'User-Agent': 'Aaalice-NAI-Launcher/Autocomplete',
-              },
-            ),
-          );
+  DanbooruCompletionSource({
+    Dio? dio,
+    required AutocompleteCacheDatabase cache,
+    DateTime Function()? now,
+  }) : _cache = cache,
+       _now = now ?? DateTime.now,
+       _dio =
+           dio ??
+           Dio(
+             BaseOptions(
+               baseUrl: 'https://danbooru.donmai.us',
+               connectTimeout: const Duration(seconds: 3),
+               receiveTimeout: const Duration(seconds: 3),
+               sendTimeout: const Duration(seconds: 3),
+               headers: const {
+                 'Accept': 'application/json',
+                 'User-Agent': 'Aaalice-NAI-Launcher/Autocomplete',
+               },
+             ),
+           );
+
+  static const memoryTtl = Duration(minutes: 5);
+  static const memoryMaxEntries = 64;
+  // 全部结果模式下单个键可达数万候选，只限条目数挡不住
+  static const memoryMaxCandidates = 50000;
 
   final Dio _dio;
   final AutocompleteCacheDatabase _cache;
-  final Map<String, _MemoryEntry> _memory = {};
+  final DateTime Function() _now;
+  final LRUCache<String, _MemoryEntry> _memory = LRUCache(
+    maxSize: memoryMaxEntries,
+    maxWeight: memoryMaxCandidates,
+    weigher: (entry) => entry.candidates.length,
+  );
+  int _cacheGeneration = 0;
   CancelToken? _cancelToken;
   DateTime? _lastRequestAt;
   DateTime? _breakerOpenUntil;
@@ -37,9 +55,41 @@ class DanbooruCompletionSource implements CompletionSource {
       _breakerOpenUntil != null && DateTime.now().isBefore(_breakerOpenUntil!);
   String? get lastError => _lastError;
 
+  @visibleForTesting
+  int get memoryEntryCount => _memory.size;
+
   void cancelPending() {
     _cancelToken?.cancel('Autocomplete query replaced');
     _cancelToken = null;
+  }
+
+  /// 清空内存与磁盘两层，返回删除的磁盘行数。
+  /// 之前发起的请求一律作废，包括其他输入框的在途补全。
+  Future<int> clearCache() {
+    _cacheGeneration++;
+    cancelPending();
+    _memory.clear();
+    return _cache.clearDanbooruCache();
+  }
+
+  List<CompletionCandidate>? _readMemory(String key, DateTime now) {
+    _evictExpired(now);
+    return _memory.get(key)?.candidates;
+  }
+
+  void _writeMemory(
+    String key,
+    List<CompletionCandidate> candidates,
+    DateTime now,
+  ) {
+    _evictExpired(now);
+    _memory.put(key, _MemoryEntry(candidates, now));
+  }
+
+  void _evictExpired(DateTime now) {
+    _memory.removeWhere(
+      (_, entry) => now.difference(entry.storedAt) >= memoryTtl,
+    );
   }
 
   @override
@@ -48,19 +98,19 @@ class DanbooruCompletionSource implements CompletionSource {
     if (query.isChinese || token.length < 2) return const [];
     final key =
         'tags:$token:${query.categoryFilter?.value ?? 'all'}:${query.limit}';
-    final now = DateTime.now();
-    final memory = _memory[key];
-    if (memory != null &&
-        now.difference(memory.storedAt) < const Duration(minutes: 5)) {
+    final generation = _cacheGeneration;
+    final now = _now();
+    final memory = _readMemory(key, now);
+    if (memory != null) {
       _lastError = null;
-      return memory.candidates;
+      return memory;
     }
 
     final disk = await _cache.getRemote(key);
     if (disk != null &&
         now.toUtc().difference(disk.fetchedAt) < const Duration(days: 7)) {
       final candidates = _decodeCandidates(disk.payload);
-      _memory[key] = _MemoryEntry(candidates, now);
+      if (generation == _cacheGeneration) _writeMemory(key, candidates, _now());
       _lastError = null;
       return candidates;
     }
@@ -107,16 +157,14 @@ class DanbooruCompletionSource implements CompletionSource {
       }
       _consecutiveFailures = 0;
       _lastError = null;
-      final payload = candidates.map(_encodeCandidate).toList();
-      await _cache.putRemote(key, payload);
-      _memory[key] = _MemoryEntry(candidates, now);
+      await _storeFetched(key, candidates, generation);
       return candidates;
     } on DioException catch (error, stack) {
       if (CancelToken.isCancel(error)) return const [];
       _lastError = error.message ?? error.toString();
       _registerFailure();
       AppLogger.w(
-        'Danbooru autocomplete request failed: $error',
+        'Danbooru autocomplete request failed: ${_requestFailure(error)}',
         'Autocomplete',
       );
       AppLogger.d('$stack', 'Autocomplete');
@@ -124,7 +172,11 @@ class DanbooruCompletionSource implements CompletionSource {
     } catch (error, stack) {
       _lastError = error.toString();
       _registerFailure();
-      AppLogger.e('Danbooru autocomplete response failed', error, stack);
+      AppLogger.e(
+        'Danbooru autocomplete response failed',
+        databaseErrorSummary(error),
+        stack,
+      );
       return _staleCandidates(disk, now);
     } finally {
       if (identical(_cancelToken, cancelToken)) _cancelToken = null;
@@ -141,18 +193,18 @@ class DanbooruCompletionSource implements CompletionSource {
         ? 500
         : limit.clamp(1, 500);
     final key = 'related:v3:$normalized:$requestedLimit';
-    final now = DateTime.now();
-    final memory = _memory[key];
-    if (memory != null &&
-        now.difference(memory.storedAt) < const Duration(minutes: 5)) {
+    final generation = _cacheGeneration;
+    final now = _now();
+    final memory = _readMemory(key, now);
+    if (memory != null) {
       _lastError = null;
-      return memory.candidates;
+      return memory;
     }
     final disk = await _cache.getRemote(key);
     if (disk != null &&
         now.toUtc().difference(disk.fetchedAt) < const Duration(days: 7)) {
       final candidates = _decodeCandidates(disk.payload);
-      _memory[key] = _MemoryEntry(candidates, now);
+      if (generation == _cacheGeneration) _writeMemory(key, candidates, _now());
       _lastError = null;
       return candidates;
     }
@@ -178,8 +230,7 @@ class DanbooruCompletionSource implements CompletionSource {
         response.data,
         requestedLimit,
       );
-      await _cache.putRemote(key, candidates.map(_encodeCandidate).toList());
-      _memory[key] = _MemoryEntry(candidates, now);
+      await _storeFetched(key, candidates, generation);
       _consecutiveFailures = 0;
       _lastError = null;
       return candidates;
@@ -187,16 +238,30 @@ class DanbooruCompletionSource implements CompletionSource {
       if (CancelToken.isCancel(error)) return const [];
       _lastError = error.message ?? error.toString();
       _registerFailure();
-      AppLogger.w('Danbooru related tags failed: $error');
+      AppLogger.w('Danbooru related tags failed: ${_requestFailure(error)}');
       return _staleCandidates(disk, now);
     } catch (error) {
       _lastError = error.toString();
       _registerFailure();
-      AppLogger.w('Danbooru related tags failed: $error');
+      AppLogger.w(
+        'Danbooru related tags failed: ${databaseErrorSummary(error)}',
+      );
       return _staleCandidates(disk, now);
     } finally {
       if (identical(_cancelToken, cancelToken)) _cancelToken = null;
     }
+  }
+
+  Future<void> _storeFetched(
+    String key,
+    List<CompletionCandidate> candidates,
+    int generation,
+  ) async {
+    // 必须在 insert 前同步比对：sqflite 串行执行，已发出的 insert 会先于之后清除的 delete
+    if (generation != _cacheGeneration) return;
+    await _cache.putRemote(key, candidates.map(_encodeCandidate).toList());
+    if (generation != _cacheGeneration) return;
+    _writeMemory(key, candidates, _now());
   }
 
   Future<Response<dynamic>> _requestWithRetry(
@@ -228,6 +293,10 @@ class DanbooruCompletionSource implements CompletionSource {
     }
     throw lastError!;
   }
+
+  // DioException 文本会附上底层 HttpException 的 uri，里面是正在输入的标签
+  static String _requestFailure(DioException error) =>
+      '${error.type.name}, status ${error.response?.statusCode}';
 
   Future<void> _waitForRateLimit() async {
     final previous = _lastRequestAt;

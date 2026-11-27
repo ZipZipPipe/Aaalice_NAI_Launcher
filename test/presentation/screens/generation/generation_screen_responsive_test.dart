@@ -1,24 +1,39 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hive_flutter/hive_flutter.dart';
+import 'package:hive_ce_flutter/hive_ce_flutter.dart';
 import 'package:nai_launcher/core/constants/storage_keys.dart';
 import 'package:nai_launcher/core/platform/platform_capabilities.dart';
 import 'package:nai_launcher/core/shortcuts/shortcut_config.dart';
 import 'package:nai_launcher/core/storage/local_storage_service.dart';
+import 'package:nai_launcher/data/models/character/character_prompt.dart';
+import 'package:nai_launcher/data/models/user/user_subscription.dart';
 import 'package:nai_launcher/l10n/app_localizations.dart';
 import 'package:nai_launcher/presentation/adaptive/interaction_policy.dart';
+import 'package:nai_launcher/presentation/providers/character_prompt_provider.dart';
+import 'package:nai_launcher/presentation/providers/generation_layout_mode_provider.dart';
 import 'package:nai_launcher/presentation/providers/layout_state_provider.dart';
+import 'package:nai_launcher/presentation/providers/prompt_maximize_provider.dart';
 import 'package:nai_launcher/presentation/providers/shortcuts_provider.dart';
+import 'package:nai_launcher/presentation/providers/subscription_provider.dart';
+import 'package:nai_launcher/presentation/providers/generation/workflow_panel_reveal_provider.dart';
 import 'package:nai_launcher/presentation/screens/generation/desktop_layout.dart';
 import 'package:nai_launcher/presentation/screens/generation/generation_screen.dart';
 import 'package:nai_launcher/presentation/screens/generation/mobile_layout.dart';
+import 'package:nai_launcher/presentation/screens/generation/mobile_generation_workspace.dart';
 import 'package:nai_launcher/presentation/screens/generation/web_style_layout.dart';
 import 'package:nai_launcher/presentation/screens/generation/widgets/fixed_tags_sidebar.dart';
+import 'package:nai_launcher/presentation/screens/generation/widgets/image_preview.dart';
+import 'package:nai_launcher/presentation/screens/generation/widgets/resize_handle.dart';
+import 'package:nai_launcher/presentation/widgets/anlas/anlas_balance_chip.dart';
+import 'package:nai_launcher/presentation/widgets/anlas/opus_usage_chip.dart';
+import 'package:nai_launcher/presentation/widgets/character/mobile_character_manager_sheet.dart';
 
 import '../../../helpers/flutter_error_collector.dart';
+import '../../../helpers/memory_local_storage.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -27,29 +42,128 @@ void main() {
   setUpAll(() async {
     hiveDirectory = await Directory.systemTemp.createTemp('generation-screen-');
     Hive.init(hiveDirectory.path);
-    await Hive.openBox<dynamic>(StorageKeys.settingsBox);
-    await Hive.openBox<dynamic>(StorageKeys.historyBox);
+    // 内存后端：落盘写一旦从 widget test 的 FakeAsync 时钟发起就不会完成，会锁死 box
+    await Hive.openBox<dynamic>(StorageKeys.settingsBox, bytes: Uint8List(0));
   });
 
   tearDownAll(() async {
     PlatformCapabilities.debugOverride = null;
-    // Windows CI 上 Hive 偶发不返回 close 的 Future，限制清理等待避免占满分片时限。
-    await Hive.close().timeout(
-      const Duration(seconds: 10),
-      onTimeout: () => const <void>[],
-    );
-    try {
-      if (await hiveDirectory.exists()) {
-        await hiveDirectory.delete(recursive: true);
-      }
-    } on FileSystemException {
-      // 临时目录清理失败不影响测试结论。
-    }
+    // 有界等待：box 被锁死时快速失败，不把整个测试分片拖到看门狗超时
+    await Hive.close().timeout(const Duration(seconds: 10));
+    await hiveDirectory.delete(recursive: true);
   });
 
   tearDown(() {
     PlatformCapabilities.debugOverride = null;
   });
+
+  for (final scale in [1.0, 3.0]) {
+    for (final (size, inset) in const [
+      (Size(800, 360), 0.0),
+      (Size(640, 360), 0.0),
+      (Size(800, 360), 200.0),
+      (Size(360, 760), 0.0),
+    ]) {
+      testWidgets('mobile prompt and preview at $size, ${scale}x, IME $inset', (
+        tester,
+      ) async {
+        PlatformCapabilities.debugOverride = PlatformCapabilities.forPlatform(
+          TargetPlatform.android,
+        );
+        tester.view.devicePixelRatio = 1;
+        tester.view.physicalSize = inset == 0 ? size : const Size(360, 760);
+        tester.view.viewInsets = FakeViewPadding(bottom: inset);
+        addTearDown(tester.view.reset);
+        final storage = MemoryLocalStorage()
+          ..values[StorageKeys.lastPrompt] = 'landscape'
+          ..values[StorageKeys.mobileGenerationGestureHintCompleted] = true;
+        final container = ProviderContainer(
+          overrides: [
+            localStorageServiceProvider.overrideWithValue(storage),
+            shortcutConfigNotifierProvider.overrideWith(
+              _FakeShortcutConfigNotifier.new,
+            ),
+          ],
+        );
+        addTearDown(container.dispose);
+        try {
+          await _pumpMobileWorkspace(
+            tester,
+            container: container,
+            scale: scale,
+            inset: inset,
+          );
+          await tester.pump(const Duration(milliseconds: 100));
+          final controller = tester
+              .widget<MobileGenerationWorkspace>(
+                find.byType(MobileGenerationWorkspace),
+              )
+              .controller;
+          if (inset != 0) {
+            controller.openPromptEditor();
+            await tester.pumpAndSettle();
+            expect(
+              find.byKey(const ValueKey('maximized-prompt')),
+              findsOneWidget,
+            );
+            tester.view.physicalSize = size;
+            controller.closePromptEditor();
+            await tester.pumpAndSettle();
+            expect(tester.view.viewInsets.bottom, inset);
+          }
+          expect(tester.takeException(), isNull);
+          final viewport = tester.getRect(
+            find.byKey(const ValueKey('generation-workspace')),
+          );
+          final launcher = find.byKey(
+            const ValueKey('generation-collapsed-prompt-launcher'),
+          );
+          final preview = find.byType(ImagePreviewWidget, skipOffstage: false);
+          final entry = tester.getRect(launcher);
+          if (entry.height <= viewport.height) {
+            expect(entry.top, greaterThanOrEqualTo(viewport.top - 0.01));
+            expect(entry.bottom, lessThanOrEqualTo(viewport.bottom + 0.01));
+            expect(launcher.hitTestable(), findsOneWidget);
+          }
+          // 从概览点击区外起手，才能检验工作区会把快捷手势让给滚动。
+          final start = Offset(viewport.left + 6, viewport.center.dy);
+          if (size.height == 360) {
+            await _scrollBetweenPromptAndPreview(
+              tester,
+              viewport: viewport,
+              start: start,
+              launcher: launcher,
+              preview: preview,
+              expectWorkspaceOpen: () {
+                expect(controller.agentFullScreen, isFalse);
+                expect(container.read(promptMaximizeNotifierProvider), isFalse);
+              },
+            );
+          } else {
+            expect(tester.getTopLeft(preview).dy, closeTo(viewport.top, 0.01));
+            expect(
+              tester.getBottomLeft(preview).dy,
+              closeTo(entry.top - 8, 0.01),
+            );
+            expect(entry.bottom, closeTo(viewport.bottom - 12, 0.01));
+            await tester.tap(launcher);
+            expect(container.read(promptMaximizeNotifierProvider), isTrue);
+            controller.closePromptEditor();
+            await tester.dragFrom(start, const Offset(0, -120));
+            expect(controller.agentFullScreen, isTrue);
+            controller.closeAgentChat();
+            await tester.dragFrom(start, const Offset(0, 120));
+          }
+          expect(container.read(promptMaximizeNotifierProvider), isTrue);
+          controller.closePromptEditor();
+        } finally {
+          await tester.pumpWidget(const SizedBox.shrink());
+          await tester.pump(const Duration(milliseconds: 500));
+        }
+        expect(tester.takeException(), isNull);
+      });
+    }
+  }
 
   testWidgets('generation composition follows local width under touch input', (
     tester,
@@ -136,6 +250,215 @@ void main() {
     },
   );
 
+  // 触屏呈现下拖拽手柄放宽到命中区尺寸，预留宽度必须随之变化，否则固定词槽位溢出并压住左侧手柄。
+  testWidgets(
+    'expanded touch layout reserves touch-sized handles around fixed tags',
+    (tester) async {
+      final flutterErrors = FlutterErrorCollector.install(tester);
+      addTearDown(flutterErrors.restoreAndAssertNoErrors);
+      PlatformCapabilities.debugOverride = PlatformCapabilities.forPlatform(
+        TargetPlatform.windows,
+      );
+      const touchPolicy = InteractionPolicy(
+        modality: InteractionModality.touch,
+        touchAvailable: true,
+        precisePointerAvailable: true,
+      );
+
+      for (final width in [840.0, 1180.0, 1600.0]) {
+        final container = ProviderContainer(
+          overrides: [
+            shortcutConfigNotifierProvider.overrideWith(
+              _FakeShortcutConfigNotifier.new,
+            ),
+            layoutStateNotifierProvider.overrideWith(
+              _ExpandedFixedTagsLayoutNotifier.new,
+            ),
+          ],
+        );
+        addTearDown(container.dispose);
+        await tester.binding.setSurfaceSize(Size(width, 800));
+        await _pumpGeneration(
+          tester,
+          container: container,
+          interactionPolicy: touchPolicy,
+        );
+        await tester.pump(const Duration(milliseconds: 100));
+
+        flutterErrors.expectNoErrors(reason: 'width=$width');
+        final sidebar = tester.getRect(find.byType(FixedTagsSidebar));
+        for (final handle in tester.widgetList(find.byType(ResizeHandle))) {
+          final rect = tester.getRect(find.byWidget(handle));
+          expect(
+            rect.right <= sidebar.left + 0.01 ||
+                rect.left >= sidebar.right - 0.01,
+            isTrue,
+            reason: 'width=$width handle $rect overlaps sidebar $sidebar',
+          );
+        }
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        // 容器在测试结束前不释放，提示词计数的 400ms 防抖必须先走完。
+        await tester.pump(const Duration(milliseconds: 500));
+      }
+
+      await tester.binding.setSurfaceSize(null);
+    },
+  );
+
+  testWidgets('手机上请求呈现工作流面板时打开参数抽屉', (tester) async {
+    PlatformCapabilities.debugOverride = PlatformCapabilities.forPlatform(
+      TargetPlatform.android,
+    );
+    await tester.binding.setSurfaceSize(const Size(360, 760));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await _pumpGeneration(tester);
+    await tester.pump(const Duration(milliseconds: 100));
+    final drawer = find.byKey(const ValueKey('generation-parameters-drawer'));
+    expect(drawer, findsNothing);
+
+    ProviderScope.containerOf(
+      tester.element(find.byType(GenerationScreen)),
+    ).read(workflowPanelRevealProvider.notifier).request();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(drawer, findsOneWidget);
+  });
+
+  for (final size in const [
+    Size(320, 640),
+    Size(360, 760),
+    Size(686, 1143),
+    Size(839, 760),
+    Size(800, 360),
+  ]) {
+    for (final scale in [1.0, 3.0]) {
+      testWidgets(
+        '手机全屏提示词可管理已有角色 ${size.width.toInt()}×${size.height.toInt()} ${scale}x',
+        (tester) async {
+          PlatformCapabilities.debugOverride = PlatformCapabilities.forPlatform(
+            TargetPlatform.android,
+          );
+          tester.view.devicePixelRatio = 1;
+          tester.view.physicalSize = size;
+          addTearDown(tester.view.resetDevicePixelRatio);
+          addTearDown(tester.view.resetPhysicalSize);
+          final container = ProviderContainer(
+            overrides: [
+              localStorageServiceProvider.overrideWith(
+                (ref) => _PromptStateTestStorage(),
+              ),
+              shortcutConfigNotifierProvider.overrideWith(
+                _FakeShortcutConfigNotifier.new,
+              ),
+              characterPromptNotifierProvider.overrideWith(
+                _SingleCharacterNotifier.new,
+              ),
+            ],
+          );
+          addTearDown(container.dispose);
+          try {
+            await _pumpGeneration(
+              tester,
+              container: container,
+              textScaler: TextScaler.linear(scale),
+            );
+            await tester.pump(const Duration(milliseconds: 100));
+            expect(tester.takeException(), isNull);
+            expect(find.byType(MobileGenerationLayout), findsOneWidget);
+            await _openMobilePromptEditor(tester);
+            final characters = find.byKey(
+              const ValueKey('generation_prompt_mobile_character_action'),
+            );
+            expect(characters, findsOneWidget);
+            if (size == const Size(800, 360)) {
+              final workbench = find.byKey(
+                const ValueKey('generation_prompt_mobile_workbench'),
+              );
+              final editor = find.byKey(
+                const ValueKey('generation_prompt_positive_input'),
+              );
+              expect(
+                tester.getSize(editor).height,
+                greaterThanOrEqualTo(tester.getSize(workbench).height),
+              );
+            }
+            await tester.ensureVisible(characters);
+            await tester.pump();
+            expect(characters.hitTestable(), findsOneWidget);
+            await tester.tap(characters);
+            await tester.pump();
+            await tester.pump(const Duration(milliseconds: 400));
+            final manager = find.byType(MobileCharacterManagerSheet);
+            expect(manager, findsOneWidget);
+            expect(
+              find.descendant(of: manager, matching: find.text('Ada')),
+              findsOneWidget,
+            );
+            expect(tester.takeException(), isNull);
+          } finally {
+            await tester.pumpWidget(const SizedBox.shrink());
+            await tester.pump(const Duration(milliseconds: 500));
+          }
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  }
+
+  for (final mode in GenerationLayoutMode.values) {
+    testWidgets('${mode.name} 布局输入框失焦后焦点回到生成页快捷键锚点', (tester) async {
+      PlatformCapabilities.debugOverride = PlatformCapabilities.forPlatform(
+        TargetPlatform.windows,
+      );
+      final container = ProviderContainer(
+        overrides: [
+          localStorageServiceProvider.overrideWith(
+            (ref) => _PromptStateTestStorage(),
+          ),
+          shortcutConfigNotifierProvider.overrideWith(
+            _FakeShortcutConfigNotifier.new,
+          ),
+          generationLayoutModeNotifierProvider.overrideWith(
+            () => _FixedLayoutModeNotifier(mode),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      await tester.binding.setSurfaceSize(const Size(1600, 900));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await _pumpGeneration(
+        tester,
+        container: container,
+        interactionPolicy: const InteractionPolicy(
+          modality: InteractionModality.pointer,
+          touchAvailable: false,
+          precisePointerAvailable: true,
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+      const anchorLabel = 'ShortcutAwareWidget(generation)';
+      expect(FocusManager.instance.primaryFocus?.debugLabel, anchorLabel);
+
+      final fieldFocus = tester
+          .widget<EditableText>(find.byType(EditableText).first)
+          .focusNode;
+      fieldFocus.requestFocus();
+      await tester.pump();
+      // 与桌面端点输入框外部的处理一致
+      fieldFocus.unfocus();
+      await tester.pump();
+
+      expect(FocusManager.instance.primaryFocus?.debugLabel, anchorLabel);
+
+      // 提示词 token 计数的 400ms 防抖
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump(const Duration(milliseconds: 150));
+    });
+  }
+
   testWidgets('layout state survives the 840 precise-pointer boundary', (
     tester,
   ) async {
@@ -189,6 +512,9 @@ void main() {
       find.byKey(const Key('generation-fixed-tags-overlay')),
       findsOneWidget,
     );
+    // Token 计数有 400ms 防抖（prompt_token_counter_provider.dart）。这条用例的
+    // container 由 addTearDown 释放，晚于框架的挂起计时器检查，先走完计时器。
+    await tester.pump(const Duration(milliseconds: 400));
     flutterErrors.expectNoErrors(reason: '839↔840 boundary transition');
   });
 
@@ -368,6 +694,88 @@ void main() {
     },
   );
 
+  testWidgets(
+    'mobile balance group keeps the extra usage chip intact at 320 and 3x',
+    (tester) async {
+      final flutterErrors = FlutterErrorCollector.install(tester);
+      addTearDown(flutterErrors.restoreAndAssertNoErrors);
+      PlatformCapabilities.debugOverride = PlatformCapabilities.forPlatform(
+        TargetPlatform.android,
+      );
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      for (final scenario in const [
+        (width: 320.0, textScale: 1.0),
+        (width: 320.0, textScale: 3.0),
+        (width: 600.0, textScale: 3.0),
+      ]) {
+        final reason =
+            'width=${scenario.width}, textScale=${scenario.textScale}';
+        final container = ProviderContainer(
+          overrides: [
+            shortcutConfigNotifierProvider.overrideWith(
+              _FakeShortcutConfigNotifier.new,
+            ),
+            subscriptionNotifierProvider.overrideWith(
+              _ExtraUsageSubscriptionNotifier.new,
+            ),
+          ],
+        );
+        addTearDown(container.dispose);
+        await tester.binding.setSurfaceSize(Size(scenario.width, 760));
+        await _pumpGeneration(
+          tester,
+          container: container,
+          textScaler: TextScaler.linear(scenario.textScale),
+        );
+        await tester.pump(const Duration(milliseconds: 100));
+
+        expect(find.byType(MobileGenerationLayout), findsOneWidget);
+        flutterErrors.expectNoErrors(reason: reason);
+        final barRect = tester
+            .getRect(find.byKey(const ValueKey('generation-mobile-bottom-bar')))
+            .inflate(0.01);
+        final groupRect = tester
+            .getRect(
+              find.byKey(const ValueKey('generation-mobile-balance-group')),
+            )
+            .inflate(0.01);
+        for (final part in [
+          find.byType(OpusUsageChip),
+          find.byType(AnlasBalanceChip),
+          find.text('+200%'),
+        ]) {
+          final rect = tester.getRect(part);
+          expect(
+            groupRect.contains(rect.topLeft) &&
+                groupRect.contains(rect.bottomRight) &&
+                barRect.contains(rect.topLeft) &&
+                barRect.contains(rect.bottomRight),
+            isTrue,
+            reason: '$reason clipped $part at $rect',
+          );
+        }
+        expect(find.text('45%'), findsOneWidget, reason: reason);
+        expect(
+          find.text('+200%').hitTestable(),
+          findsOneWidget,
+          reason: reason,
+        );
+        expect(
+          find
+              .byKey(const ValueKey('generation-add-current-to-queue'))
+              .hitTestable(),
+          findsOneWidget,
+          reason: reason,
+        );
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        // 容器在测试结束前不释放，提示词计数的 400ms 防抖必须先走完。
+        await tester.pump(const Duration(milliseconds: 500));
+      }
+    },
+  );
+
   testWidgets('fixed-tags state survives overlay to side-panel transition', (
     tester,
   ) async {
@@ -421,6 +829,64 @@ void main() {
   });
 }
 
+Future<void> _pumpMobileWorkspace(
+  WidgetTester tester, {
+  required ProviderContainer container,
+  required double scale,
+  required double inset,
+}) => _pumpGeneration(
+  tester,
+  container: container,
+  textScaler: TextScaler.linear(scale),
+  interactionPolicy: InteractionPolicy.touchFirst,
+  padding: EdgeInsets.only(top: 24, bottom: inset == 0 ? 24 : 0),
+  viewPadding: const EdgeInsets.only(top: 24, bottom: 24),
+  viewInsets: EdgeInsets.only(bottom: inset),
+  home: Scaffold(
+    body: const SafeArea(
+      bottom: false,
+      child: Column(
+        children: [
+          // 为壳层状态条预留空间，使短横屏工作区与实测的 60.2 dp 一致。
+          SizedBox(height: 27.8),
+          Expanded(child: GenerationScreen()),
+        ],
+      ),
+    ),
+    bottomNavigationBar: inset == 0
+        ? SafeArea(top: false, child: SizedBox(height: scale == 1 ? 64 : 84))
+        : null,
+  ),
+);
+
+Future<void> _scrollBetweenPromptAndPreview(
+  WidgetTester tester, {
+  required Rect viewport,
+  required Offset start,
+  required Finder launcher,
+  required Finder preview,
+  required VoidCallback expectWorkspaceOpen,
+}) async {
+  expect(tester.getRect(launcher).intersect(viewport).height, greaterThan(0));
+  expect(tester.getSize(preview).height, greaterThan(96));
+  final initialPreviewTop = tester.getTopLeft(preview).dy;
+  await tester.dragFrom(start, const Offset(0, 420));
+  await tester.pumpAndSettle();
+  expectWorkspaceOpen();
+  final previewRect = tester.getRect(preview);
+  expect(previewRect.top, greaterThan(initialPreviewTop));
+  expect(previewRect.top, closeTo(viewport.top, 0.01));
+  final visiblePreview = previewRect.intersect(viewport);
+  expect(visiblePreview.height, closeTo(viewport.height, 0.01));
+  final hitPoint = Alignment(0, visiblePreview.height / previewRect.height - 1);
+  expect(preview.hitTestable(at: hitPoint), findsOneWidget);
+  await tester.dragFrom(start, const Offset(0, -420));
+  await tester.pumpAndSettle();
+  expectWorkspaceOpen();
+  final reachableEntry = tester.getRect(launcher).intersect(viewport);
+  await tester.tapAt(reachableEntry.center);
+}
+
 Future<void> _pumpGeneration(
   WidgetTester tester, {
   ProviderContainer? container,
@@ -429,6 +895,7 @@ Future<void> _pumpGeneration(
   EdgeInsets viewPadding = EdgeInsets.zero,
   EdgeInsets viewInsets = EdgeInsets.zero,
   InteractionPolicy? interactionPolicy,
+  Widget home = const Scaffold(body: GenerationScreen()),
 }) {
   final app = MaterialApp(
     locale: const Locale('en'),
@@ -444,10 +911,7 @@ Future<void> _pumpGeneration(
       ),
       child: child!,
     ),
-    home: InteractionPolicyScope(
-      initialPolicy: interactionPolicy,
-      child: const Scaffold(body: GenerationScreen()),
-    ),
+    home: InteractionPolicyScope(initialPolicy: interactionPolicy, child: home),
   );
   if (container != null) {
     return tester.pumpWidget(
@@ -471,6 +935,34 @@ class _ExpandedFixedTagsLayoutNotifier extends LayoutStateNotifier {
   LayoutState build() => const LayoutState(fixedTagsSidebarExpanded: true);
 }
 
+class _FixedLayoutModeNotifier extends GenerationLayoutModeNotifier {
+  _FixedLayoutModeNotifier(this.mode);
+
+  final GenerationLayoutMode mode;
+
+  @override
+  GenerationLayoutMode build() => mode;
+}
+
+class _SingleCharacterNotifier extends CharacterPromptNotifier {
+  @override
+  CharacterPromptConfig build() => const CharacterPromptConfig(
+    characters: [CharacterPrompt(id: 'ada', name: 'Ada', prompt: 'blue hair')],
+  );
+}
+
+class _ExtraUsageSubscriptionNotifier extends SubscriptionNotifier {
+  @override
+  SubscriptionState build() => const SubscriptionState.loaded(
+    UserSubscription(
+      tier: 3,
+      active: true,
+      trainingStepsLeft: TrainingStepsInfo(fixedTrainingStepsLeft: 7384),
+      usage: OpusUsageInfo(percent: 45, purchasedPercent: 200),
+    ),
+  );
+}
+
 class _FakeShortcutConfigNotifier extends ShortcutConfigNotifier {
   @override
   Future<ShortcutConfig> build() async => ShortcutConfig.createDefault();
@@ -486,4 +978,22 @@ class _PromptStateTestStorage extends LocalStorageService {
   Future<void> setPromptMaximized(bool maximized) async {
     _maximized = maximized;
   }
+}
+
+Future<void> _openMobilePromptEditor(WidgetTester tester) async {
+  final overview = find.byKey(
+    const ValueKey('generation-collapsed-prompt-launcher'),
+  );
+  final entry = overview.evaluate().isNotEmpty
+      ? overview
+      : find.descendant(
+          of: find.byKey(const ValueKey('generation_prompt_compact_scroll')),
+          matching: find.byIcon(Icons.fullscreen),
+        );
+  await tester.ensureVisible(entry);
+  expect(entry.hitTestable(), findsOneWidget);
+  await tester.tap(entry);
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 200));
+  expect(tester.takeException(), isNull);
 }

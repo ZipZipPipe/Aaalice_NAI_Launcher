@@ -6,7 +6,9 @@ import 'package:super_drag_and_drop/super_drag_and_drop.dart';
 import '../../core/utils/app_logger.dart';
 import '../../core/utils/localization_extension.dart';
 import '../widgets/common/app_toast.dart';
+import '../widgets/common/card_drag_resource.dart';
 import 'card_drag_format.dart';
+import 'native_drop_callback.dart';
 
 final galleryDropFormats = <DataFormat>[cardDragFormat, Formats.fileUri];
 
@@ -27,8 +29,7 @@ bool canAcceptGalleryDrop(
       if (galleryInternalDragPathFromLocalData(item.localData) != null) {
         return true;
       }
-      final local = item.localData;
-      if (local is Map && local.containsKey('cardDragId')) return false;
+      if (CardDragResource.isPayload(item.localData)) return false;
       return !internalOnly && item.canProvide(Formats.fileUri);
     });
 
@@ -76,30 +77,19 @@ Future<void> performGalleryDrop(
   PerformDropEvent event,
   Future<void> Function(List<String>) operation, {
   bool internalOnly = false,
-}) async {
+}) {
   final overlay = Overlay.maybeOf(context, rootOverlay: true);
   final label = context.l10n.common_error;
-  void report(Object error, StackTrace stack) {
-    AppLogger.e('Gallery drop failed', error, stack, 'CardDrag');
-    AppToast.errorOnOverlay(overlay, '$label: $error');
-  }
-
-  try {
-    final paths = await readGalleryDropPaths(
-      event.session.items,
-      internalOnly: internalOnly,
-    );
-    // Moving may require asset-protection confirmation, outside the OS drag loop.
-    unawaited(
-      Future<void>(() async {
-        try {
-          await operation(paths);
-        } catch (error, stack) {
-          report(error, stack);
-        }
-      }),
-    );
-  } catch (error, stack) {
-    report(error, stack);
-  }
+  return releaseNativeDropCallback(() async {
+    try {
+      final paths = await readGalleryDropPaths(
+        event.session.items,
+        internalOnly: internalOnly,
+      );
+      await operation(paths);
+    } catch (error, stack) {
+      AppLogger.e('Gallery drop failed', error, stack, 'CardDrag');
+      AppToast.errorOnOverlay(overlay, '$label: $error');
+    }
+  }, library: 'GalleryDrop');
 }

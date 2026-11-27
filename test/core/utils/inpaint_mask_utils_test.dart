@@ -1,11 +1,15 @@
+import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
+import 'package:nai_launcher/core/models/image_generation_artifact.dart';
 import 'package:nai_launcher/core/utils/inpaint_mask_utils.dart';
+import 'package:nai_launcher/data/services/metadata/unified_metadata_parser.dart';
 
 import '../../helpers/image_pixel_matchers.dart';
+import '../../helpers/shared_compute_gate.dart';
 
 void main() {
   group('InpaintMaskUtils', () {
@@ -63,6 +67,100 @@ void main() {
       );
 
       expect(asyncResult, syncResult);
+    });
+
+    test('maskToEditorOverlayAsync waits for the shared compute gate', () async {
+      final source = img.Image(width: 4, height: 4);
+      source.setPixelRgba(1, 2, 255, 255, 255, 255);
+      final bytes = Uint8List.fromList(img.encodePng(source));
+
+      final overlay = await expectQueuedBehindSharedComputeGate(
+        () => InpaintMaskUtils.maskToEditorOverlayAsync(bytes),
+      );
+
+      expect(overlay, InpaintMaskUtils.maskToEditorOverlay(bytes));
+    });
+
+    test('hasMaskedPixelsAsync should match the sync check', () async {
+      final empty = img.Image(width: 4, height: 4);
+      img.fill(empty, color: img.ColorRgba8(0, 0, 0, 255));
+      final masked = img.Image.from(empty)
+        ..setPixelRgba(2, 1, 255, 255, 255, 255);
+      final inputs = [
+        Uint8List.fromList(img.encodePng(empty)),
+        Uint8List.fromList(img.encodePng(masked)),
+        Uint8List.fromList([1, 2, 3, 4]),
+      ];
+
+      for (final bytes in inputs) {
+        expect(
+          await InpaintMaskUtils.hasMaskedPixelsAsync(bytes),
+          InpaintMaskUtils.hasMaskedPixels(bytes),
+        );
+      }
+      expect(await InpaintMaskUtils.hasMaskedPixelsAsync(inputs[1]), isTrue);
+    });
+
+    test('decodeBinaryMaskAsync should match the sync decode', () async {
+      final source = img.Image(width: 5, height: 3);
+      img.fill(source, color: img.ColorRgba8(0, 0, 0, 255));
+      source.setPixelRgba(4, 2, 255, 255, 255, 255);
+      final bytes = Uint8List.fromList(img.encodePng(source));
+
+      final syncResult = InpaintMaskUtils.decodeBinaryMask(bytes)!;
+      final asyncResult = (await InpaintMaskUtils.decodeBinaryMaskAsync(
+        bytes,
+      ))!;
+
+      expect(asyncResult.width, syncResult.width);
+      expect(asyncResult.height, syncResult.height);
+      expect(asyncResult.mask, syncResult.mask);
+      expect(
+        await InpaintMaskUtils.decodeBinaryMaskAsync(
+          Uint8List.fromList([1, 2, 3, 4]),
+        ),
+        isNull,
+      );
+    });
+
+    test('decodeBinaryMaskWithCoverageAsync counts off the UI', () async {
+      final source = img.Image(width: 6, height: 4);
+      img.fill(source, color: img.ColorRgba8(0, 0, 0, 255));
+      source
+        ..setPixelRgba(0, 0, 255, 255, 255, 255)
+        ..setPixelRgba(5, 3, 255, 255, 255, 255)
+        ..setPixelRgba(2, 1, 255, 255, 255, 255);
+      final bytes = Uint8List.fromList(img.encodePng(source));
+      final syncResult = InpaintMaskUtils.decodeBinaryMask(bytes)!;
+
+      final asyncResult = (await expectQueuedBehindSharedComputeGate(
+        () => InpaintMaskUtils.decodeBinaryMaskWithCoverageAsync(bytes),
+      ))!;
+
+      expect(asyncResult.width, syncResult.width);
+      expect(asyncResult.height, syncResult.height);
+      expect(asyncResult.mask, syncResult.mask);
+      expect(asyncResult.maskedPixels, 3);
+      expect(InpaintMaskUtils.countMaskedPixels(syncResult.mask), 3);
+      expect(
+        await InpaintMaskUtils.decodeBinaryMaskWithCoverageAsync(
+          Uint8List.fromList([1, 2, 3, 4]),
+        ),
+        isNull,
+      );
+    });
+
+    test('encodeBinaryMaskAsync should match the sync encode', () async {
+      final binaryMask = Uint8List.fromList([0, 1, 1, 0, 1, 0]);
+
+      expect(
+        await InpaintMaskUtils.encodeBinaryMaskAsync(binaryMask, 3, 2),
+        InpaintMaskUtils.encodeBinaryMask(binaryMask, 3, 2),
+      );
+      await expectLater(
+        InpaintMaskUtils.encodeBinaryMaskAsync(binaryMask, 4, 2),
+        throwsArgumentError,
+      );
     });
 
     test(
@@ -175,6 +273,83 @@ void main() {
       },
     );
 
+    test('prepareNovelAiInpaintMaskArtifacts flags an empty latent mask', () {
+      final thinLine = _opaqueMask(64, 64);
+      for (var y = 0; y < 64; y++) {
+        thinLine.setPixelRgba(10, y, 255, 255, 255, 255);
+      }
+      final block = _opaqueMask(64, 64);
+      for (var y = 16; y < 48; y++) {
+        for (var x = 16; x < 48; x++) {
+          block.setPixelRgba(x, y, 255, 255, 255, 255);
+        }
+      }
+      NovelAiInpaintMaskArtifacts prepare(Uint8List bytes) =>
+          InpaintMaskUtils.prepareNovelAiInpaintMaskArtifacts(
+            bytes,
+            targetWidth: 64,
+            targetHeight: 64,
+          );
+
+      final thin = prepare(Uint8List.fromList(img.encodePng(thinLine)));
+      final solid = prepare(Uint8List.fromList(img.encodePng(block)));
+      final undecodable = prepare(Uint8List.fromList([1, 2, 3]));
+
+      expect(thin.isLatentMaskEmpty, isTrue);
+      expect(
+        img.decodeImage(thin.requestMaskBytes)!.every((p) => p.r.toInt() == 0),
+        isTrue,
+      );
+      expect(solid.isLatentMaskEmpty, isFalse);
+      expect(undecodable.isLatentMaskEmpty, isFalse);
+      expect(undecodable.requestMaskBytes, orderedEquals([1, 2, 3]));
+    });
+
+    test(
+      'entry-normalized low-gray masks agree across both preparation branches',
+      () {
+        final lowGray = img.Image(width: 64, height: 64, numChannels: 1);
+        for (var y = 16; y < 48; y++) {
+          for (var x = 16; x < 48; x++) {
+            lowGray.setPixelR(x, y, 39);
+          }
+        }
+        final raw = Uint8List.fromList(img.encodePng(lowGray));
+        final normalized = InpaintMaskUtils.normalizeMaskBytes(raw);
+        bool isEmpty(Uint8List bytes, {int expansion = 0}) =>
+            InpaintMaskUtils.prepareNovelAiInpaintMaskArtifacts(
+              bytes,
+              targetWidth: 64,
+              targetHeight: 64,
+              expansionIterations: expansion,
+            ).isLatentMaskEmpty;
+
+        expect(isEmpty(raw), isTrue);
+        expect(isEmpty(raw, expansion: 1), isFalse);
+        expect(isEmpty(normalized), isFalse);
+        expect(isEmpty(normalized, expansion: 1), isFalse);
+      },
+    );
+
+    test('EmptyInpaintMaskException is recognized through error strings', () {
+      const error = EmptyInpaintMaskException();
+
+      expect(EmptyInpaintMaskException.matches(error), isTrue);
+      expect(EmptyInpaintMaskException.matches(error.toString()), isTrue);
+      expect(
+        EmptyInpaintMaskException.matches(Exception(error.encodedMessage)),
+        isTrue,
+      );
+      expect(
+        EmptyInpaintMaskException.matches(
+          '${EmptyInpaintMaskException.errorCode}|8|persisted queue message',
+        ),
+        isTrue,
+      );
+      expect(EmptyInpaintMaskException.matches('API_ERROR_500|x'), isFalse);
+      expect(EmptyInpaintMaskException.matches(null), isFalse);
+    });
+
     test(
       'prepareNovelAiRequestMaskBytesAsync should match the sync request mask',
       () async {
@@ -236,6 +411,7 @@ void main() {
         expect(asyncResult.requestHeight, syncResult.requestHeight);
         expect(asyncResult.latentWidth, syncResult.latentWidth);
         expect(asyncResult.latentHeight, syncResult.latentHeight);
+        expect(asyncResult.isLatentMaskEmpty, syncResult.isLatentMaskEmpty);
       },
     );
 
@@ -380,7 +556,7 @@ void main() {
     });
 
     test(
-      'fillEditorMaskRegionAtPointAsync should fill a closed region and produce editor overlay',
+      'fillEditorMaskRegionAtPointAsync returns only the newly enclosed pixels, cropped to their bounds',
       () async {
         final source = img.Image(width: 32, height: 24);
         img.fill(source, color: img.ColorRgba8(0, 0, 0, 255));
@@ -402,15 +578,9 @@ void main() {
         );
 
         final originalBytes = Uint8List.fromList(img.encodePng(source));
-        final expectedMask = InpaintMaskUtils.fillMaskRegionAtPoint(
-          originalBytes,
-          x: 7,
-          y: 11,
-        );
-        final expectedOverlay = InpaintMaskUtils.maskToEditorOverlay(
-          expectedMask,
-          overlayAlpha: 160,
-        );
+        final filled = img.decodeImage(
+          InpaintMaskUtils.fillMaskRegionAtPoint(originalBytes, x: 7, y: 11),
+        )!;
 
         final result = await InpaintMaskUtils.fillEditorMaskRegionAtPointAsync(
           originalBytes,
@@ -420,17 +590,61 @@ void main() {
         );
 
         expect(result.status, MaskFillRegionStatus.filled);
-        expect(result.filledMaskBytes, expectedMask);
-        expect(result.overlayBytes, expectedOverlay);
-
-        final decodedMask = img.decodeImage(result.filledMaskBytes!)!;
-        final decodedOverlay = img.decodeImage(result.overlayBytes!)!;
-        expect(decodedMask.getPixel(7, 11).r.toInt(), equals(255));
-        expect(decodedMask.getPixel(23, 11).r.toInt(), equals(0));
-        expect(decodedOverlay.getPixel(7, 11).a.toInt(), equals(160));
-        expect(decodedOverlay.getPixel(0, 0).a.toInt(), equals(0));
+        final patch = result.addedPatch!;
+        final decoded = img.decodeImage(patch.bytes)!;
+        // drawRect 画的是 1 像素轮廓，新增的只有轮廓内部
+        expect(
+          (patch.left, patch.top, decoded.width, decoded.height),
+          (3, 5, 9, 13),
+        );
+        for (var y = 0; y < source.height; y++) {
+          for (var x = 0; x < source.width; x++) {
+            final added =
+                filled.getPixel(x, y).r.toInt() == 255 &&
+                source.getPixel(x, y).r.toInt() == 0;
+            final px = x - patch.left;
+            final py = y - patch.top;
+            final inPatch =
+                px >= 0 && py >= 0 && px < decoded.width && py < decoded.height;
+            final alpha = inPatch ? decoded.getPixel(px, py).a.toInt() : 0;
+            expect(alpha, added ? 160 : 0, reason: 'pixel ($x, $y)');
+          }
+        }
       },
     );
+
+    test('encodeEditorOverlayPatch crops to the masked pixels', () {
+      final mask = Uint8List(10 * 6);
+      mask[1 * 10 + 7] = 1;
+      mask[4 * 10 + 2] = 1;
+
+      final patch = InpaintMaskUtils.encodeEditorOverlayPatch(
+        mask,
+        width: 10,
+        height: 6,
+      )!;
+
+      final decoded = img.decodeImage(patch.bytes)!;
+      expect(
+        (patch.left, patch.top, decoded.width, decoded.height),
+        (2, 1, 6, 4),
+      );
+      expect(decoded.getPixel(5, 0).a.toInt(), 140);
+      expect(decoded.getPixel(0, 3).a.toInt(), 140);
+      expect(decoded.getPixel(0, 0).a.toInt(), 0);
+      expect(decoded.getPixel(5, 3).a.toInt(), 0);
+    });
+
+    test('encodeEditorOverlayPatch returns null for an empty mask', () {
+      expect(
+        InpaintMaskUtils.encodeEditorOverlayPatch(
+          Uint8List(4 * 4),
+          width: 4,
+          height: 4,
+        ),
+        isNull,
+      );
+    });
 
     test(
       'fillEditorMaskRegionAtPointAsync should report open regions without producing overlay',
@@ -456,35 +670,49 @@ void main() {
         );
 
         expect(result.status, MaskFillRegionStatus.openRegion);
-        expect(result.filledMaskBytes, isNull);
-        expect(result.overlayBytes, isNull);
+        expect(result.addedPatch, isNull);
       },
     );
 
-    test('extractFilledMaskDelta should only keep newly filled regions', () {
-      final source = img.Image(width: 24, height: 24);
-      img.fill(source, color: img.ColorRgba8(0, 0, 0, 255));
-      img.drawRect(
-        source,
-        x1: 4,
-        y1: 4,
-        x2: 19,
-        y2: 19,
-        color: img.ColorRgba8(255, 255, 255, 255),
-      );
+    test(
+      'fillEditorMaskRegionAtPointAsync waits for the shared compute gate',
+      () async {
+        final source = img.Image(width: 12, height: 12);
+        img.fill(source, color: img.ColorRgba8(0, 0, 0, 255));
+        img.drawRect(
+          source,
+          x1: 2,
+          y1: 2,
+          x2: 9,
+          y2: 9,
+          color: img.ColorRgba8(255, 255, 255, 255),
+        );
+        final bytes = Uint8List.fromList(img.encodePng(source));
+        final expected = InpaintMaskUtils.fillEditorMaskRegionAtPoint(
+          bytes,
+          x: 5,
+          y: 5,
+        );
 
-      final originalBytes = Uint8List.fromList(img.encodePng(source));
-      final filledBytes = InpaintMaskUtils.fillClosedMaskRegions(originalBytes);
-      final deltaBytes = InpaintMaskUtils.extractFilledMaskDelta(
-        originalBytes,
-        filledBytes,
-      );
-      final decoded = img.decodeImage(deltaBytes)!;
+        final result = await expectQueuedBehindSharedComputeGate(
+          () => InpaintMaskUtils.fillEditorMaskRegionAtPointAsync(
+            bytes,
+            x: 5,
+            y: 5,
+          ),
+        );
 
-      expect(decoded.getPixel(12, 12).r.toInt(), equals(255));
-      expect(decoded.getPixel(4, 4).r.toInt(), equals(0));
-      expect(decoded.getPixel(2, 2).r.toInt(), equals(0));
-    });
+        expect(result.status, MaskFillRegionStatus.filled);
+        expect(result.status, expected.status);
+        final patch = result.addedPatch!;
+        final expectedPatch = expected.addedPatch!;
+        expect(
+          (patch.left, patch.top),
+          (expectedPatch.left, expectedPatch.top),
+        );
+        expect(patch.bytes, expectedPatch.bytes);
+      },
+    );
 
     test('compositeGeneratedImage should preserve source outside mask', () {
       final source = img.Image(width: 4, height: 4);
@@ -569,6 +797,76 @@ void main() {
       },
     );
 
+    group('composeGeneratedImageArtifact display metadata', () {
+      Uint8List withText(img.Image image, Map<String, String> text) =>
+          UnifiedMetadataParser.embedTextChunks(
+            Uint8List.fromList(img.encodePng(image)),
+            text,
+          );
+
+      Map<String, String> naiText(String prompt, int seed) => {
+        'Comment': jsonEncode({'prompt': prompt, 'seed': seed}),
+        'Description': prompt,
+        'Software': 'NovelAI',
+        'Source': 'NovelAI Diffusion V4.5',
+      };
+
+      ImageGenerationArtifact compose({
+        required Uint8List sourceBytes,
+        required Uint8List generatedBytes,
+      }) {
+        final mask = img.Image(width: 8, height: 8, numChannels: 4);
+        img.fill(mask, color: img.ColorRgba8(0, 0, 0, 0));
+        img.fillRect(
+          mask,
+          x1: 2,
+          y1: 2,
+          x2: 5,
+          y2: 5,
+          color: img.ColorRgba8(255, 255, 255, 255),
+        );
+        return InpaintMaskUtils.composeGeneratedImageArtifact(
+          normalizedSourceImage: sourceBytes,
+          compositeMaskImage: Uint8List.fromList(img.encodePng(mask)),
+          generatedImage: generatedBytes,
+        );
+      }
+
+      final source = img.Image(width: 8, height: 8);
+      img.fill(source, color: img.ColorRgb8(10, 20, 30));
+      final generated = img.Image(width: 8, height: 8);
+      img.fill(generated, color: img.ColorRgb8(200, 210, 220));
+
+      test('replaces the source image metadata with the server result', () {
+        final serverText = naiText('inpaint prompt', 4242);
+
+        final result = compose(
+          sourceBytes: withText(source, naiText('original prompt', 1)),
+          generatedBytes: withText(generated, serverText),
+        );
+
+        expect(
+          UnifiedMetadataParser.extractPngTextData(result.displayImageBytes),
+          equals(serverText),
+        );
+        final display = img.decodeImage(result.displayImageBytes)!;
+        expect(display.getPixel(0, 0).r.toInt(), equals(10));
+        expect(display.getPixel(3, 3).r.toInt(), equals(200));
+      });
+
+      test('never passes the source image metadata off as the result', () {
+        final result = compose(
+          sourceBytes: withText(source, naiText('original prompt', 1)),
+          generatedBytes: Uint8List.fromList(img.encodePng(generated)),
+        );
+
+        expect(
+          UnifiedMetadataParser.extractPngTextData(result.displayImageBytes),
+          isEmpty,
+        );
+      });
+    });
+
     test(
       'composeGeneratedImageArtifact replaces masked alpha with transparent result',
       () {
@@ -642,6 +940,12 @@ void main() {
     b: pixel.b.toInt(),
     a: pixel.a.toInt(),
   );
+}
+
+img.Image _opaqueMask(int width, int height) {
+  final image = img.Image(width: width, height: height, numChannels: 4);
+  img.fill(image, color: img.ColorRgba8(0, 0, 0, 255));
+  return image;
 }
 
 img.Image _buildParityMask({required int width, required int height}) {

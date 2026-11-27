@@ -1,5 +1,7 @@
 import 'package:freezed_annotation/freezed_annotation.dart';
 
+import 'rule_tag_match.dart';
+
 part 'dependency_config.freezed.dart';
 part 'dependency_config.g.dart';
 
@@ -23,7 +25,7 @@ enum DependencyType {
 /// 实现词组选择数量依赖其他类别结果的功能
 /// 例如: 配饰数量根据角色总数变化 - 1人(0-3个), 2人(0-2个), 3人(0-1个)
 @freezed
-class DependencyConfig with _$DependencyConfig {
+abstract class DependencyConfig with _$DependencyConfig {
   const DependencyConfig._();
 
   const factory DependencyConfig({
@@ -38,8 +40,8 @@ class DependencyConfig with _$DependencyConfig {
 
     /// 依赖映射规则
     /// 对于 count 类型: {"1": "0-3", "2": "0-2", "3": "0-1"}
-    /// 对于 exists 类型: {"tag_name": "true/false"}
     /// 对于 value 类型: {"expected_value": "result_value"}
+    /// exists 与 excludes 类型只判断是否生成，不使用映射
     @Default({}) Map<String, String> mappingRules,
 
     /// 默认值（当没有匹配的规则时使用）
@@ -70,10 +72,32 @@ class DependencyConfig with _$DependencyConfig {
     return (min, max);
   }
 
-  /// 根据源值获取结果
+  /// 按源的结果查映射，都没有匹配时使用默认值
   ///
-  /// [sourceValue] 源类别的值（数量或标签名）
-  String? getResult(String sourceValue) {
+  /// 数量依赖先按 [sourceCount] 匹配；随后与值依赖一样取第一个有映射的
+  /// [sourceValues]（类别为已选标签，角色数量为人数）
+  String? getResultForSource({
+    required int sourceCount,
+    required Iterable<String> sourceValues,
+  }) {
+    if (type == DependencyType.count) {
+      final byCount = _matchMapping('$sourceCount');
+      if (byCount != null) return byCount;
+    }
+    // 已选值可能带权重括号，映射键可能用下划线，按比较键匹配
+    final resultsByKey = <String, String>{};
+    for (final entry in mappingRules.entries) {
+      final key = ruleTagMatchKey(entry.key);
+      if (key.isNotEmpty) resultsByKey.putIfAbsent(key, () => entry.value);
+    }
+    for (final value in sourceValues) {
+      final result = resultsByKey[ruleTagMatchKey(value)];
+      if (result != null) return result;
+    }
+    return defaultValue;
+  }
+
+  String? _matchMapping(String sourceValue) {
     // 直接匹配
     if (mappingRules.containsKey(sourceValue)) {
       return mappingRules[sourceValue];
@@ -102,15 +126,11 @@ class DependencyConfig with _$DependencyConfig {
       }
     }
 
-    return defaultValue;
+    return null;
   }
 
-  /// 根据源值获取数量范围
-  ///
-  /// [sourceValue] 源类别的值
-  /// [randomInt] 随机数生成函数
-  int getCount(String sourceValue, int Function() randomInt) {
-    final result = getResult(sourceValue);
+  /// 把映射结果（如 "0-3"）换算为选取数量，没有结果时为 0
+  int getCountForResult(String? result, int Function() randomInt) {
     if (result == null) return 0;
 
     final (min, max) = parseRange(result);
@@ -119,24 +139,24 @@ class DependencyConfig with _$DependencyConfig {
     return min + (randomInt() % (max - min + 1));
   }
 
+  /// 数量与值依赖决定选取数量；存在与排斥依赖只决定是否生成
+  bool get controlsSelectionCount =>
+      type == DependencyType.count || type == DependencyType.value;
+
   /// 检查依赖是否满足
   ///
-  /// [context] 当前上下文，包含已选择的标签
-  bool checkDependency(Map<String, List<String>> context) {
-    final sourceValues = context[sourceCategoryId] ?? [];
-
+  /// [sourceCount] 源的结果数：类别为已选标签数，角色数量为人数。
+  /// 存在依赖要求结果数大于 0，排斥依赖要求为 0
+  bool isSatisfiedBy(int sourceCount) {
     switch (type) {
       case DependencyType.exists:
-        // 检查源标签是否存在
-        return sourceValues.isNotEmpty;
+        return sourceCount > 0;
 
       case DependencyType.excludes:
-        // 检查源标签是否不存在
-        return sourceValues.isEmpty;
+        return sourceCount == 0;
 
       case DependencyType.count:
       case DependencyType.value:
-        // count 和 value 类型总是满足，只影响结果
         return true;
     }
   }

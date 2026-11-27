@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../../../core/utils/localization_extension.dart';
 import '../../adaptive/interaction_policy.dart';
 import 'input_surface_container.dart';
+import 'input_surface_decoration.dart';
 import 'themed_confirm_dialog.dart';
 import 'themed_text_selection_toolbar.dart';
 
@@ -111,8 +112,7 @@ class ThemedInput extends StatefulWidget {
   /// 点击输入框外部时的回调
   final TapRegionCallback? onTapOutside;
 
-  /// 额外的 InputDecoration（会与默认配置合并）
-  /// 用于兼容需要额外装饰属性的场景
+  /// 额外的 InputDecoration，呈现规则见 [InputSurfaceDecoration]
   final InputDecoration? decoration;
 
   /// 是否显示清空按钮（有内容时才显示）
@@ -133,6 +133,9 @@ class ThemedInput extends StatefulWidget {
 
   /// Whether to add a native Ctrl+Y redo shortcut for plain text fields.
   final bool enableNativeRedoShortcut;
+
+  /// 读屏名称，可见标签不在输入框内时提供
+  final String? semanticLabel;
 
   const ThemedInput({
     super.key,
@@ -178,50 +181,7 @@ class ThemedInput extends StatefulWidget {
     this.clearNeedsConfirm = false,
     this.contextMenuBuilder,
     this.enableNativeRedoShortcut = true,
-  });
-
-  /// 创建多行输入框
-  const ThemedInput.multiline({
-    super.key,
-    this.controller,
-    this.undoController,
-    this.focusNode,
-    this.hintText,
-    this.helperText,
-    this.maxLines,
-    this.minLines = 3,
-    this.expands = false,
-    this.scrollPhysics,
-    this.textInputAction,
-    this.keyboardType = TextInputType.multiline,
-    this.onChanged,
-    this.onSubmitted,
-    this.readOnly = false,
-    this.enabled = true,
-    this.borderRadius = 8.0,
-    this.contentPadding = const EdgeInsets.all(12),
-    this.inputFormatters,
-    this.prefixIcon,
-    this.suffixIcon,
-    this.obscureText = false,
-    this.maxLength,
-    this.style,
-    this.hintStyle,
-    this.surfaceColor,
-    this.hasError = false,
-    this.autofocus = false,
-    this.onTap,
-    this.onEditingComplete,
-    this.textAlign = TextAlign.start,
-    this.textAlignVertical,
-    this.cursorColor,
-    this.onTapOutside,
-    this.decoration,
-    this.showClearButton = false,
-    this.onClearPressed,
-    this.clearNeedsConfirm = false,
-    this.contextMenuBuilder,
-    this.enableNativeRedoShortcut = true,
+    this.semanticLabel,
   });
 
   @override
@@ -229,7 +189,10 @@ class ThemedInput extends StatefulWidget {
 }
 
 class _ThemedInputState extends State<ThemedInput> {
+  // 下方文字出现或消失会改变外层结构，靠它移动而非重建输入框，焦点与输入法连接不中断
+  final GlobalKey _surfaceKey = GlobalKey();
   late TextEditingController _effectiveController;
+  bool _ownsController = false;
   late FocusNode _effectiveFocusNode;
   bool _ownsFocusNode = false;
   bool _hasContent = false;
@@ -237,31 +200,19 @@ class _ThemedInputState extends State<ThemedInput> {
   @override
   void initState() {
     super.initState();
-    _effectiveController = widget.controller ?? TextEditingController();
+    _attachController(widget.controller);
     _effectiveFocusNode = widget.focusNode ?? FocusNode();
     _ownsFocusNode = widget.focusNode == null;
     _effectiveFocusNode.addListener(_onFocusChanged);
-    _hasContent = _effectiveController.text.isNotEmpty;
-    if (widget.showClearButton) {
-      _effectiveController.addListener(_onTextChanged);
-    }
   }
 
   @override
   void didUpdateWidget(ThemedInput oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.controller != oldWidget.controller) {
-      if (oldWidget.showClearButton && oldWidget.controller == null) {
-        _effectiveController.removeListener(_onTextChanged);
-        _effectiveController.dispose();
-      } else if (oldWidget.showClearButton) {
-        oldWidget.controller?.removeListener(_onTextChanged);
-      }
-      _effectiveController = widget.controller ?? TextEditingController();
-      _hasContent = _effectiveController.text.isNotEmpty;
-      if (widget.showClearButton) {
-        _effectiveController.addListener(_onTextChanged);
-      }
+      final previous = _effectiveController.value;
+      _detachController();
+      _attachController(widget.controller, carryOver: previous);
     }
     if (widget.focusNode != oldWidget.focusNode) {
       _effectiveFocusNode.removeListener(_onFocusChanged);
@@ -274,15 +225,27 @@ class _ThemedInputState extends State<ThemedInput> {
 
   @override
   void dispose() {
-    if (widget.showClearButton) {
-      _effectiveController.removeListener(_onTextChanged);
-    }
-    if (widget.controller == null) {
-      _effectiveController.dispose();
-    }
+    _detachController();
     _effectiveFocusNode.removeListener(_onFocusChanged);
     if (_ownsFocusNode) _effectiveFocusNode.dispose();
     super.dispose();
+  }
+
+  // 一直监听：清空按钮可能在之后才开启，届时需要已知的内容状态
+  void _attachController(
+    TextEditingController? external, {
+    TextEditingValue? carryOver,
+  }) {
+    _ownsController = external == null;
+    _effectiveController =
+        external ?? TextEditingController.fromValue(carryOver);
+    _effectiveController.addListener(_onTextChanged);
+    _hasContent = _effectiveController.text.isNotEmpty;
+  }
+
+  void _detachController() {
+    _effectiveController.removeListener(_onTextChanged);
+    if (_ownsController) _effectiveController.dispose();
   }
 
   void _onFocusChanged() {
@@ -291,11 +254,12 @@ class _ThemedInputState extends State<ThemedInput> {
 
   void _onTextChanged() {
     final hasContent = _effectiveController.text.isNotEmpty;
-    if (_hasContent != hasContent) {
-      setState(() {
-        _hasContent = hasContent;
-      });
+    if (_hasContent == hasContent) return;
+    if (!widget.showClearButton) {
+      _hasContent = hasContent;
+      return;
     }
+    setState(() => _hasContent = hasContent);
   }
 
   Future<void> _handleClear() async {
@@ -326,87 +290,64 @@ class _ThemedInputState extends State<ThemedInput> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    // 构建基础 InputDecoration
-    var inputDecoration = InputDecoration(
+    final surface = InputSurfaceDecoration(
+      widget.decoration,
+      contentPadding: widget.contentPadding,
       hintText: widget.hintText,
       hintStyle: widget.hintStyle,
-      border: InputBorder.none,
-      enabledBorder: InputBorder.none,
-      focusedBorder: InputBorder.none,
-      disabledBorder: InputBorder.none,
-      errorBorder: InputBorder.none,
-      focusedErrorBorder: InputBorder.none,
-      filled: false,
-      contentPadding: widget.contentPadding,
       prefixIcon: widget.prefixIcon,
       suffixIcon: widget.suffixIcon,
-      isDense: true,
-      counterText: '', // 隐藏字符计数
+      helperText: widget.helperText,
     );
+    final singleLineClear =
+        widget.showClearButton && widget.maxLines == 1 && !widget.expands;
+    final clearExtent = _ClearButton.extentOf(context);
+    // 单行时为清空按钮让出末端空间，长文字不会排到按钮下面
+    final fieldDecoration = singleLineClear
+        ? surface.fieldDecoration.copyWith(
+            contentPadding: surface.contentPadding.add(
+              EdgeInsetsDirectional.only(end: clearExtent),
+            ),
+          )
+        : surface.fieldDecoration;
 
-    // 如果提供了额外的 decoration，合并属性
-    if (widget.decoration != null) {
-      inputDecoration = inputDecoration.copyWith(
-        hintText: widget.decoration!.hintText ?? widget.hintText,
-        hintStyle: widget.decoration!.hintStyle ?? widget.hintStyle,
-        labelText: widget.decoration!.labelText,
-        labelStyle: widget.decoration!.labelStyle,
-        floatingLabelStyle: widget.decoration!.floatingLabelStyle,
-        helperText: widget.decoration!.helperText,
-        helperStyle: widget.decoration!.helperStyle,
-        errorText: widget.decoration!.errorText,
-        errorStyle: widget.decoration!.errorStyle,
-        prefixIcon: widget.decoration!.prefixIcon ?? widget.prefixIcon,
-        prefix: widget.decoration!.prefix,
-        prefixText: widget.decoration!.prefixText,
-        prefixStyle: widget.decoration!.prefixStyle,
-        suffixIcon: widget.decoration!.suffixIcon ?? widget.suffixIcon,
-        suffix: widget.decoration!.suffix,
-        suffixText: widget.decoration!.suffixText,
-        suffixStyle: widget.decoration!.suffixStyle,
-        counter: widget.decoration!.counter,
-        counterStyle: widget.decoration!.counterStyle,
-        contentPadding:
-            widget.decoration!.contentPadding ?? widget.contentPadding,
-        isDense: widget.decoration!.isDense,
-      );
-    }
-
-    final field = TextField(
-      controller: _effectiveController,
-      undoController: widget.undoController,
-      focusNode: _effectiveFocusNode,
-      maxLines: widget.maxLines,
-      minLines: widget.minLines,
-      expands: widget.expands,
-      scrollPhysics: widget.scrollPhysics,
-      textInputAction: widget.textInputAction,
-      keyboardType: widget.keyboardType,
-      onChanged: widget.onChanged,
-      onSubmitted: widget.onSubmitted,
-      onTap: widget.onTap,
-      onEditingComplete: widget.onEditingComplete,
-      onTapOutside: widget.onTapOutside,
-      readOnly: widget.readOnly,
-      enabled: widget.enabled,
-      inputFormatters: widget.inputFormatters,
-      obscureText: widget.obscureText,
-      maxLength: widget.maxLength,
-      style: widget.style,
-      autofocus: widget.autofocus,
-      textAlign: widget.textAlign,
-      textAlignVertical:
-          widget.textAlignVertical ??
-          (widget.maxLines == 1 && !widget.expands
-              ? TextAlignVertical.center
-              : null),
-      cursorColor: widget.cursorColor,
-      decoration: inputDecoration,
-      // 不传时用带主题字体的默认实现：Flutter 自带的工具栏按钮会绕开
-      // 主题字体，右键菜单会一直是系统默认字体。
-      contextMenuBuilder: widget.contextMenuBuilder ?? themedContextMenuBuilder,
+    final field = Semantics(
+      label: widget.semanticLabel,
+      child: TextField(
+        controller: _effectiveController,
+        undoController: widget.undoController,
+        focusNode: _effectiveFocusNode,
+        maxLines: widget.maxLines,
+        minLines: widget.minLines,
+        expands: widget.expands,
+        scrollPhysics: widget.scrollPhysics,
+        textInputAction: widget.textInputAction,
+        keyboardType: widget.keyboardType,
+        onChanged: widget.onChanged,
+        onSubmitted: widget.onSubmitted,
+        onTap: widget.onTap,
+        onEditingComplete: widget.onEditingComplete,
+        onTapOutside: widget.onTapOutside,
+        readOnly: widget.readOnly,
+        enabled: widget.enabled,
+        inputFormatters: widget.inputFormatters,
+        obscureText: widget.obscureText,
+        maxLength: widget.maxLength,
+        style: widget.style,
+        autofocus: widget.autofocus,
+        textAlign: widget.textAlign,
+        textAlignVertical:
+            widget.textAlignVertical ??
+            (widget.maxLines == 1 && !widget.expands
+                ? TextAlignVertical.center
+                : null),
+        cursorColor: widget.cursorColor,
+        decoration: fieldDecoration,
+        // 不传时用带主题字体的默认实现：Flutter 自带的工具栏按钮会绕开
+        // 主题字体，右键菜单会一直是系统默认字体。
+        contextMenuBuilder:
+            widget.contextMenuBuilder ?? themedContextMenuBuilder,
+      ),
     );
 
     final textField = widget.enableNativeRedoShortcut
@@ -425,48 +366,51 @@ class _ThemedInputState extends State<ThemedInput> {
     // 若按「空/非空」增删 Stack 层，输入框会在删空瞬间因父链结构变化
     // 而整体重建，焦点与键盘输入连接被打断（光标消失、需重新点击）
     if (widget.showClearButton) {
+      final clearButton = _ClearButton(onPressed: _handleClear);
       content = Stack(
         children: [
-          textField,
+          if (singleLineClear)
+            // 单行输入框至少与清空按钮等高，触屏命中区不会被 Stack 裁掉
+            ConstrainedBox(
+              constraints: BoxConstraints(minHeight: clearExtent),
+              child: textField,
+            )
+          else
+            textField,
           if (_hasContent)
-            Positioned(
-              top: 4,
-              right: 4,
-              child: _ClearButton(onPressed: _handleClear),
-            ),
+            singleLineClear
+                ? PositionedDirectional(
+                    top: 0,
+                    bottom: 0,
+                    end: 4,
+                    child: Center(child: clearButton),
+                  )
+                : PositionedDirectional(top: 4, end: 4, child: clearButton),
         ],
       );
     }
 
     final container = InputSurfaceContainer(
+      key: _surfaceKey,
       borderRadius: widget.borderRadius,
       enabled: widget.enabled,
       isFocused: _effectiveFocusNode.hasFocus,
-      hasError: widget.hasError || inputDecoration.errorText != null,
+      hasError: widget.hasError || surface.hasError,
       backgroundColor: widget.surfaceColor,
       child: content,
     );
 
-    // 如果有帮助文字，添加在下方
-    if (widget.helperText != null) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          container,
-          const SizedBox(height: 4),
-          Padding(
-            padding: const EdgeInsets.only(left: 12),
-            child: Text(
-              widget.helperText!,
-              style: TextStyle(fontSize: 12, color: theme.colorScheme.outline),
-            ),
-          ),
-        ],
-      );
-    }
-
-    return container;
+    // 没有下方文字时直接返回色面，调用方给定的固定高度仍由色面填满
+    final supporting = surface.supportingText();
+    if (supporting == null) return container;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: widget.expands ? MainAxisSize.max : MainAxisSize.min,
+      children: [
+        if (widget.expands) Expanded(child: container) else container,
+        supporting,
+      ],
+    );
   }
 }
 
@@ -476,17 +420,22 @@ class _ClearButton extends StatelessWidget {
 
   const _ClearButton({required this.onPressed});
 
-  @override
-  Widget build(BuildContext context) {
+  static double extentOf(BuildContext context) {
     final interactionPolicy = context.interactionPolicy;
-    final extent = interactionPolicy.touchAvailable
+    return interactionPolicy.touchAvailable
         ? interactionPolicy.minimumControlExtent
         : 32.0;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final extent = extentOf(context);
+    // 命中区就是 extent：不叠加紧凑密度（会再缩小 8），也不按平台补到 48
     return IconButton(
       onPressed: onPressed,
       icon: const Icon(Icons.close, size: 16),
       tooltip: MaterialLocalizations.of(context).deleteButtonTooltip,
-      visualDensity: VisualDensity.compact,
+      style: const ButtonStyle(tapTargetSize: MaterialTapTargetSize.shrinkWrap),
       constraints: BoxConstraints.tightFor(width: extent, height: extent),
       padding: EdgeInsets.zero,
     );

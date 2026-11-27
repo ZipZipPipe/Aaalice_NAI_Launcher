@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 
 import '../../../core/utils/prompt_edit_document.dart';
+import 'nai_syntax_controller.dart';
 import 'tag_editor_projection.dart';
 import 'tag_editor_grouping.dart';
 
@@ -31,13 +32,12 @@ class PromptTextPatch {
 /// UI identity, selection and undo belong to the editor, while the controller
 /// remains the only owner of prompt content. Both views use these transactions.
 class TagEditorSession extends ChangeNotifier {
-  TagEditorSession(this.controller, {this.onCommandChanged}) {
+  TagEditorSession(this.controller) {
     _previous = controller.value;
     _reparse(const {});
     controller.addListener(_changed);
   }
   final TextEditingController controller;
-  final ValueChanged<String>? onCommandChanged;
   late TextEditingValue _previous;
   List<PromptEditorTag> tags = [];
   List<PromptEditorTag> _leaves = [];
@@ -407,7 +407,6 @@ class TagEditorSession extends ChangeNotifier {
       _applying = false;
     }
     notifyListeners();
-    onCommandChanged?.call(controller.text);
   }
 
   void replaceLabel(int id, String label, {bool composing = false}) {
@@ -591,6 +590,8 @@ class TagEditorSession extends ChangeNotifier {
       PromptSelectionGrouping.create(
         tags.map((tag) => tag.span).toList(),
         selectedTags.map((tag) => tag.span.start).toSet(),
+        separateNumericWeightClosing:
+            NaiSyntaxController.separatesNumericWeightClosing(controller),
       );
 
   void groupSelected(
@@ -650,7 +651,6 @@ class TagEditorSession extends ChangeNotifier {
     } finally {
       _restoring = false;
     }
-    onCommandChanged?.call(controller.text);
   }
 
   @override

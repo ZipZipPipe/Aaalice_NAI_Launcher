@@ -1,7 +1,12 @@
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
+
 import '../../data/models/image/image_params.dart';
+import '../constants/api_constants.dart';
 import '../constants/model_capabilities.dart';
+import '../network/request_builders/precise_reference_limit_exception.dart';
+import '../network/request_builders/precise_reference_send_filter.dart';
 
 /// Anlas 消耗计算器
 ///
@@ -10,20 +15,21 @@ import '../constants/model_capabilities.dart';
 class AnlasCalculator {
   AnlasCalculator._();
 
-  static const int opusTier = 3;
-
   /// Opus 基础免费额度覆盖的最大像素面积。
   static const int opusFreeMaxPixels = 1024 * 1024;
   static const int invalidCost = -3;
   static const int maximumPerSampleCost = 140;
   static const int novelAiUpscaleOpusFreeMaxInputPixels = 640 * 640;
 
+  /// 网页端云端超分计费分档覆盖的最大输入面积，更大的原图无法估价。
+  static const int novelAiUpscaleMaxInputPixels = 3145728;
+
   /// 当前 NovelAI 网页端的云端超分输入面积计费分档。
   static const List<(int maxInputPixels, int cost)> _novelAiUpscaleCostTiers = [
     (1048576, 1),
     (1747627, 2),
     (2446678, 3),
-    (3145728, 4),
+    (novelAiUpscaleMaxInputPixels, 4),
   ];
 
   static const double _areaCoefficient = 2.951823174884865e-6;
@@ -31,23 +37,17 @@ class AnlasCalculator {
   static const int _vibeCost = 2;
   static const int _preciseReferenceCost = 5;
 
-  static bool _usesPreciseReferences(ImageParams params) {
-    return params.capabilities.supportsPreciseReference &&
-        params.hasPreciseReferences;
-  }
-
   static bool usesVibeReferences(ImageParams params) {
     return params.capabilities.supportsVibeTransfer &&
         params.hasVibeReferencesV4 &&
         params.action != ImageGenerationAction.infill &&
-        !_usesPreciseReferences(params);
+        resolveSendablePreciseReferences(params).isEmpty;
   }
 
   static int resolvePreciseReferenceExtraCost(ImageParams params) {
-    if (!_usesPreciseReferences(params)) {
-      return 0;
-    }
-    return params.preciseReferenceCount * _preciseReferenceCost;
+    final count = resolveSendablePreciseReferences(params).length;
+    if (count > PreciseReferenceLimitException.maxReferences) return 0;
+    return count * _preciseReferenceCost;
   }
 
   /// 尚未编码的启用 Vibe 每个只在生成前收取一次编码费。
@@ -77,26 +77,31 @@ class AnlasCalculator {
     return extraReferenceCount * _vibeCost;
   }
 
-  /// 计算预估 Anlas 消耗
+  /// 参数到 Anlas 费用的唯一入口。
   ///
-  /// [params] 图像生成参数
-  /// [isOpus] 是否 Opus 订阅
+  /// [requestSize] 是调用方已经确定的请求几何（如聚焦重绘的裁切尺寸），按原样
+  /// 计费；不传时按 [params] 的尺寸计费，增强 max 档按 [billingSize] 换算。
+  /// [batchCount] 是独立请求数，默认取 `params.nSamples`；[batchSize] 是单次
+  /// 请求的张数。[isOpus] 与 [opusQuotaExhausted] 是订阅档位与 V5 配额池是否透支。
   static int calculate(
     ImageParams params, {
+    ({int width, int height})? requestSize,
+    int? batchCount,
+    int batchSize = 1,
     bool isOpus = false,
     bool opusQuotaExhausted = false,
-    int batchSize = 1,
   }) {
+    final size = requestSize ?? billingSize(params);
     return calculateRequestCost(
-      width: params.width,
-      height: params.height,
+      width: size.width,
+      height: size.height,
       steps: params.steps,
-      batchCount: params.nSamples,
+      batchCount: batchCount ?? params.nSamples,
       batchSize: batchSize,
       smea: params.effectiveSmea,
       smeaDyn: params.effectiveSmeaDyn,
       model: params.model,
-      subscriptionTier: isOpus ? opusTier : 0,
+      isOpus: isOpus,
       opusQuotaExhausted: opusQuotaExhausted,
       strength: switch (params.action) {
         ImageGenerationAction.img2img => params.strength,
@@ -109,6 +114,25 @@ class AnlasCalculator {
     );
   }
 
+  /// Anlas 与 Opus 配额共用的计费尺寸。
+  static ({int width, int height}) billingSize(ImageParams params) =>
+      resolveBillingSize(
+        width: params.width,
+        height: params.height,
+        maxEnhance: params.effectiveUpscaledEnhance,
+      );
+
+  /// 增强 max 档请求携带原图尺寸，服务端却按放大到 3.14MP 的面积计费。
+  static ({int width, int height}) resolveBillingSize({
+    required int width,
+    required int height,
+    required bool maxEnhance,
+  }) {
+    if (!maxEnhance) return (width: width, height: height);
+    return E2eUpscale.resolveMaxEnhanceTargetSize(width, height);
+  }
+
+  @visibleForTesting
   static int calculateRequestCost({
     required int width,
     required int height,
@@ -118,7 +142,7 @@ class AnlasCalculator {
     required bool smea,
     required bool smeaDyn,
     required String model,
-    int subscriptionTier = 0,
+    bool isOpus = false,
     bool opusQuotaExhausted = false,
     double strength = 1.0,
     int extraPerSampleCost = 0,
@@ -140,7 +164,7 @@ class AnlasCalculator {
         smea: smea,
         smeaDyn: smeaDyn,
         model: model,
-        subscriptionTier: isFirstImageInRequest ? subscriptionTier : 0,
+        isOpus: isFirstImageInRequest && isOpus,
         opusQuotaExhausted: opusQuotaExhausted,
         strength: strength,
       );
@@ -161,15 +185,14 @@ class AnlasCalculator {
     required int inputWidth,
     required int inputHeight,
     required int scale,
-    int subscriptionTier = 0,
+    bool isOpus = false,
   }) {
     if (inputWidth <= 0 || inputHeight <= 0 || scale <= 0) {
       return invalidCost;
     }
 
     final inputPixels = inputWidth * inputHeight;
-    if (subscriptionTier >= opusTier &&
-        inputPixels <= novelAiUpscaleOpusFreeMaxInputPixels) {
+    if (isOpus && inputPixels <= novelAiUpscaleOpusFreeMaxInputPixels) {
       return 0;
     }
 
@@ -180,6 +203,7 @@ class AnlasCalculator {
   }
 
   /// 根据具体参数值计算 Anlas 消耗
+  @visibleForTesting
   static int calculateFromValues({
     required int width,
     required int height,
@@ -189,12 +213,13 @@ class AnlasCalculator {
     required bool smeaDyn,
     required String model,
     bool isOpus = false,
-    int subscriptionTier = 0,
     bool opusQuotaExhausted = false,
     double strength = 1.0,
   }) {
     final pixels = width * height;
     final capabilities = ModelCapabilityRegistry.of(model);
+    // 调用方传的是界面步数，固定步数的模型按实际发送的步数计价与判定免费。
+    final effectiveSteps = capabilities.fixedSettings?.steps ?? steps;
 
     // 计算每张图的基础消耗
     double perSample;
@@ -202,9 +227,12 @@ class AnlasCalculator {
     if (capabilities.anlasFormula == AnlasFormula.modern) {
       // 网页端只对面积与步数部分取整，随后连乘 SMEA 倍率、模型倍率与重绘
       // 强度，最后统一取整。V5 的模型倍率是 1.5。
-      final baseCost =
-          (_areaCoefficient * pixels + _stepAreaCoefficient * pixels * steps)
-              .ceil();
+      final stepCost =
+          _stepAreaCoefficient *
+          pixels *
+          effectiveSteps *
+          capabilities.stepCostFactor;
+      final baseCost = (_areaCoefficient * pixels + stepCost).ceil();
       final smeaFactor = !smea ? 1.0 : (!smeaDyn ? 1.2 : 1.4);
       perSample = baseCost * smeaFactor * capabilities.anlasMultiplier;
     } else {
@@ -214,7 +242,7 @@ class AnlasCalculator {
           (15.266497014243718 *
                   math.exp(pixels / 1024 / 1024 * 0.6326248927474729) -
               15.225164493059737) *
-          steps /
+          effectiveSteps /
           28;
     }
 
@@ -227,8 +255,8 @@ class AnlasCalculator {
     final opusDiscount =
         !quotaBlocked &&
             _isOpusFree(
-              isOpus: isOpus || subscriptionTier >= opusTier,
-              steps: steps,
+              isOpus: isOpus,
+              steps: effectiveSteps,
               resolution: pixels,
             )
         ? 1

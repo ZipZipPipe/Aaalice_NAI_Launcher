@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:nai_launcher/core/constants/api_constants.dart';
 import 'package:nai_launcher/data/models/gallery/nai_image_metadata.dart';
 import 'package:nai_launcher/data/models/prompt/random_preset.dart';
 import 'package:nai_launcher/data/models/prompt/random_tag_group.dart';
@@ -9,62 +10,62 @@ import 'package:nai_launcher/l10n/app_localizations.dart';
 import 'package:nai_launcher/presentation/providers/random_preset_provider.dart';
 import 'package:nai_launcher/presentation/widgets/common/save_as_preset_dialog.dart';
 
-void main() {
-  testWidgets('保存保留所选标签、顺序和随机算法配置', (tester) async {
-    final notifier = _CapturePresets();
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: [randomPresetNotifierProvider.overrideWith(() => notifier)],
-        child: MaterialApp(
-          locale: const Locale('zh'),
-          localizationsDelegates: AppLocalizations.localizationsDelegates,
-          supportedLocales: AppLocalizations.supportedLocales,
-          home: Builder(
-            builder: (context) => Scaffold(
-              body: TextButton(
-                onPressed: () =>
-                    SaveAsPresetDialog.show(context, metadata: _metadata),
-                child: const Text('open'),
-              ),
-            ),
-          ),
+import '../../../helpers/adaptive_panel_expectations.dart';
+import '../../../helpers/viewport_scenarios.dart';
+
+Future<RandomPreset> _saveWithDefaults(
+  WidgetTester tester,
+  NaiImageMetadata metadata,
+) async {
+  final notifier = _CapturePresets();
+  await tester.pumpWidget(
+    ProviderScope(
+      overrides: [randomPresetNotifierProvider.overrideWith(() => notifier)],
+      child: localizedTestApp(
+        home: panelLauncher(
+          'open',
+          (context) => SaveAsPresetDialog.show(context, metadata: metadata),
         ),
       ),
-    );
-    await tester.tap(find.text('open'));
-    await tester.pumpAndSettle();
-    await tester.scrollUntilVisible(
-      find.text('保存'),
-      200,
-      scrollable: find
-          .descendant(
-            of: find.byType(ListView),
-            matching: find.byType(Scrollable),
-          )
-          .first,
-    );
-    await tester.tap(find.text('保存'));
-    await tester.pumpAndSettle();
-    final preset = notifier.saved!;
+    ),
+  );
+  await tester.tap(find.text('open'));
+  await tester.pumpAndSettle();
+  await tester.scrollUntilVisible(
+    find.text('保存'),
+    200,
+    scrollable: find
+        .descendant(
+          of: find.byWidgetPredicate((widget) => widget is ScrollView),
+          matching: find.byType(Scrollable),
+        )
+        .first,
+  );
+  await tester.tap(find.text('保存'));
+  await tester.pumpAndSettle();
+  return notifier.saved!;
+}
+
+List<List<String>> _categoryTags(RandomPreset preset) => preset.categories
+    .map(
+      (category) => category.groups.single.tags.map((tag) => tag.tag).toList(),
+    )
+    .toList();
+
+void main() {
+  testWidgets('保存保留所选标签、顺序和随机算法配置', (tester) async {
+    final preset = await _saveWithDefaults(tester, _metadata);
     expect(preset.name, 'very long promp..._42');
     expect(preset.isDefault, isFalse);
     expect(
       preset.algorithmConfig.characterCountConfig,
       CharacterCountConfig.naiDefault,
     );
-    expect(
-      preset.categories
-          .map(
-            (category) =>
-                category.groups.single.tags.map((tag) => tag.tag).toList(),
-          )
-          .toList(),
-      [
-        ['very long prompt', 'second tag'],
-        ['best quality'],
-        ['negative tag'],
-      ],
-    );
+    expect(_categoryTags(preset), [
+      ['very long prompt', 'second tag'],
+      ['best quality'],
+      ['negative tag'],
+    ]);
     for (final category in preset.categories) {
       expect(category.groupSelectionMode, SelectionMode.all);
       expect(category.shuffle, isFalse);
@@ -73,6 +74,29 @@ void main() {
     }
     expect(find.byType(SaveAsPresetDialog), findsNothing);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('负面分类不含 UC 预设与负向固定词', (tester) async {
+    const model = ImageModels.animeDiffusionV45Full;
+    final heavy = UcPresets.getPresetContent(model, UcPresetType.heavy);
+
+    final preset = await _saveWithDefaults(
+      tester,
+      NaiImageMetadata(
+        prompt: '1girl',
+        negativePrompt: '$heavy, bad hands, watermark',
+        seed: 7,
+        model: model,
+        ucPreset: UcPresets.heavyApiValue,
+        fixedNegativePrefixTags: const ['bad hands'],
+      ),
+    );
+
+    final tags = _categoryTags(preset);
+    expect(tags.last, ['watermark']);
+    expect(tags.expand((group) => group).where((tag) => tag == 'bad hands'), [
+      'bad hands',
+    ]);
   });
   testWidgets('320dp、3x、IME 与 SafeArea 下使用长表单且内容可滚动', (tester) async {
     final view = tester.view;
@@ -114,14 +138,18 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byKey(const ValueKey('adaptive-bottom-sheet')), findsOneWidget);
-    expect(find.byType(ListView), findsOneWidget);
+    expect(
+      find.byWidgetPredicate((widget) => widget is ScrollView),
+      findsOneWidget,
+    );
+    expectPanelHeaderScrollsWithContent(tester);
     final save = find.text('保存');
     await tester.scrollUntilVisible(
       save,
       200,
       scrollable: find
           .descendant(
-            of: find.byType(ListView),
+            of: find.byWidgetPredicate((widget) => widget is ScrollView),
             matching: find.byType(Scrollable),
           )
           .first,

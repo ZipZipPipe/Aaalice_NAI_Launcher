@@ -1,12 +1,18 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
+
+import '../../../core/cache/gallery_cache_manager.dart';
 import '../../../core/database/datasources/gallery_data_source.dart';
 import '../../../core/exceptions/gallery_exceptions.dart';
 import '../../../core/utils/app_logger.dart';
+import '../../models/gallery/gallery_index_admission.dart';
 import '../../models/gallery/local_image_record.dart';
 import '../../models/gallery/nai_image_metadata.dart';
+import '../../repositories/gallery_folder_repository.dart';
 import 'gallery_filter_service.dart';
+import 'gallery_image_files.dart';
 import 'gallery_path_utils.dart';
 import 'gallery_scan_coordinator.dart';
 import 'local_gallery_query.dart';
@@ -17,18 +23,31 @@ class LocalGalleryServiceImpl implements LocalGalleryService {
   factory LocalGalleryServiceImpl({
     required GalleryDataSource dataSource,
     required GalleryFilterService filterService,
+  }) => LocalGalleryServiceImpl.withRepository(
+    dataSource: dataSource,
+    filterService: filterService,
+    repository: LocalGalleryRepository(dataSource: dataSource),
+  );
+
+  @visibleForTesting
+  factory LocalGalleryServiceImpl.withRepository({
+    required GalleryDataSource dataSource,
+    required GalleryFilterService filterService,
+    required LocalGalleryRepository repository,
+    Duration admissionRetryDelay = const Duration(milliseconds: 300),
   }) {
-    final repository = LocalGalleryRepository(dataSource: dataSource);
+    final query = LocalGalleryQuery(
+      repository: repository,
+      filterService: filterService,
+    );
     return LocalGalleryServiceImpl._composed(
       repository: repository,
-      query: LocalGalleryQuery(
-        repository: repository,
-        filterService: filterService,
-      ),
+      query: query,
       scanCoordinator: GalleryScanCoordinator(
         dataSource: dataSource,
-        repository: repository,
+        loadFiles: query.reloadFiles,
       ),
+      admissionRetryDelay: admissionRetryDelay,
     );
   }
 
@@ -36,13 +55,19 @@ class LocalGalleryServiceImpl implements LocalGalleryService {
     required LocalGalleryRepository repository,
     required LocalGalleryQuery query,
     required GalleryScanCoordinator scanCoordinator,
+    required Duration admissionRetryDelay,
   }) : _repository = repository,
        _query = query,
-       _scanCoordinator = scanCoordinator;
+       _scanCoordinator = scanCoordinator,
+       _admissionRetryDelay = admissionRetryDelay;
+
+  // 数据库操作本身已在网关内重试，这里只多兜一次文件刚落盘被占用之类的瞬时失败
+  static const _admissionAttempts = 2;
 
   final LocalGalleryRepository _repository;
   final LocalGalleryQuery _query;
   final GalleryScanCoordinator _scanCoordinator;
+  final Duration _admissionRetryDelay;
   Future<List<File>>? _initializing;
   bool _isInitialized = false;
 
@@ -50,6 +75,8 @@ class LocalGalleryServiceImpl implements LocalGalleryService {
   bool get isInitialized => _isInitialized;
   @override
   int get filteredCount => _query.filteredCount;
+  @override
+  int imageCountInFolder(String path) => _query.folderCounts.countIn(path);
   @override
   int get totalCount => _query.totalCount;
   @override
@@ -81,7 +108,6 @@ class LocalGalleryServiceImpl implements LocalGalleryService {
   Future<List<File>> _initialize() async {
     try {
       final files = await _scanCoordinator.initialize();
-      _query.replaceAll(files);
       _isInitialized = true;
       return files;
     } on GalleryException {
@@ -104,13 +130,15 @@ class LocalGalleryServiceImpl implements LocalGalleryService {
   Future<LocalGalleryQueryPage> queryPage({
     required int page,
     int pageSize = 50,
-    String searchQuery = '',
+    FilterCriteria criteria = const FilterCriteria(),
+    bool includeFilePathMatches = false,
   }) {
     _ensureInitialized();
     return _query.queryPage(
       page: page,
       pageSize: pageSize,
-      searchQuery: searchQuery,
+      criteria: criteria,
+      includeFilePathMatches: includeFilePathMatches,
     );
   }
 
@@ -162,7 +190,8 @@ class LocalGalleryServiceImpl implements LocalGalleryService {
     try {
       final resolvedPath = _query.resolveTrackedPath(filePath);
       final isFavorite = await _repository.toggleFavorite(resolvedPath);
-      if (isFavorite || await File(resolvedPath).exists()) {
+      if ((isFavorite || await File(resolvedPath).exists()) &&
+          await _accepts(resolvedPath)) {
         await _query.syncAfterMutation(File(resolvedPath));
       }
       return isFavorite;
@@ -220,40 +249,82 @@ class LocalGalleryServiceImpl implements LocalGalleryService {
     }
   }
 
+  /// 写索引失败只重试这一张：写入按路径幂等，全量重扫修不了单张写不进去的图。
   @override
-  Future<bool> addNewImageImmediately(
+  Future<GalleryIndexAdmission> addNewImageImmediately(
     String filePath, {
     NaiImageMetadata? metadata,
   }) async {
     _ensureInitialized();
-    try {
-      final file = File(normalizeGalleryFilePath(filePath));
-      if (!await file.exists()) {
+    for (var attempt = 1; ; attempt++) {
+      try {
+        return await _admitImage(filePath, metadata: metadata);
+      } catch (error, stackTrace) {
+        if (attempt >= _admissionAttempts) {
+          AppLogger.e(
+            '[AddNewImage] Failed to add new image: $filePath',
+            error,
+            stackTrace,
+            'LocalGalleryService',
+          );
+          return GalleryIndexAdmission.failed;
+        }
         AppLogger.w(
-          '[AddNewImage] File does not exist: $filePath',
+          '[AddNewImage] Retrying ($attempt/$_admissionAttempts): $filePath',
           'LocalGalleryService',
         );
-        return false;
+        await Future<void>.delayed(_admissionRetryDelay);
       }
-      if (_query.containsPath(file.path)) {
-        AppLogger.d(
-          '[AddNewImage] File already exists in gallery: $filePath',
-          'LocalGalleryService',
-        );
-        return false;
-      }
-      await _repository.addImage(file, metadata: metadata);
-      await _query.syncAfterMutation(file);
-      return true;
-    } catch (error, stackTrace) {
-      AppLogger.e(
-        '[AddNewImage] Failed to add new image: $filePath',
-        error,
-        stackTrace,
+    }
+  }
+
+  Future<GalleryIndexAdmission> _admitImage(
+    String filePath, {
+    NaiImageMetadata? metadata,
+  }) async {
+    final file = File(normalizeGalleryFilePath(filePath));
+    if (!await file.exists()) {
+      AppLogger.w(
+        '[AddNewImage] File does not exist: $filePath',
         'LocalGalleryService',
       );
-      return false;
+      return GalleryIndexAdmission.failed;
     }
+    if (!await _accepts(file.path)) return GalleryIndexAdmission.excluded;
+    if (_query.containsPath(file.path)) {
+      AppLogger.d(
+        '[AddNewImage] File already exists in gallery: $filePath',
+        'LocalGalleryService',
+      );
+      return GalleryIndexAdmission.alreadyIndexed;
+    }
+    await _repository.addImage(file, metadata: metadata);
+    await _query.syncAfterMutation(file);
+    return GalleryIndexAdmission.added;
+  }
+
+  Future<bool> _accepts(String filePath) async {
+    final rootPath = await GalleryFolderRepository.instance.getRootPath();
+    return GalleryImageFiles.accepts(
+      normalizeGalleryFilePath(rootPath!),
+      filePath,
+    );
+  }
+
+  @override
+  Future<int> removeDeletedImagesImmediately(List<String> filePaths) async {
+    _ensureInitialized();
+    final missing = <String>[];
+    for (final filePath in filePaths) {
+      final tracked = _query.resolveTrackedPath(filePath);
+      // 调用方传错路径时不能把磁盘上还在的图从图库里藏起来。
+      if (!await File(tracked).exists()) missing.add(tracked);
+    }
+    if (missing.isEmpty) return 0;
+    final removed = _query.removePaths(missing);
+    await _repository.markAsDeleted(missing);
+    GalleryCacheManager().invalidateStatistics();
+    return removed.length;
   }
 
   @override
@@ -263,10 +334,7 @@ class LocalGalleryServiceImpl implements LocalGalleryService {
       await _scanCoordinator.refresh(
         scan: scan,
         previousCount: _query.totalCount,
-        onFilesLoaded: (files) async {
-          _query.replaceAll(files);
-          await _query.applyFilter(_query.currentFilter);
-        },
+        onFilesLoaded: (_) => _query.applyFilter(_query.currentFilter),
       );
     } catch (error) {
       if (error is GalleryException) rethrow;

@@ -1,39 +1,21 @@
 import 'package:dio/dio.dart';
 
 import '../../prompt_assistant/models/agent_protocol.dart';
-import '../../prompt_assistant/models/prompt_assistant_models.dart';
-import '../../prompt_assistant/services/provider_adapters/anthropic_messages_adapter.dart';
 import '../../prompt_assistant/services/provider_adapters/assistant_prefill.dart';
-import '../../prompt_assistant/services/provider_adapters/gemini_generate_content_adapter.dart';
-import '../../prompt_assistant/services/provider_adapters/openai_chat_completions_adapter.dart';
-import '../../prompt_assistant/services/provider_adapters/openai_responses_adapter.dart';
-import '../../prompt_assistant/services/provider_adapters/prompt_assistant_adapter.dart';
+import '../../prompt_assistant/services/provider_adapters/provider_adapter_registry.dart';
+import '../../prompt_assistant/services/provider_adapters/reasoning_rejection.dart';
 
 /// Agent HTTP 请求分发。
 class AgentApiClient {
-  AgentApiClient(this._dio);
+  AgentApiClient(this._dio, {this.reasoningRejectionHint});
 
   final Dio _dio;
+  final String Function()? reasoningRejectionHint;
   final Map<String, CancelToken> _cancelTokens = {};
 
   void cancel(String sessionId) {
     final token = _cancelTokens.remove(sessionId);
     token?.cancel('cancelled by user');
-  }
-
-  PromptAssistantProviderAdapter _adapterFor(ProviderConfig provider) {
-    switch (provider.protocol) {
-      case ProviderProtocol.openaiChatCompletions:
-        return const OpenAiChatCompletionsAdapter();
-      case ProviderProtocol.openaiResponses:
-        return const OpenAiResponsesAdapter();
-      case ProviderProtocol.anthropicMessages:
-        return const AnthropicMessagesAdapter();
-      case ProviderProtocol.geminiGenerateContent:
-        return const GeminiGenerateContentAdapter();
-      case ProviderProtocol.ollamaChatCompletions:
-        return const OpenAiChatCompletionsAdapter(ollamaTagsFallback: true);
-    }
   }
 
   Stream<AgentWireEvent> complete(
@@ -47,8 +29,24 @@ class AgentApiClient {
     _cancelTokens.remove(cancelSessionId)?.cancel('replaced by new request');
     final cancelToken = CancelToken();
     _cancelTokens[cancelSessionId] = cancelToken;
-    return _adapterFor(
-      request.provider,
-    ).completeAgent(dio: _dio, request: request, cancelToken: cancelToken);
+    return providerAdapterFor(request.provider)
+        .completeAgent(dio: _dio, request: request, cancelToken: cancelToken)
+        .map((event) {
+          if (event case AgentWireError(
+            :final message,
+            rejectedReasoningField: final field?,
+          )) {
+            return AgentWireError(
+              reasoningRejectionMessage(
+                message,
+                field,
+                reasoningRejectionHint?.call(),
+              ),
+              retryMessage: event.retryMessage,
+              rejectedReasoningField: field,
+            );
+          }
+          return event;
+        });
   }
 }

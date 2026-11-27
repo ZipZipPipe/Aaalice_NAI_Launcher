@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -11,6 +12,7 @@ import '../../widgets/common/image_viewport_surface.dart';
 import '../../../core/agent/agent_types.dart';
 import '../../../core/utils/app_logger.dart';
 import '../../../core/utils/nai_resolution_adapter.dart';
+import '../models/agent_chat_image_token_syntax.dart';
 import '../providers/agent_chat_notifier.dart';
 import 'agent_chat_input_controller.dart';
 
@@ -84,20 +86,21 @@ class AgentChatPanelController extends ChangeNotifier {
   bool _autoScroll = true;
   bool _userScrollActive = false;
   bool _potentialUserScroll = false;
+  bool _potentialWheelScroll = false;
+  bool _potentialKeyScroll = false;
   bool _programmaticScrollActive = false;
   double? _lastUserScrollPixels;
   bool _scrollToBottomScheduled = false;
   bool _viewportRestoreScheduled = false;
   bool _needsViewportRestore = false;
   int _viewportRestoreGeneration = 0;
-  int _viewportInteractionRevision = 0;
   int _lastScrollMessageCount = -1;
   String _lastScrollSessionId = '';
   AssistantMessage? _lastStreamingMessage;
   List<AgentToolActivity>? _lastActivities;
   int? _hoveredUserMessageIndex;
   int? _focusedUserMessageIndex;
-  int? _editingUserMessageIndex;
+  String? _editingUserMessageEntryId;
   String? _composerTextBeforeEdit;
   List<PendingAgentChatImage>? _composerImagesBeforeEdit;
 
@@ -105,11 +108,20 @@ class AgentChatPanelController extends ChangeNotifier {
       List.unmodifiable(_pendingImages);
   int? get hoveredUserMessageIndex => _hoveredUserMessageIndex;
   int? get focusedUserMessageIndex => _focusedUserMessageIndex;
-  int? get editingUserMessageIndex => _editingUserMessageIndex;
-  bool get isEditingUserMessage => _editingUserMessageIndex != null;
+  String? get editingUserMessageEntryId => _editingUserMessageEntryId;
+  bool get isEditingUserMessage => _editingUserMessageEntryId != null;
   bool get showJumpToLatest => !_autoScroll;
   bool get followingLatest => _autoScroll;
-  int get viewportInteractionRevision => _viewportInteractionRevision;
+  bool get scrollOffsetAnimating {
+    if (!scrollController.hasClients) return false;
+    final position = scrollController.position;
+    return position is _AgentChatScrollPosition
+        ? position.offsetAnimating
+        : position.isScrollingNotifier.value;
+  }
+
+  bool get _hasPotentialUserScroll =>
+      _potentialUserScroll || _potentialWheelScroll || _potentialKeyScroll;
 
   void setHoveredUserMessageIndex(int? value) {
     if (_hoveredUserMessageIndex == value) return;
@@ -147,7 +159,6 @@ class AgentChatPanelController extends ChangeNotifier {
     if (sessionChanged && previousSessionId.isNotEmpty) {
       saveSessionOffset(previousSessionId);
       _endUserScroll();
-      _viewportInteractionRevision++;
     }
     _lastScrollSessionId = state.activeSessionId;
     _lastScrollMessageCount = state.messages.length;
@@ -157,7 +168,7 @@ class AgentChatPanelController extends ChangeNotifier {
       messageImageBytes.clear();
       messageImageSizes.clear();
       markdownDataImageBytes.clear();
-      _editingUserMessageIndex = null;
+      _editingUserMessageEntryId = null;
       _composerTextBeforeEdit = null;
       _composerImagesBeforeEdit = null;
       final savedViewport = _sessionOffsets[state.activeSessionId];
@@ -191,19 +202,9 @@ class AgentChatPanelController extends ChangeNotifier {
     if (index < 0 || index >= _pendingImages.length) return;
     hideInlineImagePreview();
     _pendingImages.removeAt(index);
-    final removedNumber = index + 1;
-    inputController.value = inputController.value.copyWith(
-      text: inputController.text
-          .replaceAllMapped(AgentChatInputController.imagePattern, (match) {
-            final number = int.tryParse(match.group(1) ?? '');
-            if (number == null) return match.group(0)!;
-            if (number == removedNumber) return '';
-            return number > removedNumber
-                ? '[image${number - 1}]'
-                : match.group(0)!;
-          })
-          .replaceAll(RegExp(r' {2,}'), ' '),
-      composing: TextRange.empty,
+    inputController.value = removeAgentChatImageToken(
+      inputController.value,
+      index + 1,
     );
     inputController.imageCount = _pendingImages.length;
     notifyListeners();
@@ -234,7 +235,7 @@ class AgentChatPanelController extends ChangeNotifier {
   }
 
   void beginEditingUserMessage(
-    int messageIndex,
+    String entryId,
     String text,
     List<PendingAgentChatImage> images,
   ) {
@@ -242,7 +243,7 @@ class AgentChatPanelController extends ChangeNotifier {
       _composerTextBeforeEdit = inputController.text;
       _composerImagesBeforeEdit = List.of(_pendingImages);
     }
-    _editingUserMessageIndex = messageIndex;
+    _editingUserMessageEntryId = entryId;
     restoreDraft(text, images);
   }
 
@@ -256,17 +257,19 @@ class AgentChatPanelController extends ChangeNotifier {
 
   void finishEditingUserMessage() {
     if (!isEditingUserMessage) return;
-    _editingUserMessageIndex = null;
+    _editingUserMessageEntryId = null;
     _composerTextBeforeEdit = null;
     _composerImagesBeforeEdit = null;
     notifyListeners();
   }
 
+  // Unreferenced attachments are still in the strip, so they are still sent.
   List<UserContent> buildInlineUserContent(
     String text,
     List<PendingAgentChatImage> images,
   ) {
     final content = <UserContent>[];
+    final referenced = <int>{};
     var textStart = 0;
     for (final match in AgentChatInputController.imagePattern.allMatches(
       text,
@@ -281,31 +284,35 @@ class AgentChatPanelController extends ChangeNotifier {
       if (leadingText.trim().isNotEmpty) {
         content.add(UserTextContent(leadingText));
       }
-      final image = images[imageNumber - 1];
-      content.add(
-        UserImageContent(
-          ImageContent(
-            source: ImageSource.base64(
-              mimeType: image.mimeType,
-              base64Data: base64Encode(image.bytes),
-            ),
-          ),
-        ),
-      );
+      content.add(_userImageContent(images[imageNumber - 1]));
+      referenced.add(imageNumber);
       textStart = match.end;
     }
     final trailingText = text.substring(textStart);
     if (trailingText.trim().isNotEmpty) {
       content.add(UserTextContent(trailingText));
     }
+    for (var index = 0; index < images.length; index++) {
+      if (!referenced.contains(index + 1)) {
+        content.add(_userImageContent(images[index]));
+      }
+    }
     return content;
   }
 
+  UserImageContent _userImageContent(PendingAgentChatImage image) =>
+      UserImageContent(
+        ImageContent(
+          source: ImageSource.base64(
+            mimeType: image.mimeType,
+            base64Data: base64Encode(image.bytes),
+          ),
+        ),
+      );
+
   void insertImageToken(int imageNumber) {
     final value = inputController.value;
-    final selection = value.selection;
-    final start = selection.start < 0 ? value.text.length : selection.start;
-    final end = selection.end < 0 ? value.text.length : selection.end;
+    final (start, end) = _replacementRange(value);
     final needsLeadingSpace =
         start > 0 && !RegExp(r'\s').hasMatch(value.text[start - 1]);
     final needsTrailingSpace =
@@ -347,13 +354,18 @@ class AgentChatPanelController extends ChangeNotifier {
 
   void insertNewline() {
     final value = inputController.value;
-    final selection = value.selection;
-    final start = selection.start < 0 ? value.text.length : selection.start;
-    final end = selection.end < 0 ? value.text.length : selection.end;
+    final (start, end) = _replacementRange(value);
     inputController.value = TextEditingValue(
       text: value.text.replaceRange(start, end, '\n'),
       selection: TextSelection.collapsed(offset: start + 1),
     );
+  }
+
+  (int, int) _replacementRange(TextEditingValue value) {
+    final length = value.text.length;
+    final selection = value.selection;
+    if (!selection.isValid) return (length, length);
+    return (selection.start.clamp(0, length), selection.end.clamp(0, length));
   }
 
   void setSuggestion(String suggestion) {
@@ -473,10 +485,12 @@ class AgentChatPanelController extends ChangeNotifier {
           _beginUserScroll(notification.metrics);
         }
       case ScrollStartNotification(:final dragDetails)
-          when dragDetails != null || _potentialUserScroll:
+          when dragDetails != null || _hasPotentialUserScroll:
         _beginUserScroll(notification.metrics);
       case ScrollUpdateNotification(:final dragDetails, :final scrollDelta)
-          when dragDetails != null || _userScrollActive || _potentialUserScroll:
+          when dragDetails != null ||
+              _userScrollActive ||
+              _hasPotentialUserScroll:
         _beginUserScroll(notification.metrics, preserveBaseline: true);
         _updateUserScrollIntent(notification.metrics, scrollDelta: scrollDelta);
       case ScrollEndNotification():
@@ -510,14 +524,37 @@ class AgentChatPanelController extends ChangeNotifier {
   void beginPotentialUserScroll() {
     if (_programmaticScrollActive) return;
     _potentialUserScroll = true;
+    _captureUserScrollBaseline();
+  }
+
+  // An edge wheel emits no notification, so only a microtask releases it.
+  void beginPotentialWheelScroll() {
+    if (_programmaticScrollActive) return;
+    _potentialWheelScroll = true;
+    _captureUserScrollBaseline();
+    scheduleMicrotask(_endPotentialWheelScroll);
+  }
+
+  void cancelPotentialUserScroll() {
+    _potentialUserScroll = false;
+    _releaseIdleUserScrollBaseline();
+  }
+
+  void _endPotentialWheelScroll() {
+    _potentialWheelScroll = false;
+    _releaseIdleUserScrollBaseline();
+  }
+
+  void _captureUserScrollBaseline() {
     if (scrollController.hasClients) {
       _lastUserScrollPixels = scrollController.position.pixels;
     }
   }
 
-  void cancelPotentialUserScroll() {
-    _potentialUserScroll = false;
-    if (!_userScrollActive) _lastUserScrollPixels = null;
+  void _releaseIdleUserScrollBaseline() {
+    if (!_userScrollActive && !_hasPotentialUserScroll) {
+      _lastUserScrollPixels = null;
+    }
   }
 
   KeyEventResult handleViewportKeyEvent(FocusNode _, KeyEvent event) {
@@ -525,9 +562,12 @@ class AgentChatPanelController extends ChangeNotifier {
       return KeyEventResult.ignored;
     }
     if (event is KeyDownEvent || event is KeyRepeatEvent) {
-      beginPotentialUserScroll();
+      if (_programmaticScrollActive) return KeyEventResult.ignored;
+      _potentialKeyScroll = true;
+      _captureUserScrollBaseline();
     } else if (event is KeyUpEvent) {
-      cancelPotentialUserScroll();
+      _potentialKeyScroll = false;
+      _releaseIdleUserScrollBaseline();
     }
     return KeyEventResult.ignored;
   }
@@ -541,11 +581,15 @@ class AgentChatPanelController extends ChangeNotifier {
       _lastUserScrollPixels = metrics.pixels;
     }
     _potentialUserScroll = false;
+    _potentialWheelScroll = false;
+    _potentialKeyScroll = false;
     _userScrollActive = true;
   }
 
   void _endUserScroll() {
     _potentialUserScroll = false;
+    _potentialWheelScroll = false;
+    _potentialKeyScroll = false;
     _userScrollActive = false;
     _lastUserScrollPixels = null;
   }
@@ -557,7 +601,6 @@ class AgentChatPanelController extends ChangeNotifier {
         : metrics.pixels - previousPixels;
     _lastUserScrollPixels = metrics.pixels;
     if (delta.abs() <= _scrollMovementTolerance) return;
-    _viewportInteractionRevision++;
     if (delta > 0) {
       if (_autoScroll) {
         _logViewport('userScroll.pauseFollow', metrics: metrics);
@@ -802,35 +845,6 @@ class AgentChatPanelController extends ChangeNotifier {
     });
   }
 
-  /// Keeps a historical message at the same screen position while the live
-  /// edge changes size in a reversed transcript.
-  void restorePausedViewportAnchor({
-    required double visualDelta,
-    required int expectedInteractionRevision,
-  }) {
-    if (_autoScroll ||
-        _userScrollActive ||
-        _potentialUserScroll ||
-        expectedInteractionRevision != _viewportInteractionRevision ||
-        !scrollController.hasClients ||
-        visualDelta.abs() < 0.5) {
-      return;
-    }
-    final position = scrollController.position;
-    if (!_hasUsableViewport(position)) return;
-    final target = (position.pixels - visualDelta)
-        .clamp(position.minScrollExtent, position.maxScrollExtent)
-        .toDouble();
-    _logViewport(
-      'anchor.restore',
-      metrics: position,
-      detail:
-          'delta=${visualDelta.toStringAsFixed(1)} '
-          'target=${target.toStringAsFixed(1)}',
-    );
-    jumpToPreservingFollow(target);
-  }
-
   void _logViewport(String event, {ScrollMetrics? metrics, String? detail}) {
     final saved = _sessionOffsets[_lastScrollSessionId];
     final metricsText = metrics == null
@@ -879,6 +893,22 @@ class _AgentChatScrollController extends ScrollController {
   final ValueChanged<ScrollPosition> onDetachPosition;
 
   @override
+  ScrollPosition createScrollPosition(
+    ScrollPhysics physics,
+    ScrollContext context,
+    ScrollPosition? oldPosition,
+  ) {
+    return _AgentChatScrollPosition(
+      physics: physics,
+      context: context,
+      initialPixels: initialScrollOffset,
+      keepScrollOffset: keepScrollOffset,
+      oldPosition: oldPosition,
+      debugLabel: debugLabel,
+    );
+  }
+
+  @override
   void attach(ScrollPosition position) {
     super.attach(position);
     onAttachPosition(position);
@@ -889,4 +919,19 @@ class _AgentChatScrollController extends ScrollController {
     onDetachPosition(position);
     super.detach(position);
   }
+}
+
+class _AgentChatScrollPosition extends ScrollPositionWithSingleContext {
+  _AgentChatScrollPosition({
+    required super.physics,
+    required super.context,
+    super.initialPixels,
+    super.keepScrollOffset,
+    super.oldPosition,
+    super.debugLabel,
+  });
+
+  // Drags and held pointers move by deltas; animations step toward own targets.
+  bool get offsetAnimating =>
+      activity is BallisticScrollActivity || activity is DrivenScrollActivity;
 }

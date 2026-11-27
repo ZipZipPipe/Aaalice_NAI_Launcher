@@ -1,9 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:nai_launcher/core/constants/api_constants.dart';
 import 'package:nai_launcher/data/models/gallery/nai_image_metadata.dart';
 import 'package:nai_launcher/l10n/app_localizations.dart';
 import 'package:nai_launcher/presentation/widgets/common/image_detail/components/prompt_copy_dialog.dart';
+
+import '../../../../../helpers/adaptive_panel_expectations.dart';
+import '../../../../../helpers/viewport_scenarios.dart';
 
 void main() {
   String? clipboardText;
@@ -59,6 +63,7 @@ void main() {
       await tester.tap(find.text('open'));
       await tester.pumpAndSettle();
 
+      expectPanelHeaderScrollsWithContent(tester);
       final values = tester
           .widgetList<Checkbox>(find.byType(Checkbox))
           .map((checkbox) => checkbox.value)
@@ -142,6 +147,58 @@ void main() {
     },
   );
 
+  testWidgets('export lists the UC preset as its own negative category', (
+    tester,
+  ) async {
+    const model = ImageModels.animeDiffusionV45Full;
+    final heavy = UcPresets.getPresetContent(model, UcPresetType.heavy);
+    final metadata = NaiImageMetadata(
+      prompt: '1girl',
+      negativePrompt: '$heavy, bad hands, watermark',
+      model: model,
+      ucPreset: UcPresets.heavyApiValue,
+      fixedNegativePrefixTags: const ['bad hands'],
+    );
+    String? exported;
+
+    await tester.pumpWidget(
+      localizedTestApp(
+        home: panelLauncher('open export', (context) async {
+          exported = await PromptCopyDialog.showExport(
+            context,
+            metadata: metadata,
+          );
+        }),
+      ),
+    );
+
+    await tester.tap(find.text('open export'));
+    await tester.pumpAndSettle();
+    final scrollable = find.descendant(
+      of: find.byKey(const Key('prompt-copy-options-list')),
+      matching: find.byType(Scrollable),
+    );
+    await tester.scrollUntilVisible(
+      find.text('负面预设'),
+      200,
+      scrollable: scrollable,
+    );
+    await tester.tap(find.text('负面预设'));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('复制'),
+      200,
+      scrollable: scrollable,
+    );
+    await tester.tap(find.text('复制'));
+    await tester.pumpAndSettle();
+
+    expect(
+      exported,
+      startsWith('positive: 1girl\nnegative: bad hands, watermark\n'),
+    );
+  });
+
   testWidgets('worst-case export stays usable in compact bottom sheet', (
     tester,
   ) async {
@@ -196,6 +253,7 @@ void main() {
 
     expect(find.byKey(const ValueKey('adaptive-bottom-sheet')), findsOneWidget);
     expect(find.byKey(const Key('prompt-copy-options-list')), findsOneWidget);
+    expectPanelHeaderScrollsWithContent(tester);
     expect(tester.takeException(), isNull);
 
     final copyButton = find.text('Copy');

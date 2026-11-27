@@ -3,12 +3,15 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/misc.dart';
 import 'package:nai_launcher/l10n/app_localizations.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'core/autocomplete/cooccurrence_data_pack_provider.dart';
 import 'core/cache/gallery_cache_manager.dart';
 import 'core/cache/local_gallery_thumbnail_provider.dart';
+import 'core/utils/app_background_return.dart';
+import 'core/utils/app_lifecycle_visibility.dart';
 import 'core/utils/app_logger.dart';
 import 'core/platform/platform_capabilities.dart';
 import 'core/services/desktop_app_shutdown_service.dart';
@@ -22,8 +25,9 @@ import 'presentation/router/shell_panels_overlay.dart';
 import 'presentation/providers/theme_provider.dart';
 import 'presentation/providers/font_provider.dart';
 import 'presentation/providers/font_scale_provider.dart';
-import 'presentation/providers/locale_provider.dart';
+import 'core/utils/locale_provider.dart';
 import 'presentation/providers/cloud_sync/cloud_sync_provider_wiring.dart';
+import 'presentation/mcp/providers/mcp_server_notifier.dart';
 import 'presentation/providers/krita/krita_bridge_notifier.dart';
 import 'presentation/providers/image_generation_provider.dart';
 import 'presentation/providers/queue_execution_provider.dart';
@@ -42,6 +46,7 @@ class AppBootstrapEffects extends ConsumerStatefulWidget {
   final Widget child;
   final ProviderListenable<dynamic>? anlasWatcher;
   final ProviderListenable<dynamic>? kritaBridge;
+  final ProviderListenable<dynamic>? mcpServer;
   final ProviderListenable<dynamic>? cooccurrenceDataPack;
   final Future<void> Function()? cloudSyncLifecycle;
 
@@ -50,6 +55,7 @@ class AppBootstrapEffects extends ConsumerStatefulWidget {
     required this.child,
     this.anlasWatcher,
     this.kritaBridge,
+    this.mcpServer,
     this.cooccurrenceDataPack,
     this.cloudSyncLifecycle,
   });
@@ -63,9 +69,12 @@ class _AppBootstrapEffectsState extends ConsumerState<AppBootstrapEffects>
     with WidgetsBindingObserver {
   ProviderSubscription<dynamic>? _anlasWatcherSubscription;
   ProviderSubscription<dynamic>? _kritaBridgeSubscription;
+  ProviderSubscription<dynamic>? _mcpServerSubscription;
   ProviderSubscription<dynamic>? _cooccurrenceDataPackSubscription;
-  bool _queuePausedForBackground = false;
+  ProviderSubscription<QueueExecutionState>? _queueBackgroundPause;
   bool _cloudSyncLifecycleRunning = false;
+  final AppBackgroundReturnTracker _backgroundReturn =
+      AppBackgroundReturnTracker();
 
   @override
   void initState() {
@@ -78,7 +87,9 @@ class _AppBootstrapEffectsState extends ConsumerState<AppBootstrapEffects>
         (_, __) {},
       );
       final usesTestOverrides =
-          widget.kritaBridge != null || widget.cooccurrenceDataPack != null;
+          widget.kritaBridge != null ||
+          widget.mcpServer != null ||
+          widget.cooccurrenceDataPack != null;
       if (usesTestOverrides) {
         _mountInjectedEffects();
       } else {
@@ -90,19 +101,15 @@ class _AppBootstrapEffectsState extends ConsumerState<AppBootstrapEffects>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    final isForeground = state == AppLifecycleState.resumed;
-    ref
-        .read(subscriptionNotifierProvider.notifier)
-        .setAppForeground(isForeground);
-    LocalGalleryThumbnailProvider.setAppForeground(isForeground);
+    final visible = AppLifecycleVisibility.isVisible(state);
+    final returnedToView = _backgroundReturn.returnedToView(state);
+    ref.read(subscriptionNotifierProvider.notifier).setAppVisible(visible);
+    LocalGalleryThumbnailProvider.setAppLifecycleState(state);
 
-    if (state == AppLifecycleState.resumed) {
-      InteractiveWorkGate.instance.markInteraction();
-      unawaited(_resumeQueueAfterBackground());
+    if (returnedToView) {
       unawaited(_restoreCloudBackupConnection());
-    } else if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.hidden ||
-        state == AppLifecycleState.detached) {
+      unawaited(_resumeQueueAfterBackground());
+    } else if (!visible) {
       unawaited(_persistAndPauseForBackground());
     }
   }
@@ -112,6 +119,13 @@ class _AppBootstrapEffectsState extends ConsumerState<AppBootstrapEffects>
         PlatformCapabilities.current.supportsKritaBridge) {
       _kritaBridgeSubscription = ref.listenManual(
         widget.kritaBridge ?? kritaBridgeNotifierProvider,
+        (_, __) {},
+      );
+    }
+    if (widget.mcpServer != null ||
+        PlatformCapabilities.current.supportsMcpServer) {
+      _mcpServerSubscription = ref.listenManual(
+        widget.mcpServer ?? mcpServerNotifierProvider,
         (_, __) {},
       );
     }
@@ -131,6 +145,19 @@ class _AppBootstrapEffectsState extends ConsumerState<AppBootstrapEffects>
         }
         _kritaBridgeSubscription = ref.listenManual(
           kritaBridgeNotifierProvider,
+          (_, __) {},
+        );
+      },
+    );
+    await _runProductionIdleEffect(
+      'MCP server',
+      minimumDelay: const Duration(seconds: 10),
+      action: () async {
+        if (!mounted || !PlatformCapabilities.current.supportsMcpServer) {
+          return;
+        }
+        _mcpServerSubscription = ref.listenManual(
+          mcpServerNotifierProvider,
           (_, __) {},
         );
       },
@@ -164,28 +191,53 @@ class _AppBootstrapEffectsState extends ConsumerState<AppBootstrapEffects>
     }
   }
 
+  // 等待期间根组件可能已卸载，之后不能再读 ref，句柄要在第一个 await 之前取好
   Future<void> _persistAndPauseForBackground() async {
-    final queueState = ref.read(queueExecutionNotifierProvider);
-    if (!_queuePausedForBackground &&
-        (queueState.isRunning || queueState.isReady)) {
-      _queuePausedForBackground = true;
-      await ref.read(queueExecutionNotifierProvider.notifier).pause();
-    }
+    final generationParams = ref.read(
+      generationParamsNotifierProvider.notifier,
+    );
+    final imageGeneration = ref.read(imageGenerationNotifierProvider.exists)
+        ? ref.read(imageGenerationNotifierProvider.notifier)
+        : null;
 
-    await ref
-        .read(generationParamsNotifierProvider.notifier)
-        .saveGenerationState();
-    if (ref.exists(imageGenerationNotifierProvider)) {
-      await ref
-          .read(imageGenerationNotifierProvider.notifier)
-          .flushGenerationHistory();
-    }
+    await _pauseQueueForBackground();
+    await generationParams.saveGenerationState();
+    await imageGeneration?.flushGenerationHistory();
+  }
+
+  Future<void> _pauseQueueForBackground() async {
+    if (_queueBackgroundPause != null) return;
+    final queueState = ref.read(queueExecutionNotifierProvider);
+    if (!queueState.isRunning && !queueState.isReady) return;
+
+    // 根层在面板静音时仍跟踪恢复和停止，避免回来时接管其他入口的暂停。
+    late final ProviderSubscription<QueueExecutionState> backgroundPause;
+    backgroundPause = ref.listenManual(queueExecutionNotifierProvider, (
+      _,
+      next,
+    ) {
+      if (!next.isPaused || next.pausedForFailure) {
+        _releaseQueueBackgroundPause(backgroundPause);
+      }
+    });
+    _queueBackgroundPause = backgroundPause;
+    await ref.read(queueExecutionNotifierProvider.notifier).pause();
   }
 
   Future<void> _resumeQueueAfterBackground() async {
-    if (!_queuePausedForBackground) return;
-    _queuePausedForBackground = false;
+    final backgroundPause = _queueBackgroundPause;
+    if (backgroundPause == null) return;
+    _releaseQueueBackgroundPause(backgroundPause);
     await ref.read(queueExecutionNotifierProvider.notifier).resume();
+  }
+
+  void _releaseQueueBackgroundPause(
+    ProviderSubscription<QueueExecutionState> backgroundPause,
+  ) {
+    backgroundPause.close();
+    if (identical(_queueBackgroundPause, backgroundPause)) {
+      _queueBackgroundPause = null;
+    }
   }
 
   Future<void> _restoreCloudBackupConnection() async {
@@ -230,7 +282,9 @@ class _AppBootstrapEffectsState extends ConsumerState<AppBootstrapEffects>
     WidgetsBinding.instance.removeObserver(this);
     _anlasWatcherSubscription?.close();
     _kritaBridgeSubscription?.close();
+    _mcpServerSubscription?.close();
     _cooccurrenceDataPackSubscription?.close();
+    _queueBackgroundPause?.close();
     super.dispose();
   }
 
@@ -246,7 +300,7 @@ class NAILauncherApp extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final themeType = ref.watch(themeNotifierProvider);
+    final themeSettings = ref.watch(themeNotifierProvider);
     final fontType = ref.watch(fontNotifierProvider);
     final fontScale = ref.watch(fontScaleNotifierProvider);
     final locale = ref.watch(localeNotifierProvider);
@@ -293,9 +347,7 @@ class NAILauncherApp extends ConsumerWidget {
         },
       },
       ShortcutIds.toggleQueue: () {
-        final activePanel = ref.read(shellPanelProvider);
-        ref.read(shellPanelProvider.notifier).state =
-            activePanel == ShellPanel.queue ? null : ShellPanel.queue;
+        ref.read(shellPanelProvider.notifier).toggle(ShellPanel.queue);
       },
       ShortcutIds.toggleQueuePause: () {
         final executionState = ref.read(queueExecutionNotifierProvider);
@@ -306,7 +358,11 @@ class NAILauncherApp extends ConsumerWidget {
         }
       },
       ShortcutIds.toggleTheme: () {
-        ref.read(themeNotifierProvider.notifier).nextTheme();
+        ref
+            .read(themeNotifierProvider.notifier)
+            .nextStyle(
+              WidgetsBinding.instance.platformDispatcher.platformBrightness,
+            );
       },
     };
 
@@ -320,16 +376,16 @@ class NAILauncherApp extends ConsumerWidget {
 
           // 主题 (fontFamily 为空时使用主题原生字体)
           theme: AppTheme.getTheme(
-            themeType,
+            themeSettings.lightStyle,
             Brightness.light,
             fontConfig: fontType.fontFamily.isEmpty ? null : fontType,
           ),
           darkTheme: AppTheme.getTheme(
-            themeType,
+            themeSettings.darkStyle,
             Brightness.dark,
             fontConfig: fontType.fontFamily.isEmpty ? null : fontType,
           ),
-          themeMode: ThemeMode.dark, // 默认深色模式
+          themeMode: themeSettings.themeMode,
           // 国际化
           locale: locale,
           supportedLocales: AppLocalizations.supportedLocales,

@@ -1,9 +1,10 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hive/hive.dart';
+import 'package:hive_ce/hive_ce.dart';
 import 'package:nai_launcher/core/constants/storage_keys.dart';
 import 'package:nai_launcher/core/storage/local_storage_service.dart';
 import 'package:nai_launcher/l10n/app_localizations.dart';
@@ -11,7 +12,9 @@ import 'package:nai_launcher/presentation/providers/font_provider.dart';
 import 'package:nai_launcher/presentation/providers/font_scale_provider.dart';
 import 'package:nai_launcher/presentation/providers/generation_layout_mode_provider.dart';
 import 'package:nai_launcher/presentation/providers/history_click_behavior_provider.dart';
+import 'package:nai_launcher/presentation/providers/theme_provider.dart';
 import 'package:nai_launcher/presentation/screens/settings/sections/appearance_settings_section.dart';
+import 'package:nai_launcher/presentation/themes/app_theme.dart';
 
 void main() {
   late Directory hiveDir;
@@ -19,7 +22,8 @@ void main() {
   setUpAll(() async {
     hiveDir = Directory.systemTemp.createTempSync('appearance_settings_hive_');
     Hive.init(hiveDir.path);
-    await Hive.openBox(StorageKeys.settingsBox);
+    // 内存后端：落盘写一旦从 widget test 的 FakeAsync 时钟发起就不会完成，会锁死 box
+    await Hive.openBox(StorageKeys.settingsBox, bytes: Uint8List(0));
   });
 
   setUp(() async {
@@ -27,7 +31,8 @@ void main() {
   });
 
   tearDownAll(() async {
-    await Hive.close();
+    // 有界等待：box 被锁死时快速失败，不把整个测试分片拖到看门狗超时
+    await Hive.close().timeout(const Duration(seconds: 10));
     if (await hiveDir.exists()) {
       await hiveDir.delete(recursive: true);
     }
@@ -56,7 +61,7 @@ void main() {
     expect(find.text('外观'), findsOneWidget);
   });
 
-  for (final width in [320.0, 600.0, 840.0, 1600.0]) {
+  for (final width in [320.0, 600.0, 840.0, 1180.0, 1600.0]) {
     testWidgets('外观设置在 ${width.toInt()} 宽度与放大文本下无溢出', (tester) async {
       tester.view.physicalSize = Size(width, width == 320 ? 420 : 900);
       tester.view.devicePixelRatio = 1;
@@ -84,6 +89,18 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('外观'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('settings-theme-mode-selector')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('settings-light-theme-tile')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('settings-dark-theme-tile')),
+        findsOneWidget,
+      );
       expect(tester.takeException(), isNull);
     });
   }
@@ -308,6 +325,11 @@ void main() {
       tester.element(find.byType(AppearanceSettingsSection)),
     );
     expect(container.read(fontScaleNotifierProvider), 1.5);
+    final scaleSlider = find.semantics.byPredicate(
+      (node) => node.flagsCollection.isSlider && node.label == '字体大小',
+    );
+    expect(scaleSlider, findsOne, reason: '滑块以面板标题朗读，而不是把数值当名称');
+    expect(scaleSlider.evaluate().single.value, '150%');
 
     await tester.scrollUntilVisible(
       find.text('完成'),
@@ -322,6 +344,134 @@ void main() {
     expect(storage.fontScale, 1.5);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('外观设置支持切换浅色、深色与跟随系统模式并持久化', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 1600));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final storage = _FakeStorage();
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [localStorageServiceProvider.overrideWith((ref) => storage)],
+        child: const MaterialApp(
+          locale: Locale('zh'),
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          home: Scaffold(
+            body: SingleChildScrollView(child: AppearanceSettingsSection()),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(AppearanceSettingsSection)),
+    );
+    expect(container.read(themeNotifierProvider).themeMode, ThemeMode.dark);
+
+    await tester.tap(find.text('浅色'));
+    await tester.pumpAndSettle();
+    expect(container.read(themeNotifierProvider).themeMode, ThemeMode.light);
+    expect(storage.themeMode, 'light');
+
+    await tester.tap(find.text('跟随系统'));
+    await tester.pumpAndSettle();
+    expect(container.read(themeNotifierProvider).themeMode, ThemeMode.system);
+    expect(storage.themeMode, 'system');
+
+    await tester.tap(find.text('深色'));
+    await tester.pumpAndSettle();
+    expect(container.read(themeNotifierProvider).themeMode, ThemeMode.dark);
+    expect(storage.themeMode, 'dark');
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final size in [const Size(1000, 1600), const Size(320, 480)]) {
+    testWidgets('浅色与深色主题选择弹窗在 ${size.width.toInt()} 宽度仅列对应模式预设并持久化', (
+      tester,
+    ) async {
+      await tester.binding.setSurfaceSize(size);
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final storage = _FakeStorage();
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            localStorageServiceProvider.overrideWith((ref) => storage),
+          ],
+          child: const MaterialApp(
+            locale: Locale('zh'),
+            localizationsDelegates: AppLocalizations.localizationsDelegates,
+            supportedLocales: AppLocalizations.supportedLocales,
+            home: Scaffold(
+              body: SingleChildScrollView(child: AppearanceSettingsSection()),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final lightStyles = AppTheme.stylesForBrightness(Brightness.light);
+      final darkStyles = AppTheme.stylesForBrightness(Brightness.dark);
+
+      final lightTile = find.byKey(const ValueKey('settings-light-theme-tile'));
+      await tester.ensureVisible(lightTile);
+      await tester.tap(lightTile);
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('选择浅色主题'), findsOneWidget);
+      expect(
+        find.byType(RadioListTile<AppStyle>),
+        findsNWidgets(lightStyles.length),
+      );
+
+      final lastLight = lightStyles.last;
+      final lastLightTile = find.widgetWithText(
+        RadioListTile<AppStyle>,
+        lastLight.displayName,
+      );
+      await tester.ensureVisible(lastLightTile);
+      await tester.pumpAndSettle();
+      await tester.tap(lastLightTile);
+      await tester.pumpAndSettle();
+
+      final container = ProviderScope.containerOf(
+        tester.element(find.byType(AppearanceSettingsSection)),
+      );
+      expect(container.read(themeNotifierProvider).lightStyle, lastLight);
+      expect(storage.lightThemeIndex, lastLight.index);
+      expect(find.byType(AlertDialog), findsNothing);
+
+      final darkTile = find.byKey(const ValueKey('settings-dark-theme-tile'));
+      await tester.ensureVisible(darkTile);
+      await tester.tap(darkTile);
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('选择深色主题'), findsOneWidget);
+      expect(
+        find.byType(RadioListTile<AppStyle>),
+        findsNWidgets(darkStyles.length),
+      );
+
+      final lastDark = darkStyles.last;
+      final lastDarkTile = find.widgetWithText(
+        RadioListTile<AppStyle>,
+        lastDark.displayName,
+      );
+      await tester.ensureVisible(lastDarkTile);
+      await tester.pumpAndSettle();
+      await tester.tap(lastDarkTile);
+      await tester.pumpAndSettle();
+
+      expect(container.read(themeNotifierProvider).darkStyle, lastDark);
+      expect(storage.darkThemeIndex, lastDark.index);
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+  }
 
   testWidgets('历史点击行为默认经典并可从外观设置切换和持久化', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1000, 1600));
@@ -378,6 +528,42 @@ class _FakeStorage extends LocalStorageService {
   String behavior = 'open_detail';
   String fontFamily = FontConfig.defaultFont.key;
   double fontScale = 1;
+  int themeIndex = 0;
+  String? themeMode;
+  int? lightThemeIndex;
+  int? darkThemeIndex;
+
+  @override
+  int getThemeIndex() => themeIndex;
+
+  @override
+  Future<void> setThemeIndex(int index) async {
+    themeIndex = index;
+  }
+
+  @override
+  String? getThemeMode() => themeMode;
+
+  @override
+  Future<void> setThemeMode(String mode) async {
+    themeMode = mode;
+  }
+
+  @override
+  int? getLightThemeIndex() => lightThemeIndex;
+
+  @override
+  Future<void> setLightThemeIndex(int index) async {
+    lightThemeIndex = index;
+  }
+
+  @override
+  int? getDarkThemeIndex() => darkThemeIndex;
+
+  @override
+  Future<void> setDarkThemeIndex(int index) async {
+    darkThemeIndex = index;
+  }
 
   @override
   String getFontFamily() => fontFamily;

@@ -26,6 +26,8 @@ class AgentChatState {
     this.routeReady = false,
     this.routeError = '',
     this.error = '',
+    this.errorRetryAttempts = 0,
+    this.retryStatus,
     this.compacting = false,
     this.sessionTransitioning = false,
     this.sessionContentLoading = false,
@@ -34,7 +36,7 @@ class AgentChatState {
     this.totalUsage,
     this.lastRequestUsage,
     this.contextUsage = const AgentContextUsage.unknown(),
-    this.thinkingLevel = ThinkingLevel.off,
+    this.thinkingLevel,
     this.availableThinkingLevels = const [],
     this.pendingResources = const [],
     this.unavailableResourceKeys = const {},
@@ -62,6 +64,10 @@ class AgentChatState {
   final bool routeReady;
   final String routeError;
   final String error;
+
+  /// [error] 出现前已自动重试的次数。
+  final int errorRetryAttempts;
+  final AgentChatRetryStatus? retryStatus;
   final bool compacting;
   final bool sessionTransitioning;
   final bool sessionContentLoading;
@@ -74,8 +80,8 @@ class AgentChatState {
 
   /// Current context occupancy, anchored to the last valid assistant usage.
   final AgentContextUsage contextUsage;
-  final ThinkingLevel thinkingLevel;
-  final List<ThinkingLevel> availableThinkingLevels;
+  final ThinkingLevel? thinkingLevel;
+  final List<ThinkingLevel?> availableThinkingLevels;
   final List<AgentChatResourceReference> pendingResources;
   final Set<String> unavailableResourceKeys;
   final String composerText;
@@ -101,6 +107,9 @@ class AgentChatState {
     bool? routeReady,
     String? routeError,
     String? error,
+    int? errorRetryAttempts,
+    AgentChatRetryStatus? retryStatus,
+    bool clearRetryStatus = false,
     bool? compacting,
     bool? sessionTransitioning,
     bool? sessionContentLoading,
@@ -113,7 +122,8 @@ class AgentChatState {
     bool clearLastRequestUsage = false,
     AgentContextUsage? contextUsage,
     ThinkingLevel? thinkingLevel,
-    List<ThinkingLevel>? availableThinkingLevels,
+    bool useModelDefault = false,
+    List<ThinkingLevel?>? availableThinkingLevels,
     List<AgentChatResourceReference>? pendingResources,
     Set<String>? unavailableResourceKeys,
     String? composerText,
@@ -142,6 +152,11 @@ class AgentChatState {
       routeReady: routeReady ?? this.routeReady,
       routeError: routeError ?? this.routeError,
       error: error ?? this.error,
+      // 新错误默认不继承上一条错误的重试次数。
+      errorRetryAttempts:
+          errorRetryAttempts ??
+          (error == null ? this.errorRetryAttempts : 0),
+      retryStatus: clearRetryStatus ? null : retryStatus ?? this.retryStatus,
       compacting: compacting ?? this.compacting,
       sessionTransitioning: sessionTransitioning ?? this.sessionTransitioning,
       sessionContentLoading:
@@ -157,7 +172,9 @@ class AgentChatState {
           ? null
           : lastRequestUsage ?? this.lastRequestUsage,
       contextUsage: contextUsage ?? this.contextUsage,
-      thinkingLevel: thinkingLevel ?? this.thinkingLevel,
+      thinkingLevel: useModelDefault
+          ? null
+          : thinkingLevel ?? this.thinkingLevel,
       availableThinkingLevels:
           availableThinkingLevels ?? this.availableThinkingLevels,
       pendingResources: pendingResources ?? this.pendingResources,
@@ -187,8 +204,26 @@ enum AgentChatWorkPhase {
   usingTools,
   awaitingApproval,
   compacting,
+  retrying,
   stopping,
   failed,
+}
+
+/// 自动重试的退避状态。
+class AgentChatRetryStatus {
+  const AgentChatRetryStatus({
+    required this.attempt,
+    required this.maxAttempts,
+    required this.errorMessage,
+    required this.resumesAtMs,
+  });
+
+  final int attempt;
+  final int maxAttempts;
+  final String errorMessage;
+
+  /// 退避结束、重试开始的时刻（毫秒时间戳）。
+  final int resumesAtMs;
 }
 
 enum AgentQueuedMessageKind { steering, followUp }
@@ -293,6 +328,7 @@ class AgentToolApprovalRequest {
     required this.toolName,
     required this.args,
     this.estimatedAnlas,
+    this.fileTargets = const [],
     this.turnId,
     this.itemId,
   });
@@ -301,6 +337,7 @@ class AgentToolApprovalRequest {
   final String toolName;
   final Map<String, dynamic> args;
   final int? estimatedAnlas;
+  final List<String> fileTargets;
   final String? turnId;
   final String? itemId;
 
@@ -310,6 +347,7 @@ class AgentToolApprovalRequest {
         toolName: toolName,
         args: args,
         estimatedAnlas: estimatedAnlas,
+        fileTargets: fileTargets,
         turnId: turnId ?? this.turnId,
         itemId: itemId ?? this.itemId,
       );

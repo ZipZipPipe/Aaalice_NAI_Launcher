@@ -1,10 +1,8 @@
-import 'dart:convert';
 import 'dart:typed_data';
-
-import 'package:crypto/crypto.dart';
 
 import '../../../core/constants/model_capabilities.dart';
 import '../../../core/utils/app_logger.dart';
+import '../../../core/utils/byte_content.dart';
 import '../../../core/utils/nai_api_utils.dart';
 import '../../../core/utils/vibe_performance_diagnostics.dart';
 import '../../../data/datasources/remote/nai_image_enhancement_api_service.dart';
@@ -41,7 +39,8 @@ final class VibeReferenceService {
   String imageHash(Uint8List imageData) {
     final cached = _imageHashes[imageData];
     if (cached != null) return cached;
-    final hash = base64Encode(sha256.convert(imageData).bytes);
+    // 编码缓存是付费结果：长度并入键，指纹碰撞还须同长才会误用他图的编码
+    final hash = '${ByteContent.fingerprint(imageData)}:${imageData.length}';
     _imageHashes[imageData] = hash;
     return hash;
   }

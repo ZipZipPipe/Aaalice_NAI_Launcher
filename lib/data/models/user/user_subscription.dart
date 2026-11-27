@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:freezed_annotation/freezed_annotation.dart';
 
 part 'user_subscription.freezed.dart';
@@ -16,11 +18,15 @@ TrainingStepsInfo? _trainingStepsInfoFromJson(Object? value) {
   );
 }
 
+// 与网页端 Math.max(0, purchasedPercent ?? 0) 一致；可选字段类型不对时不能拖垮整份订阅解析。
+double _extraUsagePercentFromJson(Object? value) =>
+    value is num && value.isFinite && value > 0 ? value.toDouble() : 0;
+
 /// 用户订阅信息模型
 ///
 /// 从 /user/subscription API 获取，包含订阅等级和 Anlas 余额信息
 @freezed
-class UserSubscription with _$UserSubscription {
+abstract class UserSubscription with _$UserSubscription {
   const UserSubscription._();
 
   const factory UserSubscription({
@@ -100,11 +106,14 @@ class UserSubscription with _$UserSubscription {
 
 /// Opus 免费生成配额信息（V5 起）
 ///
-/// 网页端在配额透支（[isNegative]）时按正常价扣 Anlas；配额随时间自动回充。
+/// 网页端在配额透支（[isNegative]）时按正常价扣 Anlas；常规配额随时间自动回充，
+/// 额外用量（[purchasedPercent]）不回充，常规配额用完后才扣。
 @freezed
-class OpusUsageInfo with _$OpusUsageInfo {
+abstract class OpusUsageInfo with _$OpusUsageInfo {
+  const OpusUsageInfo._();
+
   const factory OpusUsageInfo({
-    /// 剩余配额百分比（可因持续回充超过 100，负值语义见 [isNegative]）
+    /// 常规配额剩余百分比（可因持续回充超过 100，负值语义见 [isNegative]）
     @Default(0) double percent,
 
     /// 配额是否已透支
@@ -112,15 +121,42 @@ class OpusUsageInfo with _$OpusUsageInfo {
 
     /// 距下一个 1% 回充的秒数
     @Default(0) double timeUntilNextPercent,
+
+    /// 额外用量池剩余百分比（Opus Usage Boost 激活后获得，上限 400）
+    @JsonKey(fromJson: _extraUsagePercentFromJson)
+    @Default(0)
+    double purchasedPercent,
   }) = _OpusUsageInfo;
 
   factory OpusUsageInfo.fromJson(Map<String, dynamic> json) =>
       _$OpusUsageInfoFromJson(json);
+
+  /// 常规配额展示值：透支时为 0，否则截掉负数，不设上限。
+  double get regularDisplayPercent => !isNegative && percent > 0 ? percent : 0;
+
+  bool get hasExtraUsage => purchasedPercent > 0;
+
+  /// 额外用量的整数展示值：有余量但不足 1% 时显示 1，避免“有额外用量”却显示 0。
+  int get extraDisplayPercent =>
+      hasExtraUsage ? math.max(1, purchasedPercent.round()) : 0;
+
+  /// 两池合计可用百分比，用于估算剩余可生成张数。
+  double get availablePercent => regularDisplayPercent + purchasedPercent;
+
+  /// 常规配额每天回充的百分比，保留一位小数；服务端未给出回充间隔时为 0。
+  double get refillPercentPerDay => timeUntilNextPercent > 0
+      ? (Duration.secondsPerDay / timeUntilNextPercent * 10).roundToDouble() /
+            10
+      : 0;
+
+  /// 常规配额达到 100% 或没有回充速率时，网页端显示“暂停回充”而非速率。
+  bool get isRefillPaused =>
+      refillPercentPerDay <= 0 || regularDisplayPercent >= 100;
 }
 
 /// Anlas 训练步数信息
 @freezed
-class TrainingStepsInfo with _$TrainingStepsInfo {
+abstract class TrainingStepsInfo with _$TrainingStepsInfo {
   const factory TrainingStepsInfo({
     /// 固定（每月重置）的 Anlas
     @Default(0) int fixedTrainingStepsLeft,
@@ -135,7 +171,7 @@ class TrainingStepsInfo with _$TrainingStepsInfo {
 
 /// 订阅权益信息
 @freezed
-class SubscriptionPerks with _$SubscriptionPerks {
+abstract class SubscriptionPerks with _$SubscriptionPerks {
   const factory SubscriptionPerks({
     /// 最大优先级动作数
     @Default(0) int maxPriorityActions,
@@ -171,7 +207,7 @@ class SubscriptionPerks with _$SubscriptionPerks {
 
 /// 图像生成限制
 @freezed
-class ImageGenerationLimit with _$ImageGenerationLimit {
+abstract class ImageGenerationLimit with _$ImageGenerationLimit {
   const factory ImageGenerationLimit({
     /// 分辨率（像素数）
     @Default(0) int resolution,
@@ -186,7 +222,7 @@ class ImageGenerationLimit with _$ImageGenerationLimit {
 
 /// 订阅状态
 @freezed
-class SubscriptionState with _$SubscriptionState {
+sealed class SubscriptionState with _$SubscriptionState {
   const SubscriptionState._();
 
   /// 初始状态

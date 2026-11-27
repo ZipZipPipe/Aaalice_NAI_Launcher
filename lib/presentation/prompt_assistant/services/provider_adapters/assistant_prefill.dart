@@ -1,5 +1,5 @@
 import '../../models/agent_protocol.dart';
-import '../../models/prompt_assistant_models.dart';
+import '../../../../data/models/prompt_assistant/prompt_assistant_models.dart';
 
 /// DeepSeek's prefix extension is opt-in and must not leak to unrelated APIs.
 /// Custom gateways can select the DeepSeek preset while keeping their own URL.

@@ -1,13 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../../../prompt_assistant/models/assistant_execution_settings.dart';
+import '../../../../data/models/prompt_assistant/assistant_execution_settings.dart';
 
 import '../../../../core/utils/localization_extension.dart';
+import '../../../adaptive/adaptive_form_footer.dart';
 import '../../../adaptive/content_sized_adaptive_form.dart';
-import '../../../prompt_assistant/models/prompt_assistant_models.dart';
+import '../../../../data/models/prompt_assistant/prompt_assistant_models.dart';
+import '../../../../data/models/prompt_assistant/vertex_target.dart';
+import '../../../prompt_assistant/services/provider_adapters/vertex/vertex_credential.dart';
+import '../../../prompt_assistant/services/provider_adapters/vertex/vertex_credential_check.dart';
 import '../../../widgets/common/themed_confirm_dialog.dart';
 import '../../../widgets/common/provider_icon.dart';
+import 'assistant_task_labels.dart';
 
 class PromptAssistantProviderFormResult {
   const PromptAssistantProviderFormResult({
@@ -17,6 +22,7 @@ class PromptAssistantProviderFormResult {
     required this.preset,
     required this.allowImageInput,
     required this.concurrency,
+    this.vertex,
   });
 
   final String name;
@@ -25,6 +31,9 @@ class PromptAssistantProviderFormResult {
   final ProviderPreset preset;
   final bool allowImageInput;
   final AssistantConcurrencySettings concurrency;
+
+  /// 仅新建 Vertex 服务商时由表单给出；已有服务商在连接卡片内编辑。
+  final VertexTarget? vertex;
 }
 
 class PromptAssistantProviderForm extends StatefulWidget {
@@ -47,11 +56,21 @@ class _PromptAssistantProviderFormState
   late final TextEditingController _nameController;
   late final TextEditingController _baseController;
   final TextEditingController _keyController = TextEditingController();
+  final TextEditingController _vertexProjectController =
+      TextEditingController();
+  final TextEditingController _vertexLocationController = TextEditingController(
+    text: VertexTarget.defaultLocation,
+  );
   late ProviderPreset _preset;
   late bool _allowImageInput;
   late AssistantConcurrencyMode _concurrencyMode;
   late final TextEditingController _concurrencyController;
   bool _invalidConcurrency = false;
+  String? _credentialError;
+  bool _invalidVertexLocation = false;
+
+  bool get _editsVertexConnection =>
+      widget.provider == null && _preset == ProviderPreset.googleVertex;
 
   @override
   void initState() {
@@ -86,6 +105,8 @@ class _PromptAssistantProviderFormState
     _nameController.dispose();
     _baseController.dispose();
     _keyController.dispose();
+    _vertexProjectController.dispose();
+    _vertexLocationController.dispose();
     super.dispose();
   }
 
@@ -93,8 +114,14 @@ class _PromptAssistantProviderFormState
     final previousPreset = _preset;
     final currentName = _nameController.text.trim();
     final currentBaseUrl = _baseController.text.trim();
+    if ((previousPreset == ProviderPreset.googleVertex) !=
+        (value == ProviderPreset.googleVertex)) {
+      _keyController.clear();
+    }
     _preset = value;
     _allowImageInput = value.defaultAllowImageInput;
+    _credentialError = null;
+    _invalidVertexLocation = false;
     if (widget.provider == null) {
       _nameController.text = value.defaultName;
       _baseController.text = value.defaultBaseUrl;
@@ -116,6 +143,8 @@ class _PromptAssistantProviderFormState
       setState(() => _invalidConcurrency = true);
       return;
     }
+    final vertex = _editsVertexConnection ? _validatedVertexTarget() : null;
+    if (_editsVertexConnection && vertex == null) return;
     Navigator.pop(
       context,
       PromptAssistantProviderFormResult(
@@ -128,7 +157,33 @@ class _PromptAssistantProviderFormState
           mode: _concurrencyMode,
           maxConcurrentRequests: count != null && count > 0 ? count : 5,
         ),
+        vertex: vertex,
       ),
+    );
+  }
+
+  /// 凭据可留空稍后再填；填了就必须能解析。
+  VertexTarget? _validatedVertexTarget() {
+    final key = _keyController.text.trim();
+    String? credentialError;
+    if (key.isNotEmpty) {
+      try {
+        checkVertexCredential(key);
+      } on VertexCredentialFormatException catch (e) {
+        credentialError = e.message;
+      }
+    }
+    final location = _vertexLocationController.text.trim();
+    final invalidLocation =
+        location.isNotEmpty && !VertexTarget.isValidLocation(location);
+    setState(() {
+      _credentialError = credentialError;
+      _invalidVertexLocation = invalidLocation;
+    });
+    if (credentialError != null || invalidLocation) return null;
+    return VertexTarget(
+      projectId: _vertexProjectController.text.trim(),
+      location: location,
     );
   }
 
@@ -165,12 +220,50 @@ class _PromptAssistantProviderFormState
             labelText: context.l10n.promptAssistant_protocol,
           ),
         ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _baseController,
-          keyboardType: TextInputType.url,
-          decoration: const InputDecoration(labelText: 'Base URL'),
-        ),
+        // 已有服务商的地址和密钥在模型服务页内直接编辑，这里不再重复。
+        if (widget.provider == null) ...[
+          const SizedBox(height: 12),
+          TextField(
+            controller: _baseController,
+            keyboardType: TextInputType.url,
+            decoration: InputDecoration(
+              labelText: 'Base URL',
+              hintText: _editsVertexConnection
+                  ? context.l10n.modelServices_vertexBaseUrlHint
+                  : null,
+              floatingLabelBehavior: _editsVertexConnection
+                  ? FloatingLabelBehavior.always
+                  : null,
+            ),
+          ),
+        ],
+        if (_editsVertexConnection) ...[
+          const SizedBox(height: 12),
+          TextField(
+            key: const ValueKey('provider-form-vertex-project'),
+            controller: _vertexProjectController,
+            autocorrect: false,
+            decoration: InputDecoration(
+              labelText: context.l10n.modelServices_vertexProjectId,
+              hintText: context.l10n.modelServices_vertexProjectIdHint,
+              floatingLabelBehavior: FloatingLabelBehavior.always,
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            key: const ValueKey('provider-form-vertex-location'),
+            controller: _vertexLocationController,
+            autocorrect: false,
+            decoration: InputDecoration(
+              labelText: context.l10n.modelServices_vertexLocation,
+              hintText: context.l10n.modelServices_vertexLocationHint,
+              errorText: _invalidVertexLocation
+                  ? context.l10n.modelServices_vertexLocationInvalid
+                  : null,
+              errorMaxLines: 3,
+            ),
+          ),
+        ],
         const SizedBox(height: 8),
         SwitchListTile(
           value: _allowImageInput,
@@ -229,133 +322,36 @@ class _PromptAssistantProviderFormState
             context.l10n.promptAssistant_concurrencyAutoDescription,
             style: Theme.of(context).textTheme.bodySmall,
           ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _keyController,
-          decoration: InputDecoration(
-            labelText: context.l10n.promptAssistant_apiKeyLeaveEmpty,
+        if (widget.provider == null) ...[
+          const SizedBox(height: 12),
+          TextField(
+            key: const ValueKey('provider-form-api-key'),
+            controller: _keyController,
+            decoration: InputDecoration(
+              labelText: _editsVertexConnection
+                  ? context.l10n.modelServices_vertexCredential
+                  : context.l10n.promptAssistant_apiKeyLeaveEmpty,
+              helperText: _editsVertexConnection
+                  ? context.l10n.modelServices_vertexCredentialHint
+                  : null,
+              helperMaxLines: 2,
+              errorText: switch (_credentialError) {
+                final error? =>
+                  context.l10n.modelServices_vertexCredentialInvalid(error),
+                null => null,
+              },
+              errorMaxLines: 3,
+            ),
+            obscureText: true,
           ),
-          obscureText: true,
-        ),
+        ],
       ],
-      footer: _FormFooter(onSave: _save),
-    );
-  }
-}
-
-class PromptAssistantConnectionFormResult {
-  const PromptAssistantConnectionFormResult({
-    required this.baseUrl,
-    required this.apiKey,
-    required this.clearApiKey,
-    required this.allowImageInput,
-  });
-
-  final String baseUrl;
-  final String apiKey;
-  final bool clearApiKey;
-  final bool allowImageInput;
-}
-
-class PromptAssistantConnectionForm extends StatefulWidget {
-  const PromptAssistantConnectionForm({
-    super.key,
-    required this.provider,
-    required this.scrollController,
-  });
-
-  final ProviderConfig provider;
-  final ScrollController scrollController;
-
-  @override
-  State<PromptAssistantConnectionForm> createState() =>
-      _PromptAssistantConnectionFormState();
-}
-
-class _PromptAssistantConnectionFormState
-    extends State<PromptAssistantConnectionForm> {
-  late final TextEditingController _baseController;
-  final TextEditingController _keyController = TextEditingController();
-  bool _clearApiKey = false;
-  late bool _allowImageInput;
-
-  @override
-  void initState() {
-    super.initState();
-    _baseController = TextEditingController(text: widget.provider.baseUrl);
-    _allowImageInput = widget.provider.allowImageInput;
-  }
-
-  @override
-  void dispose() {
-    _baseController.dispose();
-    _keyController.dispose();
-    super.dispose();
-  }
-
-  void _save() {
-    Navigator.pop(
-      context,
-      PromptAssistantConnectionFormResult(
-        baseUrl: _baseController.text.trim(),
-        apiKey: _keyController.text,
-        clearApiKey: _clearApiKey,
-        allowImageInput: _allowImageInput,
+      footer: AdaptiveFormFooter(
+        primary: FilledButton(
+          onPressed: _save,
+          child: Text(context.l10n.common_save),
+        ),
       ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return ContentSizedAdaptiveForm(
-      key: const ValueKey('prompt-assistant-connection-dialog'),
-      scrollController: widget.scrollController,
-      content: [
-        ProviderNameLabel(
-          provider: widget.provider,
-          style: Theme.of(context).textTheme.titleSmall,
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _baseController,
-          keyboardType: TextInputType.url,
-          decoration: InputDecoration(
-            labelText: 'Base URL',
-            hintText: context.l10n.promptAssistant_baseUrlHint,
-          ),
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _keyController,
-          decoration: InputDecoration(
-            labelText: context.l10n.promptAssistant_apiKeyLeaveEmpty,
-          ),
-          obscureText: true,
-        ),
-        const SizedBox(height: 8),
-        CheckboxListTile(
-          value: _clearApiKey,
-          contentPadding: EdgeInsets.zero,
-          title: Text(context.l10n.promptAssistant_clearCurrentApiKey),
-          onChanged: (value) {
-            setState(() => _clearApiKey = value ?? false);
-          },
-        ),
-        SwitchListTile(
-          value: _allowImageInput,
-          contentPadding: EdgeInsets.zero,
-          title: Text(context.l10n.promptAssistant_allowImageInput),
-          subtitle: Text(
-            widget.provider.protocol.supportsImagePayload
-                ? context.l10n.promptAssistant_protocolSupportsImagePayload
-                : context.l10n.promptAssistant_protocolTextOnlyWarning,
-          ),
-          onChanged: (value) {
-            setState(() => _allowImageInput = value);
-          },
-        ),
-      ],
-      footer: _FormFooter(onSave: _save),
     );
   }
 }
@@ -424,7 +420,7 @@ class _PromptAssistantRuleFormState extends State<PromptAssistantRuleForm> {
     if (rule == null) return;
     final confirmed = await ThemedConfirmDialog.showDelete(
       context: context,
-      itemName: _displayRuleName(context, rule),
+      itemName: localizedRuleName(context.l10n, rule),
     );
     if (confirmed && mounted) {
       Navigator.pop(context, const PromptAssistantRuleFormResult.deleted());
@@ -465,7 +461,7 @@ class _PromptAssistantRuleFormState extends State<PromptAssistantRuleForm> {
                 (value) => DropdownMenuItem(
                   value: value,
                   child: Text(
-                    _assistantTaskLabel(context, value),
+                    value.localizedLabel(context.l10n),
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
@@ -489,82 +485,19 @@ class _PromptAssistantRuleFormState extends State<PromptAssistantRuleForm> {
           ),
         ),
       ],
-      footer: _FormFooter(
-        onSave: _save,
-        leading: rule != null && !rule.isDefault
-            ? TextButton(
-                onPressed: _delete,
-                child: Text(context.l10n.common_delete),
-              )
-            : null,
+      footer: AdaptiveFormFooter(
+        leading: [
+          if (rule != null && !rule.isDefault)
+            TextButton(
+              onPressed: _delete,
+              child: Text(context.l10n.common_delete),
+            ),
+        ],
+        primary: FilledButton(
+          onPressed: _save,
+          child: Text(context.l10n.common_save),
+        ),
       ),
     );
   }
-}
-
-class _FormFooter extends StatelessWidget {
-  const _FormFooter({required this.onSave, this.leading});
-
-  final VoidCallback onSave;
-  final Widget? leading;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        const Divider(height: 1),
-        SafeArea(
-          top: false,
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Align(
-              alignment: Alignment.centerRight,
-              child: Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  if (leading != null) leading!,
-                  TextButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: Text(context.l10n.common_cancel),
-                  ),
-                  FilledButton(
-                    onPressed: onSave,
-                    child: Text(context.l10n.common_save),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-String _assistantTaskLabel(BuildContext context, AssistantTaskType taskType) {
-  return switch (taskType) {
-    AssistantTaskType.llm => context.l10n.promptAssistant_taskOptimize,
-    AssistantTaskType.translate => context.l10n.promptAssistant_taskTranslate,
-    AssistantTaskType.reverse => context.l10n.promptAssistant_taskReverse,
-    AssistantTaskType.characterReplace =>
-      context.l10n.promptAssistant_taskCharacterReplace,
-    AssistantTaskType.custom => context.l10n.promptAssistant_taskCustom,
-    AssistantTaskType.chat => context.l10n.agentChat_tab,
-  };
-}
-
-String _displayRuleName(BuildContext context, PromptRuleTemplate rule) {
-  if (!rule.isDefault) return rule.name;
-  final l10n = context.l10n;
-  return switch (rule.id) {
-    'opt_default' => l10n.promptAssistant_defaultOptimizeRuleName,
-    'translate_default' => l10n.promptAssistant_defaultTranslateRuleName,
-    'reverse_default' => l10n.promptAssistant_defaultReverseRuleName,
-    'character_replace_default' =>
-      l10n.promptAssistant_defaultCharacterReplaceRuleName,
-    'custom_default' => l10n.promptAssistant_defaultCustomRuleName,
-    _ => rule.name,
-  };
 }

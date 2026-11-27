@@ -3,16 +3,20 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import '../../constants/api_constants.dart';
-import '../../enums/precise_ref_type.dart';
 import '../../utils/app_logger.dart';
 import '../../utils/character_center_resolver.dart';
+import '../../utils/exif_orientation.dart';
 import '../../utils/inpaint_mask_utils.dart';
 import '../../utils/nai_resolution_adapter.dart';
-import '../../utils/nai_api_utils.dart';
 import '../../utils/novelai_auto_text.dart';
 import '../../utils/prompt_semantics_utils.dart';
 import '../../utils/prompt_edit_document.dart';
 import '../../../data/models/image/image_params.dart';
+import 'director_reference_payload_builder.dart';
+import 'official_parameter_order.dart';
+import 'precise_reference_limit_exception.dart';
+import 'precise_reference_send_filter.dart';
+import 'reference_strength_normalization.dart';
 
 /// Variety+ sigma 缩放的基准潜空间体积：4 通道 × 104 × 152（832×1216 的潜空间）。
 const int _cfgDelayReferenceLatents = 4 * 104 * 152;
@@ -51,16 +55,10 @@ class NAIImageRequestBuildResult {
 
 class NAIImageRequestBuilder {
   NAIImageRequestBuilder({
-    required this.params,
+    required ImageParams params,
     required this.encodeVibe,
-    List<PreciseReference>? preciseReferences,
-  }) : _preciseReferences =
-           (preciseReferences ??
-                   (params.capabilities.supportsPreciseReference
-                       ? params.preciseReferences
-                       : <PreciseReference>[]))
-               .where((reference) => reference.enabled)
-               .toList(growable: false);
+  }) : params = params.resolveFixedSettings(),
+       _preciseReferences = resolveSendablePreciseReferences(params);
 
   final ImageParams params;
   final EncodeVibeFn encodeVibe;
@@ -72,21 +70,18 @@ class NAIImageRequestBuilder {
     required String effectiveNegativePrompt,
     required bool isStream,
   }) {
-    final noiseSchedule = params.capabilities.supportsNoiseSchedule
-        ? NoiseSchedules.resolve(
-            params.noiseSchedule,
-            allowNative: params.capabilities.allowsNativeNoiseSchedule,
-          )
-        : NoiseSchedules.karras;
+    final requestSampler =
+        params.capabilities.fixedSettings?.sampler ?? sampler;
+    final noiseSchedule = params.effectiveNoiseSchedule;
     final usesBrownianEulerAncestral =
-        sampler == Samplers.kEulerAncestral &&
+        requestSampler == Samplers.kEulerAncestral &&
         noiseSchedule != NoiseSchedules.native;
     final requestParameters = <String, dynamic>{
       'params_version': _officialParamsVersion,
       'width': params.width,
       'height': params.height,
-      'scale': NAIApiUtils.toJsonNumber(params.scale),
-      'sampler': sampler,
+      'scale': params.scale,
+      'sampler': requestSampler,
       'steps': params.steps,
       'n_samples': params.nSamples,
       'ucPresetId': _resolveUcPresetId(),
@@ -98,12 +93,11 @@ class NAIImageRequestBuilder {
       'add_original_image': params.action == ImageGenerationAction.infill
           ? false
           : params.addOriginalImage,
-      'cfg_rescale': NAIApiUtils.toJsonNumber(params.cfgRescale),
+      if (params.capabilities.supportsCfgRescale)
+        'cfg_rescale': params.cfgRescale,
       'noise_schedule': noiseSchedule,
       if (params.isV4Model || params.inpaintStrength != 1.0)
-        'inpaintImg2ImgStrength': NAIApiUtils.toJsonNumber(
-          params.inpaintStrength,
-        ),
+        'inpaintImg2ImgStrength': params.inpaintStrength,
       'seed': seed,
       if (effectiveNegativePrompt.isEmpty)
         'uc': ''
@@ -239,7 +233,7 @@ class NAIImageRequestBuilder {
     requestParameters['legacy_v3_extend'] = false;
     requestParameters['legacy_uc'] = false;
     requestParameters['normalize_reference_strength_multiple'] =
-        params.normalizeVibeStrength;
+        _preciseReferences.isNotEmpty || params.normalizeVibeStrength;
 
     final charCaptions = <Map<String, dynamic>>[];
     final negativeCharCaptions = <Map<String, dynamic>>[];
@@ -356,8 +350,13 @@ class NAIImageRequestBuilder {
         return vibeEncodingMap;
       }
 
-      requestParameters['reference_image_multiple'] = rawImageVibes
-          .map((vibe) => base64Encode(vibe.rawImageData!))
+      final uploads = await Future.wait(
+        rawImageVibes.map(
+          (vibe) => ExifOrientation.bakeToPngAsync(vibe.rawImageData!),
+        ),
+      );
+      requestParameters['reference_image_multiple'] = uploads
+          .map(base64Encode)
           .toList(growable: false);
       requestParameters['reference_strength_multiple'] = rawImageVibes
           .map((vibe) => vibe.strength)
@@ -372,10 +371,10 @@ class NAIImageRequestBuilder {
     requestParameters['normalize_reference_strength_multiple'] =
         params.normalizeVibeStrength;
 
+    // 编码里已含信息提取量，官网对编码 Vibe 只发编码与强度。
     if (!isStream) {
       final allEncodings = <String>[];
       final allStrengths = <double>[];
-      final allInfoExtracted = <double>[];
 
       for (int i = 0; i < params.vibeReferencesV4.length; i++) {
         final vibe = params.vibeReferencesV4[i];
@@ -397,7 +396,6 @@ class NAIImageRequestBuilder {
             if (encoding.isNotEmpty) {
               allEncodings.add(encoding);
               allStrengths.add(vibe.strength);
-              allInfoExtracted.add(vibe.infoExtracted);
               vibeEncodingMap[i] = encoding;
               AppLogger.d(
                 'V4 Vibe: Encoded raw image at index $i successfully, hash length: ${encoding.length}',
@@ -418,7 +416,6 @@ class NAIImageRequestBuilder {
         } else if (vibe.vibeEncoding.isNotEmpty) {
           allEncodings.add(vibe.vibeEncoding);
           allStrengths.add(vibe.strength);
-          allInfoExtracted.add(vibe.infoExtracted);
           vibeEncodingMap[i] = vibe.vibeEncoding;
           AppLogger.d('V4 Vibe: Using pre-encoded vibe at index $i', 'ImgGen');
         }
@@ -426,9 +423,11 @@ class NAIImageRequestBuilder {
 
       if (allEncodings.isNotEmpty) {
         requestParameters['reference_image_multiple'] = allEncodings;
-        requestParameters['reference_strength_multiple'] = allStrengths;
-        requestParameters['reference_information_extracted_multiple'] =
-            allInfoExtracted;
+        requestParameters['reference_strength_multiple'] =
+            normalizeReferenceStrengths(
+              allStrengths,
+              enabled: params.normalizeVibeStrength,
+            );
 
         AppLogger.d(
           'V4 Vibe Transfer: ${vibeEncodingMap.length} vibes with encodings',
@@ -451,12 +450,10 @@ class NAIImageRequestBuilder {
 
     final allEncodings = <String>[];
     final allStrengths = <double>[];
-    final allInfoExtracted = <double>[];
 
     for (final vibe in encodedVibes) {
       allEncodings.add(vibe.vibeEncoding);
       allStrengths.add(vibe.strength);
-      allInfoExtracted.add(vibe.infoExtracted);
     }
 
     if (rawImageVibes.isNotEmpty) {
@@ -474,7 +471,6 @@ class NAIImageRequestBuilder {
           if (encoding.isNotEmpty) {
             allEncodings.add(encoding);
             allStrengths.add(vibe.strength);
-            allInfoExtracted.add(vibe.infoExtracted);
             AppLogger.d(
               'V4 Vibe (Stream): Encoded raw image successfully',
               'ImgGen',
@@ -496,9 +492,11 @@ class NAIImageRequestBuilder {
 
     if (allEncodings.isNotEmpty) {
       requestParameters['reference_image_multiple'] = allEncodings;
-      requestParameters['reference_strength_multiple'] = allStrengths;
-      requestParameters['reference_information_extracted_multiple'] =
-          allInfoExtracted;
+      requestParameters['reference_strength_multiple'] =
+          normalizeReferenceStrengths(
+            allStrengths,
+            enabled: params.normalizeVibeStrength,
+          );
 
       AppLogger.d(
         'V4 Vibe Transfer (Stream): ${encodedVibes.length} encoded + ${rawImageVibes.length} raw = ${allEncodings.length} total vibes',
@@ -507,44 +505,6 @@ class NAIImageRequestBuilder {
     }
 
     return vibeEncodingMap;
-  }
-
-  Future<void> buildPreciseReferenceParameters(
-    Map<String, dynamic> requestParameters,
-  ) async {
-    if (_preciseReferences.isEmpty) {
-      return;
-    }
-
-    final referenceImages = <String>[];
-    for (final reference in _preciseReferences) {
-      final imageBytes =
-          NAIApiUtils.isKnownNormalizedPreciseReferencePng(reference.image)
-          ? reference.image
-          : await NAIApiUtils.ensurePngFormatAsync(reference.image);
-      referenceImages.add(base64Encode(imageBytes));
-    }
-
-    requestParameters['normalize_reference_strength_multiple'] = true;
-    requestParameters['director_reference_images'] = referenceImages;
-    requestParameters['director_reference_descriptions'] = _preciseReferences
-        .map(
-          (r) => {
-            'caption': {
-              'base_caption': r.type.toApiString(),
-              'char_captions': [],
-            },
-            'legacy_uc': false,
-          },
-        )
-        .toList();
-    requestParameters['director_reference_information_extracted'] =
-        _preciseReferences.map((_) => 1).toList();
-    requestParameters['director_reference_strength_values'] = _preciseReferences
-        .map((r) => r.strength)
-        .toList();
-    requestParameters['director_reference_secondary_strength_values'] =
-        _preciseReferences.map((r) => 1.0 - r.fidelity).toList();
   }
 
   Future<Uint8List> _normalizeRequestSourceImage(Uint8List sourceImage) async {
@@ -560,6 +520,10 @@ class NAIImageRequestBuilder {
     required String sampler,
     bool isStream = false,
   }) async {
+    if (_preciseReferences.length >
+        PreciseReferenceLimitException.maxReferences) {
+      throw const PreciseReferenceLimitException();
+    }
     PromptEditDocument.requireEffective(params.prompt, field: 'prompt');
     PromptEditDocument.requireEffective(
       params.negativePrompt,
@@ -619,9 +583,7 @@ class NAIImageRequestBuilder {
     final seed = params.seed == -1 ? Random().nextInt(4294967295) : params.seed;
 
     final baseModel = ImageModels.resolveBaseModel(params.model);
-    final requestModel = params.action == ImageGenerationAction.infill
-        ? ImageModels.resolveInpaintingModel(baseModel)
-        : params.model;
+    final requestModel = params.requestModel;
     final promptSemantics = buildPromptSemanticsSnapshot(
       prompt: params.prompt,
       negativePrompt: params.negativePrompt,
@@ -633,6 +595,7 @@ class NAIImageRequestBuilder {
       qualityTier: params.qualityTier,
       characters: _buildAutoTextCharacters(),
       useCoords: params.useCoords,
+      modelMode: params.modelMode,
     );
     final effectivePrompt = promptSemantics.effectivePrompt;
     final effectiveNegativePrompt = promptSemantics.effectiveNegativePrompt;
@@ -682,17 +645,21 @@ class NAIImageRequestBuilder {
       );
       final normalizedSource = await normalizedSourceFuture;
       inpaintMaskArtifacts = await maskArtifactsFuture;
+      // 空 latent 蒙版发出去只会原样返回底图，白白占用一次付费请求。
+      if (inpaintMaskArtifacts.isLatentMaskEmpty) {
+        throw const EmptyInpaintMaskException();
+      }
       normalizedSourceImageBytes = normalizedSource;
       requestParameters['image'] = base64Encode(normalizedSource);
       requestParameters['mask'] = base64Encode(
         inpaintMaskArtifacts.requestMaskBytes,
       );
-      requestParameters['strength'] = NAIApiUtils.toJsonNumber(params.strength);
-      requestParameters['noise'] = NAIApiUtils.toJsonNumber(params.noise);
+      requestParameters['strength'] = params.strength;
+      requestParameters['noise'] = params.noise;
       if (ImageModels.supportsImg2ImgInpainting(requestModel) &&
           params.inpaintStrength != 1.0) {
         requestParameters['img2img'] = {
-          'strength': NAIApiUtils.toJsonNumber(params.inpaintStrength),
+          'strength': params.inpaintStrength,
           'color_correct': true,
         };
       }
@@ -708,21 +675,24 @@ class NAIImageRequestBuilder {
       isStream: isStream,
     );
 
-    await buildPreciseReferenceParameters(requestParameters);
+    await DirectorReferencePayloadBuilder(
+      _preciseReferences,
+      params.requestPreciseReferenceCapabilities,
+    ).build(requestParameters);
 
-    final requestData = <String, dynamic>{
+    final requestData = orderOfficialRequest(<String, dynamic>{
       'input': effectivePrompt,
       'model': requestModel,
       'action': params.action.value,
       'parameters': requestParameters,
       'use_new_shared_trial': true,
-    };
+    });
 
     return NAIImageRequestBuildResult(
       seed: seed,
       effectivePrompt: effectivePrompt,
       effectiveNegativePrompt: effectiveNegativePrompt,
-      requestParameters: requestParameters,
+      requestParameters: requestData['parameters'] as Map<String, dynamic>,
       requestData: requestData,
       vibeEncodingMap: vibeEncodingMap,
       normalizedSourceImageBytes: normalizedSourceImageBytes,

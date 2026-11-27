@@ -13,12 +13,13 @@ import '../../core/utils/app_logger.dart';
 import '../../core/utils/localization_extension.dart';
 import '../adaptive/window_size_class.dart';
 import '../agent_chat/widgets/agent_question_notifications.dart';
-import '../providers/auth_provider.dart';
+import '../../data/services/auth_provider.dart';
 import '../providers/dlss_provider.dart';
 import '../providers/prompt_maximize_provider.dart';
 import '../widgets/app_branch_visibility.dart';
 import '../widgets/drop/global_drop_handler.dart';
 import '../widgets/drop/incoming_image_share_handler.dart';
+import '../widgets/shortcuts/editable_text_focus.dart';
 import '../widgets/shortcuts/shortcut_aware_widget.dart';
 import '../widgets/shortcuts/shortcut_help_dialog.dart';
 import 'app_branch.dart';
@@ -29,7 +30,8 @@ import 'shell_panels_overlay.dart';
 
 export 'desktop_shell.dart' show DesktopShell;
 export 'mobile_shell.dart' show MobileShell;
-export 'shell_panels_overlay.dart' show ShellPanel, shellPanelProvider;
+export 'shell_panels_overlay.dart'
+    show ShellPanel, ShellPanelNotifier, shellPanelProvider;
 
 /// 主布局 Shell - 包含导航 (StatefulShellRoute 版本)
 ///
@@ -58,6 +60,7 @@ class _MainShellState extends ConsumerState<MainShell> {
     debugLabel: 'main-shell-panel-overlay',
   );
   final Map<int, bool> _branchCanHandlePop = <int, bool>{};
+  final Map<int, FocusScopeNode> _branchFocusScopes = <int, FocusScopeNode>{};
   ProviderSubscription<AuthPromptRequest?>? _authPromptSubscription;
   late final TimingsCallback _frameTimingsCallback;
   Timer? _navigationTraceTimer;
@@ -75,6 +78,7 @@ class _MainShellState extends ConsumerState<MainShell> {
     super.initState();
     _previousIndex = widget.navigationShell.currentIndex;
     _visitedBranchIndices.add(widget.navigationShell.currentIndex);
+    FocusManager.instance.addListener(_handlePrimaryFocusChange);
     _frameTimingsCallback = _recordNavigationFrameTimings;
     if (PlatformCapabilities.operatingSystem.supportsDlssEnhancement) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -91,6 +95,8 @@ class _MainShellState extends ConsumerState<MainShell> {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) _showAuthPrompt(next);
         });
+        // Krita、MCP 等外部请求发布提示时界面可能静止，没有下一帧对话框就弹不出来
+        WidgetsBinding.instance.ensureVisualUpdate();
       },
       fireImmediately: true,
     );
@@ -113,7 +119,48 @@ class _MainShellState extends ConsumerState<MainShell> {
       SchedulerBinding.instance.removeTimingsCallback(_frameTimingsCallback);
     }
     _authPromptSubscription?.close();
+    FocusManager.instance.removeListener(_handlePrimaryFocusChange);
+    for (final scope in _branchFocusScopes.values) {
+      scope.dispose();
+    }
     super.dispose();
+  }
+
+  FocusScopeNode _branchFocusScope(int index) => _branchFocusScopes.putIfAbsent(
+    index,
+    () => FocusScopeNode(
+      debugLabel: 'MainShell branch ${AppBranch.values[index].name}',
+      traversalEdgeBehavior: TraversalEdgeBehavior.parentScope,
+    ),
+  );
+
+  // IndexedStack 排除隐藏分支的焦点、外壳面板关闭后焦点会退到分支之上，只接管这种退回
+  void _handlePrimaryFocusChange() {
+    final primaryFocus = FocusManager.instance.primaryFocus;
+    final branchScope = _branchFocusScopes[widget.navigationShell.currentIndex];
+    if (primaryFocus == null ||
+        branchScope == null ||
+        branchScope.hasFocus ||
+        !branchScope.ancestors.contains(primaryFocus)) {
+      return;
+    }
+    _restoreBranchFocus(branchScope);
+  }
+
+  void _restoreBranchFocus(FocusScopeNode branchScope) {
+    FocusNode target = branchScope;
+    while (target is FocusScopeNode) {
+      final focusedChild = target.focusedChild;
+      if (focusedChild == null || !focusedChild.canRequestFocus) break;
+      target = focusedChild;
+    }
+    // 不回到输入框，否则手机上会重新弹出键盘；停在它的作用域，由页面收回焦点
+    final textScope = isEditableTextNode(target) ? target.enclosingScope : null;
+    if (textScope != null) {
+      textScope.requestScopeFocus();
+    } else {
+      target.requestFocus();
+    }
   }
 
   @override
@@ -210,6 +257,10 @@ class _MainShellState extends ConsumerState<MainShell> {
   @override
   Widget build(BuildContext context) {
     final currentIndex = widget.navigationShell.currentIndex;
+    // 同一次返回会通知根路由上所有 PopScope，面板已消费时不能再弹分支
+    final shellPanelOpen = ref.watch(
+      shellPanelProvider.select((panel) => panel != null),
+    );
 
     final contentStack = IndexedStack(
       index: currentIndex,
@@ -223,9 +274,12 @@ class _MainShellState extends ConsumerState<MainShell> {
         // 只在首次访问时挂载分支，避免启动时构建全部页面；挂载后始终
         // 保留 Element/Navigator/滚动状态，隐藏时暂停动画及后台工作。
         final branchContent = _visitedBranchIndices.contains(index)
-            ? AppBranchVisibility(
-                isVisible: isActive,
-                child: TickerMode(enabled: isActive, child: child),
+            ? FocusScope(
+                node: _branchFocusScope(index),
+                child: AppBranchVisibility(
+                  isVisible: isActive,
+                  child: TickerMode(enabled: isActive, child: child),
+                ),
               )
             : const SizedBox.shrink();
 
@@ -239,7 +293,9 @@ class _MainShellState extends ConsumerState<MainShell> {
           child: NavigatorPopHandler<void>(
             enabled: isActive,
             onPopWithResult: (_) {
-              if (isActive) branchNavigator.currentState?.maybePop();
+              if (isActive && !shellPanelOpen) {
+                branchNavigator.currentState?.maybePop();
+              }
             },
             child: branchContent,
           ),
@@ -262,9 +318,7 @@ class _MainShellState extends ConsumerState<MainShell> {
         ShortcutHelpDialog.show(context);
       },
       ShortcutIds.toggleQueue: () {
-        final activePanel = ref.read(shellPanelProvider);
-        ref.read(shellPanelProvider.notifier).state =
-            activePanel == ShellPanel.queue ? null : ShellPanel.queue;
+        ref.read(shellPanelProvider.notifier).toggle(ShellPanel.queue);
       },
     };
 

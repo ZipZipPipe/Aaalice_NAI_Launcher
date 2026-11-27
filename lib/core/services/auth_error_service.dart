@@ -1,7 +1,20 @@
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:nai_launcher/l10n/app_localizations.dart';
 
-import '../../presentation/providers/auth_provider.dart';
 import '../utils/app_logger.dart';
+
+/// 认证错误码
+enum AuthErrorCode {
+  networkTimeout,
+  networkError,
+  authFailed,
+  tokenInvalid,
+  credentialsLoginUnavailable,
+  endpointIncompatible,
+  serverError,
+  secureStorageUnavailable,
+  unknown,
+}
 
 /// 认证错误信息
 /// 包含错误文本和恢复建议
@@ -60,6 +73,9 @@ class AuthErrorService {
           return l10n.api_error_503;
         }
         return l10n.api_error_500;
+      case AuthErrorCode.secureStorageUnavailable:
+        AppLogger.d('Secure storage unavailable', 'AuthErrorService');
+        return l10n.common_secureStorageUnavailable;
       case AuthErrorCode.unknown:
         AppLogger.d('Unknown error', 'AuthErrorService');
         return l10n.auth_error_unknown;
@@ -127,6 +143,12 @@ class AuthErrorService {
           'AuthErrorService',
         );
         return l10n.api_error_500_hint;
+      case AuthErrorCode.secureStorageUnavailable:
+        AppLogger.d(
+          'Secure storage message already carries its recovery hint',
+          'AuthErrorService',
+        );
+        return null;
       case AuthErrorCode.unknown:
         AppLogger.d('No recovery hint for unknown error', 'AuthErrorService');
         return null;
@@ -148,3 +170,7 @@ class AuthErrorService {
     return AuthErrorMessage(errorText, recoveryHint);
   }
 }
+
+final authErrorServiceProvider = Provider<AuthErrorService>(
+  (ref) => AuthErrorService(),
+);

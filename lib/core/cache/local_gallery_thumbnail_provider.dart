@@ -1,12 +1,14 @@
 import 'dart:async';
 import 'dart:collection';
 import 'dart:io';
-import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart';
 import 'package:path/path.dart' as p;
+
+import '../utils/app_lifecycle_visibility.dart';
+import 'box_fit_resize_image.dart';
 
 /// The resize behavior used while decoding a local gallery image.
 enum LocalGalleryThumbnailFit { cover, contain }
@@ -80,13 +82,17 @@ class LocalGallerySourceIdentity {
     required int size,
     required DateTime modifiedAt,
   }) {
-    var normalizedPath = p.normalize(p.absolute(path));
-    if (Platform.isWindows) normalizedPath = normalizedPath.toLowerCase();
     return LocalGallerySourceIdentity(
-      path: normalizedPath,
+      path: normalizePath(path),
       size: size,
       modifiedAtMillis: modifiedAt.millisecondsSinceEpoch,
     );
+  }
+
+  /// Spells one local file the same way in every image cache key.
+  static String normalizePath(String path) {
+    final normalizedPath = p.normalize(p.absolute(path));
+    return Platform.isWindows ? normalizedPath.toLowerCase() : normalizedPath;
   }
 
   final String path;
@@ -151,15 +157,15 @@ class _LocalGalleryDecodeScheduler {
   final Queue<_LocalGalleryDecodeJob> _queue = Queue();
   final Map<LocalGalleryThumbnailKey, Set<_LocalGalleryDecodeJob>> _jobs = {};
   int _active = 0;
-  bool _appForeground = true;
+  bool _appVisible = true;
   bool _galleryVisible = true;
 
   int get activeDecodes => _active;
   int get queuedDecodes => _queue.length;
 
-  void setAppForeground(bool foreground) {
-    _appForeground = foreground;
-    if (foreground) _drain();
+  void setAppVisible(bool visible) {
+    _appVisible = visible;
+    if (visible) _drain();
   }
 
   void setGalleryVisible(bool visible) {
@@ -192,7 +198,7 @@ class _LocalGalleryDecodeScheduler {
   }
 
   void _drain() {
-    if (!_appForeground || !_galleryVisible) return;
+    if (!_appVisible || !_galleryVisible) return;
     while (_active < maximumConcurrentDecodes && _queue.isNotEmpty) {
       final job = _queue.removeFirst();
       if (job.cancelled) {
@@ -248,9 +254,15 @@ class LocalGalleryThumbnailProvider
     extends ImageProvider<LocalGalleryThumbnailKey> {
   static const int maximumDecodedDimension = 4096;
 
-  static void setAppForeground(bool foreground) {
-    _LocalGalleryDecodeScheduler.instance.setAppForeground(foreground);
+  static void setAppLifecycleState(ui.AppLifecycleState state) {
+    _LocalGalleryDecodeScheduler.instance.setAppVisible(
+      AppLifecycleVisibility.isVisible(state),
+    );
   }
+
+  @visibleForTesting
+  static bool get decodesAppVisible =>
+      _LocalGalleryDecodeScheduler.instance._appVisible;
 
   static void setGalleryVisible(bool visible) {
     _LocalGalleryDecodeScheduler.instance.setGalleryVisible(visible);
@@ -366,29 +378,17 @@ class LocalGalleryThumbnailProvider
     required int intrinsicHeight,
     required LocalGalleryThumbnailTarget target,
     required LocalGalleryThumbnailFit fit,
-  }) {
-    if (intrinsicWidth <= 0 || intrinsicHeight <= 0) {
-      return ui.TargetImageSize(width: target.width, height: target.height);
-    }
-
-    final widthScale = target.width / intrinsicWidth;
-    final heightScale = target.height / intrinsicHeight;
-    final requestedScale = fit == LocalGalleryThumbnailFit.cover
-        ? math.max(widthScale, heightScale)
-        : math.min(widthScale, heightScale);
-    var scale = math.min(1.0, requestedScale);
-    final longestDecodedDimension = math.max(
-      intrinsicWidth * scale,
-      intrinsicHeight * scale,
-    );
-    if (longestDecodedDimension > maximumDecodedDimension) {
-      scale *= maximumDecodedDimension / longestDecodedDimension;
-    }
-    return ui.TargetImageSize(
-      width: math.max(1, (intrinsicWidth * scale).ceil()),
-      height: math.max(1, (intrinsicHeight * scale).ceil()),
-    );
-  }
+  }) => BoxFitResizeImage.decodeTarget(
+    intrinsicWidth: intrinsicWidth,
+    intrinsicHeight: intrinsicHeight,
+    boxWidth: target.width,
+    boxHeight: target.height,
+    fit: switch (fit) {
+      LocalGalleryThumbnailFit.cover => DecodeFit.cover,
+      LocalGalleryThumbnailFit.contain => DecodeFit.contain,
+    },
+    maximumDimension: maximumDecodedDimension,
+  );
 }
 
 /// Gallery-owned view of the shared Flutter image cache.

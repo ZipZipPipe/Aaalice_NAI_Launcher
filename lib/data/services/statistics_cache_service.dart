@@ -1,13 +1,13 @@
 import 'dart:convert';
 
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:hive_flutter/hive_flutter.dart';
+import 'package:hive_ce_flutter/hive_ce_flutter.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../core/constants/storage_keys.dart';
 import '../../core/utils/app_logger.dart';
 import '../models/gallery/daily_trend_statistics.dart';
 import '../models/gallery/gallery_statistics.dart';
+import 'metadata/metadata_error_summary.dart';
 
 part 'statistics_cache_service.g.dart';
 
@@ -102,7 +102,7 @@ class StatisticsCacheService {
     } catch (e, stack) {
       AppLogger.e(
         'Failed to get statistics cache',
-        e,
+        metadataErrorSummary(e),
         stack,
         'StatisticsCacheService',
       );

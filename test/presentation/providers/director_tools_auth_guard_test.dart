@@ -5,9 +5,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nai_launcher/core/services/anlas_calculator.dart';
 import 'package:nai_launcher/data/datasources/remote/nai_image_enhancement_api_service.dart';
+import 'package:nai_launcher/data/models/director/director_tool_output.dart';
 import 'package:nai_launcher/data/models/director/director_tool_type.dart';
 import 'package:nai_launcher/data/models/user/user_subscription.dart';
-import 'package:nai_launcher/presentation/providers/auth_provider.dart';
+import 'package:nai_launcher/data/services/auth_provider.dart';
 import 'package:nai_launcher/presentation/providers/director_tools_notifier.dart';
 import 'package:nai_launcher/presentation/providers/subscription_provider.dart';
 
@@ -22,6 +23,15 @@ void main() {
         imageWidth: width,
         imageHeight: height,
       );
+      if (tool.runsLocally) {
+        expect(state.estimatedAnlasCost(), 0, reason: tool.name);
+        expect(
+          state.estimatedAnlasCost(isOpus: true),
+          0,
+          reason: '${tool.name} Opus',
+        );
+        continue;
+      }
       final isBackgroundRemoval = tool == DirectorToolType.removeBackground;
 
       expect(
@@ -46,6 +56,33 @@ void main() {
     }
   });
 
+  test('背景移除按次计价 3×基础价+5，Opus 也不免费', () {
+    for (final (width, height, expected) in [
+      (512, 768, 29),
+      (832, 1216, 65),
+      (1024, 1536, 95),
+    ]) {
+      for (final isOpus in [false, true]) {
+        final state = DirectorToolsState(
+          imageWidth: width,
+          imageHeight: height,
+        );
+        expect(
+          state.estimatedAnlasCost(isOpus: isOpus),
+          expected,
+          reason: '${width}x$height Opus=$isOpus',
+        );
+      }
+    }
+    const declutter = DirectorToolsState(
+      selectedTool: DirectorToolType.declutter,
+      imageWidth: 1024,
+      imageHeight: 1024,
+    );
+    expect(declutter.estimatedAnlasCost(isOpus: true), 0);
+    expect(declutter.estimatedAnlasCost(), greaterThan(0));
+  });
+
   for (final status in [AuthStatus.unauthenticated, AuthStatus.loading]) {
     test('Director Tools 在 $status 时不上传且保持业务状态', () async {
       final apiService = _RecordingEnhancementApiService();
@@ -53,16 +90,23 @@ void main() {
       addTearDown(container.dispose);
       final notifier = container.read(directorToolsNotifierProvider.notifier);
       final source = Uint8List.fromList([1, 2, 3]);
-      await notifier.init(source, initialPrompt: 'keep prompt');
+      await notifier.init(source);
+      notifier
+        ..selectTool(DirectorToolType.colorize)
+        ..updatePrompt('keep prompt')
+        ..selectTool(DirectorToolType.removeBackground);
       final before = container.read(directorToolsNotifierProvider);
 
-      await notifier.runTool();
+      await notifier.runTool(before);
 
       final after = container.read(directorToolsNotifierProvider);
       expect(apiService.uploadCalls, 0);
       expect(after.isRunning, isFalse);
       expect(after.sourceImage, same(before.sourceImage));
-      expect(after.prompt, before.prompt);
+      expect(after.colorizeParams, before.colorizeParams);
+      expect(after.colorizeParams.prompt, 'keep prompt');
+      expect(after.emotionParams, before.emotionParams);
+      expect(after.selectedEmotion, before.selectedEmotion);
       expect(after.selectedTool, before.selectedTool);
       expect(after.result, before.result);
       expect(after.error, before.error);
@@ -73,6 +117,24 @@ void main() {
     });
   }
 
+  test('本地工具未登录也直接放行，不弹登录提示', () async {
+    final apiService = _RecordingEnhancementApiService();
+    final container = _createContainer(apiService, AuthStatus.unauthenticated);
+    addTearDown(container.dispose);
+    final notifier = container.read(directorToolsNotifierProvider.notifier);
+    await notifier.init(Uint8List.fromList([1, 2, 3]));
+    notifier.selectTool(DirectorToolType.pixelSnap);
+
+    await notifier.runTool(container.read(directorToolsNotifierProvider));
+
+    final after = container.read(directorToolsNotifierProvider);
+    expect(apiService.uploadCalls, 0);
+    expect(container.read(authPromptRequestProvider), isNull);
+    // 源图是三个字节的垃圾，本机引擎解码失败收尾；有 error 就说明门禁没拦住它。
+    expect(after.error, isNotNull);
+    expect(after.isRunning, isFalse);
+  });
+
   test('Director Tools 登录后保留成功调用路径', () async {
     final apiService = _RecordingEnhancementApiService();
     final container = _createContainer(apiService, AuthStatus.authenticated);
@@ -80,7 +142,7 @@ void main() {
     final notifier = container.read(directorToolsNotifierProvider.notifier);
     await notifier.init(Uint8List.fromList([1, 2, 3]));
 
-    await notifier.runTool();
+    await notifier.runTool(container.read(directorToolsNotifierProvider));
 
     final state = container.read(directorToolsNotifierProvider);
     expect(apiService.uploadCalls, 1);
@@ -119,9 +181,9 @@ class _RecordingEnhancementApiService extends NAIImageEnhancementApiService {
   int uploadCalls = 0;
 
   @override
-  Future<Uint8List> removeBackground(Uint8List image) async {
+  Future<DirectorToolOutput> removeBackground(Uint8List image) async {
     uploadCalls++;
-    return Uint8List.fromList([9, 8, 7]);
+    return DirectorToolOutput.single(Uint8List.fromList([9, 8, 7]));
   }
 }
 

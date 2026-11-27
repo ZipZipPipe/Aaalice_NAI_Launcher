@@ -1,6 +1,8 @@
 import 'package:freezed_annotation/freezed_annotation.dart';
-import 'package:hive/hive.dart';
+import 'package:hive_ce/hive_ce.dart';
 import 'package:uuid/uuid.dart';
+
+import '../../../core/extensions/list_sort_extensions.dart';
 
 part 'vibe_library_category.freezed.dart';
 part 'vibe_library_category.g.dart';
@@ -10,7 +12,7 @@ part 'vibe_library_category.g.dart';
 /// 用于组织 Vibe 库条目，支持无限层级嵌套
 @HiveType(typeId: 21)
 @freezed
-class VibeLibraryCategory with _$VibeLibraryCategory {
+abstract class VibeLibraryCategory with _$VibeLibraryCategory {
   const VibeLibraryCategory._();
 
   const factory VibeLibraryCategory({
@@ -84,9 +86,7 @@ extension VibeLibraryCategoryListExtension on List<VibeLibraryCategory> {
 
   /// 按名称排序
   List<VibeLibraryCategory> sortedByName() {
-    final sorted = [...this];
-    sorted.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
-    return sorted;
+    return [...this]..sortByKey((category) => category.name.toLowerCase());
   }
 
   /// 构建分类树

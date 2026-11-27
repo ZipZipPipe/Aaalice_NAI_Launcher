@@ -8,7 +8,7 @@ import 'package:nai_launcher/core/agent/agent_types.dart';
 import 'package:nai_launcher/core/agent/harness/harness_messages.dart';
 import 'package:nai_launcher/presentation/prompt_assistant/models/agent_protocol.dart';
 import 'package:nai_launcher/presentation/prompt_assistant/models/assistant_model_capability.dart';
-import 'package:nai_launcher/presentation/prompt_assistant/models/prompt_assistant_models.dart';
+import 'package:nai_launcher/data/models/prompt_assistant/prompt_assistant_models.dart';
 import 'package:nai_launcher/presentation/prompt_assistant/services/provider_adapters/agent_wire_helpers.dart';
 import 'package:nai_launcher/presentation/prompt_assistant/services/provider_adapters/openai_responses_adapter.dart';
 import 'package:nai_launcher/presentation/prompt_assistant/services/provider_adapters/reasoning_payload.dart';
@@ -21,7 +21,7 @@ const _provider = ProviderConfig(
 );
 
 void main() {
-  for (final model in ['deepseek-v4-flash', 'glm-5']) {
+  for (final model in ['deepseek-flash', 'glm-5']) {
     test('$model keeps catalog levels across protocol switches', () {
       final responses = AssistantModelCatalog.resolveProvider(
         provider: _provider,
@@ -39,7 +39,10 @@ void main() {
       expect(responses.thinkingLevels, chat.thinkingLevels);
       expect(responses.thinkingLevels, contains(ThinkingLevel.off));
       expect(
-        responsesReasoningEffort(responses.resolveReasoningRequest(null), null),
+        responsesReasoningEffort(
+          responses.resolveReasoningRequest('off'),
+          null,
+        ),
         'none',
       );
       expect(
@@ -50,7 +53,7 @@ void main() {
         'high',
       );
       expect(
-        chatReasoningPayload(chat.resolveReasoningRequest(null)),
+        chatReasoningPayload(chat.resolveReasoningRequest('off')),
         isNotEmpty,
       );
     });
@@ -118,7 +121,7 @@ void main() {
       ];
       final metadata = AssistantModelCatalog.resolveProvider(
         provider: _provider,
-        model: 'deepseek-v4-flash',
+        model: 'deepseek-flash',
       );
       final events = await const OpenAiResponsesAdapter()
           .completeAgent(
@@ -126,12 +129,12 @@ void main() {
             request: AgentChatRequest(
               sessionId: 'test',
               provider: _provider,
-              model: 'deepseek-v4-flash',
+              model: 'deepseek-flash',
               systemPrompt: '',
               messages: harnessConvertToLlm(messages),
               tools: const [],
               apiKey: null,
-              reasoningRequest: metadata.resolveReasoningRequest(null),
+              reasoningRequest: metadata.resolveReasoningRequest('off'),
             ),
             cancelToken: CancelToken(),
           )
@@ -163,61 +166,9 @@ void main() {
     },
   );
 
-  test('handshake termination retries then succeeds', () async {
-    final transport = _Transport((options, attempt) async {
-      if (attempt < 3) {
-        throw const HandshakeException(
-          'Connection terminated during handshake',
-        );
-      }
-      return ResponseBody.fromString('ok', 200);
-    });
-    expect(await _read(transport), isNotEmpty);
-    expect(transport.attempts, 3);
-  });
-
-  test('persistent connection failure stops after three attempts', () async {
+  test('a connection failure is sent once', () async {
     final transport = _Transport((options, attempt) async {
       throw const SocketException('reset');
-    });
-    await expectLater(_read(transport), throwsA(isA<DioException>()));
-    expect(transport.attempts, 3);
-  });
-
-  for (final type in [
-    DioExceptionType.connectionTimeout,
-    DioExceptionType.sendTimeout,
-    DioExceptionType.receiveTimeout,
-  ]) {
-    test('$type retries before output', () async {
-      final transport = _Transport((options, attempt) async {
-        if (attempt == 1) {
-          throw DioException(requestOptions: options, type: type);
-        }
-        return ResponseBody.fromString('ok', 200);
-      });
-      expect(await _read(transport), isNotEmpty);
-      expect(transport.attempts, 2);
-    });
-  }
-
-  test('stream failure before the first byte retries', () async {
-    final transport = _Transport((options, attempt) async {
-      if (attempt == 1) {
-        return ResponseBody(
-          Stream<Uint8List>.error(const SocketException('reset')),
-          200,
-        );
-      }
-      return ResponseBody.fromString('ok', 200);
-    });
-    expect(await _read(transport), isNotEmpty);
-    expect(transport.attempts, 2);
-  });
-
-  test('an unknown programming error is not a network retry', () async {
-    final transport = _Transport((options, attempt) async {
-      throw StateError('invalid local state');
     });
     await expectLater(_read(transport), throwsA(isA<DioException>()));
     expect(transport.attempts, 1);
@@ -258,53 +209,6 @@ void main() {
         ),
       ),
     );
-    expect(transport.attempts, 1);
-  });
-
-  test('certificate rejection is never retried', () async {
-    final transport = _Transport((options, attempt) async {
-      throw const HandshakeException('CERTIFICATE_VERIFY_FAILED');
-    });
-    await expectLater(_read(transport), throwsA(isA<DioException>()));
-    expect(transport.attempts, 1);
-  });
-
-  test(
-    'network failure after even partial SSE bytes is not replayed',
-    () async {
-      final transport = _Transport(
-        (options, attempt) async => ResponseBody(() async* {
-          yield Uint8List.fromList([100]);
-          throw const SocketException('reset');
-        }(), 200),
-      );
-      await expectLater(_read(transport), throwsA(anything));
-      expect(transport.attempts, 1);
-    },
-  );
-
-  test('cancel during backoff prevents the next attempt', () async {
-    final cancel = CancelToken();
-    final failed = Completer<void>();
-    final transport = _Transport((options, attempt) async {
-      failed.complete();
-      throw const SocketException('reset');
-    });
-    final result = _read(transport, cancel: cancel);
-    final assertion = expectLater(
-      result,
-      throwsA(
-        isA<DioException>().having(
-          (e) => e.type,
-          'type',
-          DioExceptionType.cancel,
-        ),
-      ),
-    );
-    await failed.future;
-    await Future<void>.delayed(Duration.zero);
-    cancel.cancel();
-    await assertion;
     expect(transport.attempts, 1);
   });
 }

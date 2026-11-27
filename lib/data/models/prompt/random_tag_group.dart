@@ -71,7 +71,7 @@ enum TagGroupNodeType {
 /// 表示类别下的一个标签分组，可以是用户自定义的，
 /// 也可以是从 Danbooru Tag Group 或 Pool 同步而来的。
 @freezed
-class RandomTagGroup with _$RandomTagGroup {
+abstract class RandomTagGroup with _$RandomTagGroup {
   const RandomTagGroup._();
 
   const factory RandomTagGroup({
@@ -270,15 +270,6 @@ class RandomTagGroup with _$RandomTagGroup {
   /// 是否为嵌套配置
   bool get isNested => nodeType == TagGroupNodeType.config;
 
-  /// 深拷贝分组（生成新的ID，包含嵌套）
-  RandomTagGroup deepCopy() {
-    return copyWith(
-      id: const Uuid().v4(),
-      tags: tags.map((t) => t.copyWith()).toList(),
-      children: children.map((c) => c.deepCopy()).toList(),
-    );
-  }
-
   /// 更新同步时间
   RandomTagGroup markSynced() {
     return copyWith(lastSyncedAt: DateTime.now());
@@ -326,8 +317,8 @@ class RandomTagGroup with _$RandomTagGroup {
   /// 是否有可见性规则
   bool get hasVisibilityRules => visibilityRules.isNotEmpty;
 
-  /// 是否有时间条件
-  bool get hasTimeCondition => timeCondition != null;
+  /// 是否有启用的时间条件
+  bool get hasTimeCondition => timeCondition?.enabled ?? false;
 
   /// 是否有后处理规则
   bool get hasPostProcessRules => postProcessRules.isNotEmpty;
@@ -341,37 +332,22 @@ class RandomTagGroup with _$RandomTagGroup {
       hasPostProcessRules ||
       emphasisProbability > 0;
 
-  /// 检查时间条件是否满足
+  /// 检查时间条件是否满足，没有或停用的时间条件不限制词组
   bool isTimeConditionActive([DateTime? date]) {
-    if (timeCondition == null) return true;
-    return timeCondition!.isActive(date);
+    final condition = timeCondition;
+    if (condition == null || !condition.enabled) return true;
+    return condition.isActive(date);
   }
 
-  /// 检查可见性规则
+  /// 检查以本词组 ID 为目标的可见性规则
   ///
+  /// 目标为类别的规则作用于该类别下全部词组，由生成器按类别统一求值
   /// [context] 当前上下文，包含已选择的标签
   bool checkVisibility(Map<String, List<String>> context) {
     if (visibilityRules.isEmpty) return true;
 
-    // 创建规则集并检查
     final ruleSet = VisibilityRuleSet(rules: visibilityRules);
     return ruleSet.isCategoryVisible(id, context);
-  }
-
-  /// 应用后处理规则
-  ///
-  /// [tags] 当前标签列表
-  /// [context] 当前上下文
-  /// [variables] 当前变量值映射
-  List<String> applyPostProcessRules(
-    List<String> tags,
-    Map<String, List<String>> context, {
-    Map<String, String>? variables,
-  }) {
-    if (postProcessRules.isEmpty) return tags;
-
-    final ruleSet = PostProcessRuleSet(rules: postProcessRules);
-    return ruleSet.applyAll(tags, context, variables: variables);
   }
 
   /// 获取 DIY 能力图标列表（用于 UI 显示）

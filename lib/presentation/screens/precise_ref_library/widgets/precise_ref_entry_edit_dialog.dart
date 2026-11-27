@@ -6,7 +6,7 @@ import '../../../../core/extensions/precise_ref_type_extensions.dart';
 import '../../../../data/models/precise_ref/precise_ref_library_entry.dart';
 import '../../../adaptive/adaptive_presenter.dart';
 import '../../../widgets/common/adaptive_dialog_frame.dart';
-import '../../../widgets/common/editable_double_field.dart';
+import '../../../widgets/common/labeled_slider_rows.dart';
 
 /// 编辑对话框返回结果
 class PreciseRefEntryEditResult {
@@ -15,12 +15,14 @@ class PreciseRefEntryEditResult {
     required this.type,
     required this.strength,
     required this.fidelity,
+    this.preferSameOutfit,
   });
 
   final String name;
   final PreciseRefType type;
   final double strength;
   final double fidelity;
+  final bool? preferSameOutfit;
 }
 
 /// 精准参考库条目编辑对话框
@@ -94,6 +96,9 @@ class _PreciseRefEntryEditDialogState extends State<PreciseRefEntryEditDialog> {
             ? widget.entry.name
             : _nameController.text.trim(),
         type: _type,
+        preferSameOutfit: _type == widget.entry.type
+            ? widget.entry.preferSameOutfit
+            : null,
         strength: _strength,
         fidelity: _fidelity,
       ),
@@ -106,12 +111,14 @@ class _PreciseRefEntryEditDialogState extends State<PreciseRefEntryEditDialog> {
       character: l10n.preciseRef_typeCharacter,
       style: l10n.preciseRef_typeStyle,
       characterAndStyle: l10n.preciseRef_typeCharacterAndStyle,
+      outfit: l10n.preciseRef_typeOutfit,
     );
   }
 
   @override
   Widget build(BuildContext context) {
     final l10n = context.l10n;
+    const types = PreciseRefType.values;
     final theme = Theme.of(context);
 
     final content = SingleChildScrollView(
@@ -157,7 +164,7 @@ class _PreciseRefEntryEditDialogState extends State<PreciseRefEntryEditDialog> {
                     border: OutlineInputBorder(),
                   ),
                   items: [
-                    for (final type in PreciseRefType.values)
+                    for (final type in types)
                       DropdownMenuItem(
                         value: type,
                         child: Row(
@@ -177,7 +184,7 @@ class _PreciseRefEntryEditDialogState extends State<PreciseRefEntryEditDialog> {
               return SegmentedButton<PreciseRefType>(
                 key: const Key('precise-ref-edit-type-selector'),
                 segments: [
-                  for (final type in PreciseRefType.values)
+                  for (final type in types)
                     ButtonSegment(
                       value: type,
                       icon: Icon(type.icon, size: 16),
@@ -194,21 +201,28 @@ class _PreciseRefEntryEditDialogState extends State<PreciseRefEntryEditDialog> {
               );
             },
           ),
-          const SizedBox(height: 16),
-          _buildSliderRow(
-            label: l10n.preciseRef_strength,
-            value: _strength,
-            fieldKey: const Key('precise-ref-edit-strength-field'),
-            onChanged: (value) => setState(() => _strength = value),
+          const SizedBox(height: 12),
+          LabeledSliderRows(
+            labelStyle: theme.textTheme.bodySmall,
+            rowPadding: const EdgeInsets.symmetric(vertical: 4),
+            sliders: [
+              LabeledSlider.editable(
+                label: l10n.preciseRef_strength,
+                value: _strength,
+                divisions: 20,
+                inputKey: const Key('precise-ref-edit-strength-field'),
+                onChanged: (value) => setState(() => _strength = value),
+              ),
+              LabeledSlider.editable(
+                label: l10n.preciseRef_fidelity,
+                value: _fidelity,
+                divisions: 20,
+                inputKey: const Key('precise-ref-edit-fidelity-field'),
+                onChanged: (value) => setState(() => _fidelity = value),
+              ),
+            ],
           ),
-          const SizedBox(height: 8),
-          _buildSliderRow(
-            label: l10n.preciseRef_fidelity,
-            value: _fidelity,
-            fieldKey: const Key('precise-ref-edit-fidelity-field'),
-            onChanged: (value) => setState(() => _fidelity = value),
-          ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 12),
           Wrap(
             alignment: WrapAlignment.end,
             spacing: 8,
@@ -243,58 +257,6 @@ class _PreciseRefEntryEditDialogState extends State<PreciseRefEntryEditDialog> {
         horizontalMargin: 0,
         child: SafeArea(child: content),
       ),
-    );
-  }
-
-  Widget _buildSliderRow({
-    required String label,
-    required double value,
-    required Key fieldKey,
-    required ValueChanged<double> onChanged,
-  }) {
-    final theme = Theme.of(context);
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final textScale = MediaQuery.textScalerOf(context).scale(14) / 14;
-        final field = EditableDoubleField(
-          key: fieldKey,
-          value: value,
-          decimals: 2,
-          width: 64,
-          onChanged: onChanged,
-        );
-        final slider = Slider(
-          value: value.clamp(0.0, 1.0),
-          divisions: 20,
-          onChanged: onChanged,
-        );
-        if (constraints.maxWidth < 340 || textScale > 1.5) {
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(label, style: theme.textTheme.bodySmall),
-                  ),
-                  field,
-                ],
-              ),
-              slider,
-            ],
-          );
-        }
-        return Row(
-          children: [
-            SizedBox(
-              width: 64,
-              child: Text(label, style: theme.textTheme.bodySmall),
-            ),
-            Expanded(child: slider),
-            field,
-          ],
-        );
-      },
     );
   }
 }

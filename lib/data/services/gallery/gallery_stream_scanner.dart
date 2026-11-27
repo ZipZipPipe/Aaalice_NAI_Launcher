@@ -1,14 +1,17 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:path/path.dart' as p;
 import 'package:synchronized/synchronized.dart';
 
+import '../../../core/cache/gallery_cache_manager.dart';
 import '../../../core/database/datasources/gallery_data_source.dart';
 import '../../../core/utils/app_logger.dart';
 import '../../models/gallery/local_image_record.dart';
 import '../../models/gallery/nai_image_metadata.dart';
 import '../metadata/isolate_metadata_service.dart';
+import 'gallery_image_files.dart';
 import 'scan_config.dart';
 import 'scan_state_manager.dart';
 
@@ -138,11 +141,11 @@ class GalleryStreamScanner {
   final GalleryDataSource _dataSource;
   final ScanStateManager _stateManager = ScanStateManager.instance;
   final IsolateMetadataService _isolateMetadataService;
-  static const ScanConfig _scanConfig = ScanConfig();
 
   // 状态
   bool _isRunning = false;
   bool _shouldCancel = false;
+  bool _indexWrittenThisRound = false;
 
   // 互斥锁，防止并发扫描
   final _scanLock = Lock();
@@ -190,7 +193,7 @@ class GalleryStreamScanner {
     // change either the total or the files processed by this scan.
     final suppliedSnapshot = fileSnapshot == null
         ? null
-        : _freezeFileSnapshot(rootDir, fileSnapshot);
+        : freezeFileSnapshot(rootDir, fileSnapshot);
 
     // 使用互斥锁防止并发扫描
     return _scanLock.synchronized(() async {
@@ -204,6 +207,7 @@ class GalleryStreamScanner {
 
       _isRunning = true;
       _shouldCancel = false;
+      _indexWrittenThisRound = false;
 
       AppLogger.i(
         '[StreamScan] Starting stream scan: ${rootDir.path}',
@@ -228,7 +232,7 @@ class GalleryStreamScanner {
         // 3. Enumerate once, freeze the result, and only reorder entries that
         // are already in that snapshot. File-system changes after this point
         // are deliberately deferred to the next scan.
-        final snapshot = suppliedSnapshot ?? await _createFileSnapshot(rootDir);
+        final snapshot = suppliedSnapshot ?? await createFileSnapshot(rootDir);
         final filesToScan = _prioritizeSnapshot(snapshot, retryPriorityPaths);
         final totalFiles = filesToScan.length;
         AppLogger.i(
@@ -340,6 +344,10 @@ class GalleryStreamScanner {
         _stateManager.errorScan(e.toString());
       } finally {
         _isRunning = false;
+        // 取消或中途失败前已写入的记录同样改变统计
+        if (_indexWrittenThisRound) {
+          GalleryCacheManager().invalidateStatistics();
+        }
         // 注意：不要在这里关闭 StreamController，因为它们是广播流
         // 在单例模式下需要保持开放以支持多次扫描
       }
@@ -439,6 +447,7 @@ class GalleryStreamScanner {
 
     if (orphanedPaths.isNotEmpty) {
       await _dataSource.batchMarkAsDeleted(orphanedPaths);
+      _indexWrittenThisRound = true;
       // 从本地缓存中移除
       for (final path in orphanedPaths) {
         _existingMap.remove(path);
@@ -563,6 +572,7 @@ class GalleryStreamScanner {
             path,
             newFileName: fileName,
           );
+          _indexWrittenThisRound = true;
 
           // 更新本地缓存
           final oldRecord = _existingMap.remove(movedFromPath);
@@ -594,11 +604,7 @@ class GalleryStreamScanner {
       _updateStage(stats, FileProcessingStage.extracting, fileName);
       final parseResult = await _isolateMetadataService.parseMetadata(
         file.path,
-        config: const IsolateParseConfig(
-          timeout: Duration(seconds: 10),
-          useGradualRead: false,
-          useCache: false,
-        ),
+        config: const IsolateParseConfig(timeout: Duration(seconds: 10)),
       );
       final metadata = parseResult.metadata;
 
@@ -613,31 +619,28 @@ class GalleryStreamScanner {
       _updateStage(stats, FileProcessingStage.caching, fileName);
 
       final isNewFile = existing == null;
-      final metadataStatus = metadata != null && metadata.hasData
-          ? MetadataStatus.success
-          : parseResult.retryable
+      final hasMetadata = metadata != null && metadata.hasData;
+      final statusWithoutMetadata = parseResult.retryable
           ? MetadataStatus.transientFailure
           : MetadataStatus.failed;
+      final metadataStatus = hasMetadata
+          ? MetadataStatus.success
+          : statusWithoutMetadata;
 
-      final imageId = await _dataSource.upsertImage(
+      // 图片行可能先于元数据落库，写入中途失败也要让统计失效
+      _indexWrittenThisRound = true;
+      final imageId = await _dataSource.upsertImageWithMetadata(
         filePath: path,
         fileName: fileName,
         fileSize: stat.size,
-        width: metadata?.width,
-        height: metadata?.height,
-        aspectRatio: _calculateAspectRatio(metadata?.width, metadata?.height),
         createdAt: stat.modified,
         modifiedAt: stat.modified,
-        resolutionKey: metadata?.width != null && metadata?.height != null
-            ? '${metadata!.width}x${metadata.height}'
-            : null,
+        metadata: metadata,
+        statusWithoutMetadata: statusWithoutMetadata,
         lastScannedAt: DateTime.now(),
-        metadataStatus: metadataStatus,
       );
 
-      if (metadata != null && metadata.hasData) {
-        await _dataSource.upsertMetadata(imageId, metadata);
-
+      if (hasMetadata) {
         // 更新 ScanStateManager 的元数据计数
         _stateManager.incrementMetadataCacheCount();
       } else {
@@ -668,7 +671,7 @@ class GalleryStreamScanner {
             : FileProcessingStage.completed,
         metadata: metadata,
         isNewFile: isNewFile,
-        metadataUpdated: metadata != null && metadata.hasData,
+        metadataUpdated: hasMetadata,
         error: parseResult.retryable ? parseResult.error : null,
       );
     } catch (e) {
@@ -722,27 +725,15 @@ class GalleryStreamScanner {
     );
   }
 
-  /// 计算宽高比
-  double? _calculateAspectRatio(int? width, int? height) {
-    if (width != null && height != null && height > 0) {
-      return width / height;
-    }
-    return null;
+  @visibleForTesting
+  Future<List<File>> createFileSnapshot(Directory rootDir) async {
+    final files = await const GalleryImageFiles().list(rootDir.absolute);
+    if (_shouldCancel) return const [];
+    return freezeFileSnapshot(rootDir, files);
   }
 
-  Future<List<File>> _createFileSnapshot(Directory rootDir) async {
-    final files = <File>[];
-    await for (final entity in rootDir.list(
-      recursive: true,
-      followLinks: false,
-    )) {
-      if (_shouldCancel) break;
-      if (entity is File) files.add(entity);
-    }
-    return _freezeFileSnapshot(rootDir, files);
-  }
-
-  List<File> _freezeFileSnapshot(Directory rootDir, Iterable<File> files) {
+  @visibleForTesting
+  List<File> freezeFileSnapshot(Directory rootDir, Iterable<File> files) {
     final rootPath = p.normalize(p.absolute(rootDir.path));
     final seen = <String>{};
     final snapshot = <File>[];
@@ -752,8 +743,7 @@ class GalleryStreamScanner {
       final pathKey = Platform.isWindows
           ? absolutePath.toLowerCase()
           : absolutePath;
-      if (!p.isWithin(rootPath, absolutePath) ||
-          !_scanConfig.acceptsGalleryImagePath(absolutePath) ||
+      if (!GalleryImageFiles.accepts(rootPath, absolutePath) ||
           !seen.add(pathKey)) {
         continue;
       }

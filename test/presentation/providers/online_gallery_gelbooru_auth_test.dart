@@ -6,7 +6,7 @@ import 'dart:typed_data';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hive/hive.dart';
+import 'package:hive_ce/hive_ce.dart';
 import 'package:nai_launcher/core/constants/storage_keys.dart';
 import 'package:nai_launcher/core/storage/secure_storage_service.dart';
 import 'package:nai_launcher/data/datasources/remote/danbooru_api_service.dart';
@@ -425,7 +425,7 @@ void main() {
     },
   );
 
-  test('favorite search filters both local and remote results', () async {
+  test('favorite search uses whole terms on both branches', () async {
     final hiveDirectory = await Directory.systemTemp.createTemp(
       'online-gallery-favorites-search-',
     );
@@ -437,13 +437,19 @@ void main() {
       await hiveDirectory.delete(recursive: true);
     });
 
-    final localMatch = _gelbooruPost(701, tagString: 'blue dog');
-    final remoteMatch = _gelbooruPost(702, tagString: 'red dog');
-    final remoteMiss = _gelbooruPost(703, tagString: 'green cat');
+    final localMatch = _gelbooruPost(701, tagString: 'solo long_hair');
+    final remoteMatch = _gelbooruPost(702).copyWith(title: 'Long Hair');
+    final remoteMiss = _gelbooruPost(
+      703,
+      tagString: 'solo long_sleeves short_hair',
+    );
+    final separateFields = _gelbooruPost(
+      704,
+    ).copyWith(title: 'Long', author: 'Hair');
     final gelbooruApi = _FakeGelbooruApiService(
       favoritesResult: GelbooruPostPage(
-        posts: [remoteMatch, remoteMiss],
-        rawCount: 2,
+        posts: [remoteMatch, remoteMiss, separateFields],
+        rawCount: 3,
       ),
     );
     final container = createContainer(
@@ -457,15 +463,18 @@ void main() {
 
     final notifier = container.read(onlineGalleryNotifierProvider.notifier);
     await notifier.setFavoritesSource(GallerySourceId.gelbooru);
-    await notifier.searchFavorites('dog');
+    for (final query in ['long_hair', 'solo, long_hair', 'solo long_hair']) {
+      await notifier.searchFavorites(query);
 
-    expect(
-      container
-          .read(onlineGalleryNotifierProvider)
-          .posts
-          .map((item) => item.stableKey),
-      [localMatch.stableKey, remoteMatch.stableKey],
-    );
+      expect(
+        container
+            .read(onlineGalleryNotifierProvider)
+            .posts
+            .map((item) => item.stableKey),
+        [localMatch.stableKey, remoteMatch.stableKey],
+        reason: query,
+      );
+    }
   });
 
   test('complete favorite failure does not expose a partial failure', () async {

@@ -1,5 +1,6 @@
 import '../../widgets/common/image_card_batch_scope.dart';
 import '../../utils/card_drop_reader.dart';
+import '../../utils/native_drop_callback.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../services/library_sidebar_move_service.dart';
@@ -93,33 +94,7 @@ class VibeLibraryWorkspace extends StatelessWidget {
                   );
                 },
               ),
-              footer:
-                  !libraryState.isLoading &&
-                      libraryState.filteredEntries.isNotEmpty &&
-                      libraryState.totalPages > 0
-                  ? LayoutBuilder(
-                      builder: (context, constraints) => PaginationBar(
-                        currentPage: libraryState.currentPage,
-                        totalPages: libraryState.totalPages,
-                        totalItems: libraryState.filteredCount,
-                        itemsPerPage: libraryState.pageSize,
-                        itemsPerPageOptions: const [20, 50, 100],
-                        onPageChanged: (page) =>
-                            onCommand(ChangePageCommand(page)),
-                        onItemsPerPageChanged: (size) =>
-                            onCommand(ChangePageSizeCommand(size)),
-                        showItemsPerPage: true,
-                        showTotalInfo: true,
-                        compact: constraints.maxWidth < 680,
-                        loading: libraryState.isLoading,
-                        totalIcon: Icons.auto_awesome_outlined,
-                        totalItemsLabel: context.l10n.vibeLibrary_totalCount(
-                          libraryState.filteredCount.toString(),
-                        ),
-                        tonalCard: true,
-                      ),
-                    )
-                  : null,
+              footer: _buildFooter(),
             ),
             if (controller.isDragging) const _DropOverlay(),
             if (controller.isImporting)
@@ -144,13 +119,44 @@ class VibeLibraryWorkspace extends StatelessWidget {
             return DropOperation.copy;
           },
           onDropLeave: (_) => controller.setDragging(false),
-          onPerformDrop: (event) async {
+          onPerformDrop: (event) {
             controller.setDragging(false);
-            await onCommand(PerformVibeDropCommand(event));
+            return releaseNativeDropCallback(
+              () => onCommand(PerformVibeDropCommand(event)),
+              library: 'VibeLibraryWorkspace',
+            );
           },
           child: content,
         );
       },
+    );
+  }
+
+  Widget? _buildFooter() {
+    if (libraryState.isLoading) return null;
+    final filteredCount = libraryState.filteredCount;
+    if (filteredCount == 0) return null;
+    final totalPages = libraryState.totalPages;
+    if (totalPages <= 0) return null;
+    return LayoutBuilder(
+      builder: (context, constraints) => PaginationBar(
+        currentPage: libraryState.currentPage,
+        totalPages: totalPages,
+        totalItems: filteredCount,
+        itemsPerPage: libraryState.pageSize,
+        itemsPerPageOptions: const [20, 50, 100],
+        onPageChanged: (page) => onCommand(ChangePageCommand(page)),
+        onItemsPerPageChanged: (size) => onCommand(ChangePageSizeCommand(size)),
+        showItemsPerPage: true,
+        showTotalInfo: true,
+        compact: constraints.maxWidth < 680,
+        loading: libraryState.isLoading,
+        totalIcon: Icons.auto_awesome_outlined,
+        totalItemsLabel: context.l10n.vibeLibrary_totalCount(
+          filteredCount.toString(),
+        ),
+        tonalCard: true,
+      ),
     );
   }
 }

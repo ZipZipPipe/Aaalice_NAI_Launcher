@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../../../../../core/utils/localization_extension.dart';
 import '../../../../widgets/common/context_menu_anchor.dart';
+import '../../../../widgets/common/inline_rename_field.dart';
+import '../../../../widgets/common/menu_action_label.dart';
 import '../../../../widgets/common/library_classification_drag.dart';
+import '../../../../widgets/common/surface_ink_well.dart';
 import '../../../../adaptive/interaction_policy.dart';
 
 enum _VibeCategoryAction { rename, addSubCategory, delete }
@@ -52,41 +54,13 @@ class VibeCategoryItem extends StatefulWidget {
 class _VibeCategoryItemState extends State<VibeCategoryItem> {
   bool _isHovering = false;
   bool _isEditing = false;
-  late TextEditingController _editController;
-  late FocusNode _editFocusNode;
 
-  @override
-  void initState() {
-    super.initState();
-    _editController = TextEditingController(text: widget.label);
-    _editFocusNode = FocusNode();
-    _editFocusNode.onKeyEvent = _handleEditKeyEvent;
+  void _submitRename(String name) {
+    widget.onRename?.call(name);
+    _stopEditing();
   }
 
-  KeyEventResult _handleEditKeyEvent(FocusNode node, KeyEvent event) {
-    if (event is KeyDownEvent &&
-        event.logicalKey == LogicalKeyboardKey.escape) {
-      _editController.text = widget.label;
-      setState(() => _isEditing = false);
-      return KeyEventResult.handled;
-    }
-    return KeyEventResult.ignored;
-  }
-
-  @override
-  void didUpdateWidget(covariant VibeCategoryItem oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.label != widget.label && !_isEditing) {
-      _editController.text = widget.label;
-    }
-  }
-
-  @override
-  void dispose() {
-    _editFocusNode.dispose();
-    _editController.dispose();
-    super.dispose();
-  }
+  void _stopEditing() => setState(() => _isEditing = false);
 
   @override
   Widget build(BuildContext context) {
@@ -109,12 +83,10 @@ class _VibeCategoryItemState extends State<VibeCategoryItem> {
                 widget.onDelete != null
             ? (details) => _showContextMenu(context, details.globalPosition)
             : null,
-        child: AnimatedContainer(
-          duration: MediaQuery.disableAnimationsOf(context)
-              ? Duration.zero
-              : const Duration(milliseconds: 150),
-          margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 1),
-          decoration: BoxDecoration(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 1),
+          child: SurfaceInkWell(
+            borderRadius: BorderRadius.circular(8),
             color: widget.isSelected
                 ? theme.colorScheme.primaryContainer
                 : isAcceptingDrop
@@ -122,11 +94,10 @@ class _VibeCategoryItemState extends State<VibeCategoryItem> {
                 : (_isHovering
                       ? theme.colorScheme.surfaceContainerHighest
                       : Colors.transparent),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: InkWell(
+            // 未选中时悬停由底色表达
+            hoverColor: widget.isSelected ? null : Colors.transparent,
+            duration: const Duration(milliseconds: 150),
             onTap: widget.onTap,
-            borderRadius: BorderRadius.circular(8),
             child: ConstrainedBox(
               constraints: const BoxConstraints(minHeight: controlExtent),
               child: Padding(
@@ -171,10 +142,9 @@ class _VibeCategoryItemState extends State<VibeCategoryItem> {
                     // 名称（编辑模式或显示模式）
                     Expanded(
                       child: _isEditing
-                          ? TextField(
-                              controller: _editController,
-                              focusNode: _editFocusNode,
-                              autofocus: true,
+                          ? InlineRenameField(
+                              name: widget.label,
+                              framed: false,
                               style: const TextStyle(fontSize: 13),
                               decoration: const InputDecoration(
                                 filled: false,
@@ -182,20 +152,8 @@ class _VibeCategoryItemState extends State<VibeCategoryItem> {
                                 border: InputBorder.none,
                                 contentPadding: EdgeInsets.zero,
                               ),
-                              onSubmitted: (value) {
-                                if (value.trim().isNotEmpty) {
-                                  widget.onRename?.call(value.trim());
-                                }
-                                if (mounted) {
-                                  setState(() => _isEditing = false);
-                                }
-                              },
-                              onTapOutside: (_) {
-                                _editController.text = widget.label;
-                                if (mounted) {
-                                  setState(() => _isEditing = false);
-                                }
-                              },
+                              onSubmit: _submitRename,
+                              onCancel: _stopEditing,
                             )
                           : Text(
                               widget.label,
@@ -306,41 +264,26 @@ class _VibeCategoryItemState extends State<VibeCategoryItem> {
                 }
               });
             },
-            child: Row(
-              children: [
-                const Icon(Icons.edit, size: 18),
-                const SizedBox(width: 8),
-                Text(context.l10n.common_rename),
-              ],
+            child: MenuActionLabel(
+              leading: const Icon(Icons.edit),
+              label: context.l10n.common_rename,
             ),
           ),
         if (widget.onAddSubCategory != null)
           PopupMenuItem(
             onTap: widget.onAddSubCategory,
-            child: Row(
-              children: [
-                const Icon(Icons.create_new_folder, size: 18),
-                const SizedBox(width: 8),
-                Text(context.l10n.vibeLibrary_newSubCategory),
-              ],
+            child: MenuActionLabel(
+              leading: const Icon(Icons.create_new_folder),
+              label: context.l10n.vibeLibrary_newSubCategory,
             ),
           ),
         if (widget.onDelete != null)
           PopupMenuItem(
             onTap: widget.onDelete,
-            child: Row(
-              children: [
-                Icon(
-                  Icons.delete,
-                  size: 18,
-                  color: Theme.of(context).colorScheme.error,
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  context.l10n.common_delete,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
-                ),
-              ],
+            child: MenuActionLabel(
+              leading: const Icon(Icons.delete),
+              label: context.l10n.common_delete,
+              destructive: true,
             ),
           ),
       ],

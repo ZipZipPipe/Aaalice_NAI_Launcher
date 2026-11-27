@@ -2,26 +2,41 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/agent/agent_types.dart';
+import '../../../core/agent/harness/harness_types.dart';
 import '../../../core/agent/resources/agent_chat_resource_reference.dart';
+import '../../../core/constants/api_constants.dart';
 import '../../../core/constants/model_capabilities.dart';
 import '../../../core/services/anlas_calculator.dart';
 import '../../../core/services/character_conversion_service.dart';
+import '../../../core/utils/inpaint_mask_utils.dart';
 import '../../../core/utils/nai_resolution_adapter.dart';
 import '../../../data/models/fixed_tag/fixed_tag_prompt_type.dart';
 import '../../../data/models/image/image_params.dart';
-import '../../../data/services/alias_resolver_service.dart';
+import '../../providers/alias_resolver_service.dart';
 import '../../providers/character_prompt_provider.dart';
 import '../../providers/fixed_tags_provider.dart';
+import '../../providers/generation/image_workflow_controller.dart';
 import '../../providers/image_generation_provider.dart';
 import '../../providers/precise_ref_library_provider.dart';
 import '../../providers/replication_queue_provider.dart';
 import '../../providers/vibe_library_provider.dart';
 import 'agent_resource_resolver.dart';
 import 'defined_agent_tool.dart';
+import 'generated_image_export_writer.dart';
 import 'generation_anlas_estimator.dart';
 import 'generation_character_orchestration.dart';
+import 'generation_enhance_resolver.dart';
 import 'generation_preparation_runtime.dart';
+import 'generation_save_path_validator.dart';
 import 'generation_workspace_path_resolver.dart';
+
+typedef _ResolvedSavePath = ({String? path, GenerationSavePathSource? source});
+
+typedef _RequestGeometry = ({
+  int width,
+  int height,
+  GenerationEnhanceSelection? enhance,
+});
 
 class GenerationPreparationService {
   GenerationPreparationService(
@@ -29,6 +44,7 @@ class GenerationPreparationService {
     required GenerationPreparationRuntime runtime,
     required AgentResourceResolver resourceResolver,
     required GenerationWorkspacePathResolver pathResolver,
+    required GeneratedImageExportWriter exportWriter,
     required int maxGenerateCount,
     required GenerationAnlasEstimator anlasEstimator,
     required Future<AgentToolResult> Function(
@@ -43,17 +59,24 @@ class GenerationPreparationService {
       required GenerationPreparation prepared,
     })
     executeQueue,
+    bool referencesGalleryOriginal = false,
   }) : _runtime = runtime,
        _resourceResolver = resourceResolver,
        _pathResolver = pathResolver,
+       _savePathValidator = GenerationSavePathValidator(
+         pathResolver: pathResolver,
+         exportWriter: exportWriter,
+       ),
        _maxGenerateCount = maxGenerateCount,
        _anlasEstimator = anlasEstimator,
        _executeGeneration = executeGeneration,
-       _executeQueue = executeQueue;
+       _executeQueue = executeQueue,
+       _referencesGalleryOriginal = referencesGalleryOriginal;
   final Ref _ref;
   final GenerationPreparationRuntime _runtime;
   final AgentResourceResolver _resourceResolver;
   final GenerationWorkspacePathResolver _pathResolver;
+  final GenerationSavePathValidator _savePathValidator;
   final int _maxGenerateCount;
   final GenerationAnlasEstimator _anlasEstimator;
   final Future<AgentToolResult> Function(
@@ -68,6 +91,9 @@ class GenerationPreparationService {
     required GenerationPreparation prepared,
   })
   _executeQueue;
+
+  /// 调用方不传 save_path 时是否把 saved_path 指向图库原图；内置聊天不需要。
+  final bool _referencesGalleryOriginal;
 
   Future<AgentToolResult> generateLegacy(
     String toolCallId,
@@ -116,6 +142,7 @@ class GenerationPreparationService {
     Map<String, dynamic> args, {
     ImageParams? baseOverride,
     ImageParams? characterSnapshotOverride,
+    EnhanceWorkflowSettings? enhanceDefaultsOverride,
   }) async {
     final prompt = (args['prompt'] as String?)?.trim() ?? '';
     if (prompt.isEmpty) {
@@ -144,20 +171,6 @@ class GenerationPreparationService {
 
     final ImageParams base =
         baseOverride ?? _ref.read(generationParamsNotifierProvider);
-    final width = (args['width'] as num?)?.toInt() ?? base.width;
-    final height = (args['height'] as num?)?.toInt() ?? base.height;
-    final resolutionIssue = NaiResolutionAdapter.validateGenerationResolution(
-      width,
-      height,
-    );
-    if (resolutionIssue != null) {
-      return agentToolError(
-        'invalid_resolution',
-        'Invalid generation resolution ${width}x$height. Width and height '
-            'must be multiples of 64 and total pixels must not exceed '
-            '${NaiResolutionAdapter.officialMaxPixels}.',
-      );
-    }
 
     final promptParts = <String>[prompt];
     final negativePromptParts = <String>[
@@ -246,6 +259,38 @@ class GenerationPreparationService {
       }
     }
 
+    // 外部蒙版的低灰度选区会被官网 alpha>155 采样丢掉，与聚焦裁切等处的 ≥32 判定不一致。
+    if (maskBytes != null) {
+      maskBytes = await InpaintMaskUtils.normalizeMaskBytesAsync(maskBytes);
+    }
+
+    final enhanceDefaults = args['enhance'] == null
+        ? null
+        : enhanceDefaultsOverride ??
+              _ref.read(imageWorkflowControllerProvider).enhance;
+    final geometryResult = await _resolveRequestGeometry(
+      args,
+      base: base,
+      sourceBytes: sourceBytes,
+      maskBytes: maskBytes,
+      enhanceDefaults: enhanceDefaults,
+    );
+    if (geometryResult.errorOrNull case final rejection?) return rejection;
+    final geometry = geometryResult.valueOrNull!;
+    final enhance = geometry.enhance;
+    final resolutionIssue = NaiResolutionAdapter.validateGenerationResolution(
+      geometry.width,
+      geometry.height,
+    );
+    if (resolutionIssue != null) {
+      return agentToolError(
+        'invalid_resolution',
+        'Invalid generation resolution ${geometry.width}x${geometry.height}. '
+            'Width and height must be multiples of 64 and total pixels must '
+            'not exceed ${NaiResolutionAdapter.officialMaxPixels}.',
+      );
+    }
+
     double ratio(String key, double fallback) {
       final value = (args[key] as num?)?.toDouble();
       return value == null ? fallback : value.clamp(0.0, 0.99);
@@ -299,6 +344,7 @@ class GenerationPreparationService {
           PreciseReference(
             image: resolved!.bytes!,
             type: entry.type,
+            preferSameOutfit: entry.preferSameOutfit,
             strength: entry.strength,
             fidelity: entry.fidelity,
           ),
@@ -308,11 +354,24 @@ class GenerationPreparationService {
       }
     }
     final hasExplicitCharacters = args.containsKey('characters');
-    if (!hasExplicitCharacters && args.containsKey('character_layout_mode')) {
-      return agentToolError(
-        'character_layout_without_characters',
-        'character_layout_mode requires an explicit characters snapshot.',
-      );
+    if (!hasExplicitCharacters) {
+      // MCP 客户端会把 schema 默认值实例化进 arguments，key 是否存在不代表调用方
+      // 意图，只能按值判断：继承的编辑器状态无坐标可用，custom 会被静默丢弃。
+      try {
+        final requested = GenerationCharacterOrchestrator.parseLayoutMode(
+          args['character_layout_mode'],
+        );
+        if (requested == GenerationCharacterLayoutMode.custom) {
+          return agentToolError(
+            'character_layout_without_characters',
+            'character_layout_mode custom requires an explicit characters '
+                'snapshot; omit it to inherit the current character editor '
+                'layout.',
+          );
+        }
+      } on GenerationCharacterValidationException catch (error) {
+        return agentToolError(error.code, error.message);
+      }
     }
 
     late final List<CharacterPrompt> characters;
@@ -365,26 +424,31 @@ class GenerationPreparationService {
       negativePrompt: negativePromptParts
           .where((value) => value.isNotEmpty)
           .join(', '),
-      width: width,
-      height: height,
+      width: geometry.width,
+      height: geometry.height,
       seed: (args['seed'] as num?)?.toInt() ?? -1,
       nSamples: kind == GenerationPreparationKind.generate ? count : 1,
       action: action,
       sourceImage: sourceBytes,
       maskImage: maskBytes,
-      strength: ratio('strength', base.strength),
-      noise: ratio('noise', base.noise),
+      strength: enhance?.plan.strength ?? ratio('strength', base.strength),
+      noise: enhance?.plan.noise ?? ratio('noise', base.noise),
       inpaintStrength: ratio('inpaint_strength', base.inpaintStrength),
+      // 基底取自生成页，页面停在增强面板时两个一次性标记会跟着漏进普通请求。
+      upscaledEnhance: enhance?.plan.maxScale ?? false,
+      isEnhanceRequest: enhance != null,
       vibeReferencesV4: vibeReferences,
       preciseReferences: preciseReferences,
       characters: characters,
       useCoords: useCoords,
     );
     final batchSize = _anlasEstimator.currentBatchSize;
+    final billing = await _anlasEstimator.freshBilling();
     final estimate = _anlasEstimator.estimate(
       params,
-      requestCount: kind == GenerationPreparationKind.queue ? count : 1,
+      requestCount: kind.requestCount(count),
       batchSize: batchSize,
+      billing: billing,
     );
     if (estimate == AnlasCalculator.invalidCost) {
       return agentToolError(
@@ -392,6 +456,9 @@ class GenerationPreparationService {
         'Unable to estimate Anlas for these parameters.',
       );
     }
+    final savePathResult = await _resolveSavePath(kind, args, count, batchSize);
+    if (savePathResult.errorOrNull case final rejection?) return rejection;
+
     final canonicalArgs = Map<String, dynamic>.from(args)
       ..remove('operation')
       ..remove('preparation_id')
@@ -405,12 +472,136 @@ class GenerationPreparationService {
         count: count,
         autoStart: args['auto_start'] as bool? ?? true,
         estimatedAnlas: estimate,
+        billing: billing,
         arguments: canonicalArgs,
-        sourceImage: sourceBytes,
-        maskImage: maskBytes,
+        savePath: savePathResult.valueOrNull?.path,
+        savePathSource: savePathResult.valueOrNull?.source,
+        enhance: enhance,
+        enhanceDefaults: enhanceDefaults,
       ),
     );
     return agentToolJsonResult(preparation.toJson());
+  }
+
+  Future<HarnessResult<_RequestGeometry, AgentToolResult>>
+  _resolveRequestGeometry(
+    Map<String, dynamic> args, {
+    required ImageParams base,
+    required Uint8List? sourceBytes,
+    required Uint8List? maskBytes,
+    required EnhanceWorkflowSettings? enhanceDefaults,
+  }) async {
+    final requestedWidth = (args['width'] as num?)?.toInt();
+    final requestedHeight = (args['height'] as num?)?.toInt();
+    final rawEnhance = args['enhance'];
+    if (rawEnhance != null) {
+      if (sourceBytes == null) {
+        return err(
+          agentToolError(
+            'enhance_requires_source',
+            'enhance needs source_ref or source_image.',
+          ),
+        );
+      }
+      if (maskBytes != null) {
+        return err(
+          agentToolError(
+            'enhance_with_mask',
+            'enhance cannot be combined with a mask; use inpainting instead.',
+          ),
+        );
+      }
+      if (requestedWidth != null || requestedHeight != null) {
+        return err(
+          agentToolError(
+            'enhance_size_conflict',
+            'enhance derives width and height from the source and '
+                'enhance.scale; omit width and height.',
+          ),
+        );
+      }
+      double? callerRatio(String key) =>
+          (args[key] as num?)?.toDouble().clamp(0.0, 0.99);
+      final resolved = await GenerationEnhanceResolver.resolve(
+        rawEnhance: rawEnhance,
+        base: base,
+        source: sourceBytes,
+        pageDefaults: enhanceDefaults!,
+        callerStrength: callerRatio('strength'),
+        callerNoise: callerRatio('noise'),
+      );
+      if (resolved.errorOrNull case final rejection?) return err(rejection);
+      final enhance = resolved.valueOrNull!;
+      return ok((
+        width: enhance.plan.width,
+        height: enhance.plan.height,
+        enhance: enhance,
+      ));
+    }
+    if (sourceBytes != null &&
+        requestedWidth == null &&
+        requestedHeight == null) {
+      // 发送前的重采样不保持宽高比，沿用生成页尺寸会把底图拉伸变形。
+      final imported = await NaiResolutionAdapter.describeImageForImportAsync(
+        sourceBytes,
+        isStableDiffusionFamily: ImageModels.usesStableDiffusionImportBounds(
+          base.model,
+        ),
+      );
+      if (imported != null) {
+        return ok((
+          width: imported.width,
+          height: imported.height,
+          enhance: null,
+        ));
+      }
+    }
+    return ok((
+      width: requestedWidth ?? base.width,
+      height: requestedHeight ?? base.height,
+      enhance: null,
+    ));
+  }
+
+  Future<HarnessResult<_ResolvedSavePath, AgentToolResult>> _resolveSavePath(
+    GenerationPreparationKind kind,
+    Map<String, dynamic> args,
+    int count,
+    int batchSize,
+  ) async {
+    final requested = args['save_path'];
+    if (kind == GenerationPreparationKind.queue &&
+        requested is String &&
+        requested.trim().isNotEmpty) {
+      return err(
+        agentToolError(
+          'unsupported_queue_save_path',
+          'queue preparations do not support save_path.',
+        ),
+      );
+    }
+    final validated = await _savePathValidator.validate(
+      requested,
+      total: count * batchSize,
+    );
+    if (validated.errorOrNull case final rejection?) return err(rejection);
+    final path = validated.valueOrNull;
+    return ok(
+      path == null
+          ? _resolveDefaultSavePath(kind)
+          : (path: path, source: GenerationSavePathSource.caller),
+    );
+  }
+
+  /// 调用方没给 save_path 时不写任何副本，最多把 saved_path 指向图库原图。
+  _ResolvedSavePath _resolveDefaultSavePath(GenerationPreparationKind kind) {
+    final references =
+        kind == GenerationPreparationKind.generate &&
+        _referencesGalleryOriginal;
+    return (
+      path: null,
+      source: references ? GenerationSavePathSource.galleryOriginal : null,
+    );
   }
 
   Future<AgentToolResult?> _appendTextReferences(
@@ -497,6 +688,7 @@ class GenerationPreparationService {
       merged,
       baseOverride: current.baseParams,
       characterSnapshotOverride: current.params,
+      enhanceDefaultsOverride: current.enhanceDefaults,
     );
     if (!result.isError) _runtime.cancel(id);
     return result;
@@ -542,8 +734,6 @@ class GenerationPreparationService {
       return _executeQueue(preparation.arguments, prepared: preparation);
     }
     final executionArgs = Map<String, dynamic>.from(preparation.arguments)
-      ..remove('source_image')
-      ..remove('mask_image')
       ..['_prepared_generation'] = preparation;
     return _executeGeneration(toolCallId, executionArgs, signal, onUpdate);
   }

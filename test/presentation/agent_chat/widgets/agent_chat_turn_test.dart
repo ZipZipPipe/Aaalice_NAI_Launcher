@@ -13,8 +13,10 @@ import 'package:nai_launcher/presentation/agent_chat/widgets/agent_chat_panel_vi
 import 'package:nai_launcher/presentation/agent_chat/widgets/agent_chat_tool_widgets.dart';
 import 'package:nai_launcher/presentation/agent_chat/widgets/agent_chat_turn.dart';
 import 'package:nai_launcher/presentation/agent_settings/providers/agent_settings_provider.dart';
-import 'package:nai_launcher/presentation/prompt_assistant/models/prompt_assistant_models.dart';
+import 'package:nai_launcher/data/models/prompt_assistant/prompt_assistant_models.dart';
 import 'package:nai_launcher/presentation/prompt_assistant/providers/web_access_provider.dart';
+
+import '../../../helpers/agent_chat_panel_commands_fixture.dart';
 
 void main() {
   test(
@@ -129,6 +131,67 @@ void main() {
       );
     },
   );
+
+  testWidgets('work trail pauses elapsed refresh while the ancestor is muted', (
+    tester,
+  ) async {
+    final enabled = ValueNotifier(true);
+    addTearDown(enabled.dispose);
+    final startedAt =
+        DateTime.now().millisecondsSinceEpoch -
+        const Duration(minutes: 5, seconds: 30).inMilliseconds;
+    await tester.pumpWidget(
+      MaterialApp(
+        locale: const Locale('en'),
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: Scaffold(
+          body: ValueListenableBuilder<bool>(
+            valueListenable: enabled,
+            builder: (context, enabled, child) =>
+                TickerMode(enabled: enabled, child: child!),
+            child: TickerMode(
+              enabled: true,
+              child: AgentChatWorkTrail(
+                turn: AgentChatTurnModel(
+                  ordinal: 0,
+                  timeline: AgentChatTurnTimeline(
+                    id: 'running-turn',
+                    status: AgentChatTurnStatus.running,
+                    items: const [],
+                    firstSeq: 1,
+                    lastSeq: 1,
+                    startedAt: startedAt,
+                  ),
+                ),
+                running: true,
+                activities: const [],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    Text label() => tester.widget<Text>(find.textContaining('Working for'));
+
+    final initial = label();
+    await tester.pump(const Duration(seconds: 1));
+    expect(label(), isNot(same(initial)));
+
+    enabled.value = false;
+    await tester.pump();
+    final muted = label();
+    await tester.pump(const Duration(seconds: 3));
+    expect(label(), same(muted));
+
+    enabled.value = true;
+    await tester.pump();
+    final resumed = label();
+    expect(resumed.data, startsWith('Working for 5m '));
+    await tester.pump(const Duration(seconds: 1));
+    expect(label(), isNot(same(resumed)));
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
 
   testWidgets('completed work collapses while final answer remains visible', (
     tester,
@@ -745,7 +808,7 @@ Future<void> _pump(
                 height: height,
                 onClose: null,
                 onOpenSettings: null,
-                mobileHeaderWrapper: null,
+                headerWrapper: null,
               ),
               commands: _commands,
               controller: controller,
@@ -763,36 +826,6 @@ final _onePixelPng = base64Decode(
 
 Message? _editedSource;
 
-final _commands = AgentChatPanelCommands(
-  collapse: () {},
-  newSession: () async {},
-  selectSession: (_) async {},
-  renameSession: (_) async {},
-  deleteSession: (_) async {},
-  moreAction: (_) async {},
-  selectModel: (_, __) async {},
-  selectThinkingLevel: (_) async {},
-  selectPermissionMode: (_) async {},
-  setWebAccessEnabled: (_) async {},
-  pickImages: () async {},
-  attachCurrentCanvas: () async {},
-  openReferenceGallery: () async {},
-  openResourceLibrary: () async {},
-  resolveResourcePreview: (_) async => null,
-  send: () async {},
-  sendFollowUp: () async {},
-  stop: () {},
-  dismissError: () {},
-  retryLastMessage: () async {},
-  resolveApproval: (_, __) => false,
-  useSuggestion: (_) {},
-  copyUserMessage: (_) async {},
+final _commands = inertAgentChatPanelCommands(
   editUserMessage: (message, _) async => _editedSource = message,
-  cancelUserMessageEdit: () {},
-  copyAssistantMessage: (_) async {},
-  editQueuedMessage: (_) async {},
-  removeQueuedMessage: (_) async {},
-  clearQueuedMessages: () async {},
-  addPendingResource: (_) async {},
-  removePendingResource: (_) async {},
 );

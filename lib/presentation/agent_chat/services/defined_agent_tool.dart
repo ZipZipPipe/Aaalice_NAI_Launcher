@@ -76,6 +76,10 @@ Map<String, dynamic> _strictToolParameters(Map<String, dynamic> parameters) {
   return {...parameters, 'additionalProperties': false};
 }
 
+AgentToolResult agentToolTextResult(String text) {
+  return AgentToolResult(content: [ToolResultTextContent(text)], details: null);
+}
+
 AgentToolResult agentToolJsonResult(Map<String, dynamic> value) {
   return AgentToolResult(
     content: [ToolResultTextContent(jsonEncode(value))],
@@ -83,15 +87,20 @@ AgentToolResult agentToolJsonResult(Map<String, dynamic> value) {
   );
 }
 
-AgentToolResult agentToolError(String code, String message) {
-  final details = <String, dynamic>{
+AgentToolResult agentToolError(
+  String code,
+  String message, {
+  Map<String, dynamic> details = const {},
+}) {
+  final payload = <String, dynamic>{
     'ok': false,
     'code': code,
     'message': message,
   };
+  details.forEach((key, value) => payload.putIfAbsent(key, () => value));
   return AgentToolResult(
-    content: [ToolResultTextContent(jsonEncode(details))],
-    details: details,
+    content: [ToolResultTextContent(jsonEncode(payload))],
+    details: payload,
     isError: true,
   );
 }

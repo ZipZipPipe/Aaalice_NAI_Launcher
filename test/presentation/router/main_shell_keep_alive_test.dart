@@ -5,8 +5,8 @@ import 'package:go_router/go_router.dart';
 import 'package:nai_launcher/core/constants/app_version.dart';
 import 'package:nai_launcher/core/shortcuts/shortcut_config.dart';
 import 'package:nai_launcher/l10n/app_localizations.dart';
-import 'package:nai_launcher/presentation/providers/account_manager_provider.dart';
-import 'package:nai_launcher/presentation/providers/auth_provider.dart';
+import 'package:nai_launcher/data/services/account_manager_provider.dart';
+import 'package:nai_launcher/data/services/auth_provider.dart';
 import 'package:nai_launcher/presentation/providers/shortcuts_provider.dart';
 import 'package:nai_launcher/presentation/router/app_branch.dart';
 import 'package:nai_launcher/presentation/router/app_shell.dart';
@@ -87,7 +87,7 @@ void main() {
       );
     }
 
-    container.read(shellPanelProvider.notifier).state = ShellPanel.queue;
+    container.read(shellPanelProvider.notifier).open(ShellPanel.queue);
     await tester.pumpAndSettle();
     final overlayState = tester.state(find.byType(ShellPanelsOverlay));
     tester.widget<TabBar>(find.byType(TabBar)).controller!.animateTo(1);
@@ -117,7 +117,7 @@ void main() {
     expect(tester.state(find.byType(ShellPanelsOverlay)), same(overlayState));
     expect(lifecycle[AppBranch.generation]!.created, 1);
     expect(lifecycle[AppBranch.generation]!.disposed, 0);
-    container.read(shellPanelProvider.notifier).state = null;
+    container.read(shellPanelProvider.notifier).close();
     await tester.pumpAndSettle();
 
     for (final branch in keptAliveAppBranches) {

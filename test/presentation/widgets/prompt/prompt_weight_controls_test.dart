@@ -84,4 +84,28 @@ void main() {
     );
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('weight readout uses the shared weight format', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        supportedLocales: AppLocalizations.supportedLocales,
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        home: Scaffold(
+          body: PromptWeightControls(
+            weight: 0.5,
+            onWeight: (_) {},
+            onStep: (_) {},
+          ),
+        ),
+      ),
+    );
+
+    final readout = tester.widget<EditableText>(
+      find.descendant(
+        of: find.byKey(const ValueKey('prompt-weight-value')),
+        matching: find.byType(EditableText),
+      ),
+    );
+    expect(readout.controller.text, '0.5');
+  });
 }

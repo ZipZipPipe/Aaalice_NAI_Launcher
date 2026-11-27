@@ -1,32 +1,54 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/material.dart'
+    show Center, MaterialApp, Scaffold, Scrollable, ValueKey;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/misc.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nai_launcher/core/agent/harness/session/session_jsonl.dart';
 import 'package:nai_launcher/core/agent/agent_types.dart' show ThinkingLevel;
 import 'package:nai_launcher/core/agent/harness/harness_types.dart';
+import 'package:nai_launcher/core/agent/harness/llm_helpers.dart';
 import 'package:nai_launcher/core/agent/harness/session/session_types.dart';
 import 'package:nai_launcher/core/agent/llm_types.dart';
 import 'package:nai_launcher/core/storage/local_storage_service.dart';
 import 'package:nai_launcher/core/services/android_foreground_task_service.dart';
 import 'package:nai_launcher/core/storage/secure_storage_service.dart';
 import 'package:nai_launcher/data/models/agent/agent_settings.dart';
+import 'package:nai_launcher/data/models/prompt_assistant/assistant_execution_settings.dart';
 import 'package:nai_launcher/data/models/interaction/user_question.dart';
+import 'package:nai_launcher/core/constants/storage_keys.dart';
+import 'package:nai_launcher/l10n/app_localizations.dart';
 import '../../../fixtures/user_questions.dart';
 import 'package:nai_launcher/presentation/agent_chat/models/agent_chat_compaction_outcome.dart';
 import 'package:nai_launcher/presentation/agent_chat/providers/agent_chat_notifier.dart';
+import 'package:nai_launcher/presentation/agent_chat/widgets/agent_chat_model_picker.dart';
 import 'package:nai_launcher/presentation/agent_settings/providers/agent_settings_provider.dart';
 import 'package:nai_launcher/presentation/prompt_assistant/models/agent_protocol.dart';
-import 'package:nai_launcher/presentation/prompt_assistant/models/prompt_assistant_models.dart';
+import 'package:nai_launcher/data/models/prompt_assistant/prompt_assistant_models.dart';
 import 'package:nai_launcher/presentation/prompt_assistant/providers/prompt_assistant_config_provider.dart';
+import 'package:nai_launcher/presentation/prompt_assistant/services/provider_adapters/agent_wire_helpers.dart';
+import 'package:nai_launcher/presentation/prompt_assistant/services/provider_adapters/reasoning_rejection.dart';
 
 const _testSkill = HarnessSkill(
   name: 'test-skill',
   description: 'A skill used by the slash command tests',
   content: 'SKILL BODY',
   filePath: '/skills/test-skill/SKILL.md',
+);
+
+const _fastRetry = RetryPolicy(enabled: true, maxRetries: 3, baseDelayMs: 1);
+
+const _droppedStream = AgentWireError(
+  'LLM request failed: network error: provider=DeepSeek: HttpException: '
+  'Connection closed while receiving data',
+);
+
+const _rejectedReasoning = AgentWireError(
+  'HTTP 400: Unsupported reasoning_effort. Please retry your request.',
+  rejectedReasoningField: 'reasoning_effort',
 );
 
 const _mixedCaseSkill = HarnessSkill(
@@ -91,11 +113,8 @@ void main() {
       'agent_chat_initializing_draft_',
     );
     addTearDown(() => root.delete(recursive: true));
-    final provider = StateNotifierProvider<AgentChatNotifier, AgentChatState>((
-      ref,
-    ) {
+    final provider = NotifierProvider<AgentChatNotifier, AgentChatState>(() {
       return AgentChatNotifier(
-        ref,
         supportDir: root,
         workspaceDir: root,
         presetSkills: const [],
@@ -105,8 +124,7 @@ void main() {
       overrides: [
         localStorageServiceProvider.overrideWithValue(_MemoryLocalStorage()),
         agentSettingsProvider.overrideWith(
-          (ref) => AgentSettingsNotifier(
-            ref,
+          () => AgentSettingsNotifier(
             supportDirectory: root,
             workspaceDirectory: root,
             environment: const {},
@@ -182,11 +200,8 @@ User instructions.
 ''');
 
     final storage = _MemoryLocalStorage();
-    final provider = StateNotifierProvider<AgentChatNotifier, AgentChatState>((
-      ref,
-    ) {
+    final provider = NotifierProvider<AgentChatNotifier, AgentChatState>(() {
       return AgentChatNotifier(
-        ref,
         supportDir: supportDir,
         workspaceDir: workspaceDir,
         skillEnvironment: const {},
@@ -196,8 +211,7 @@ User instructions.
       overrides: [
         localStorageServiceProvider.overrideWithValue(storage),
         agentSettingsProvider.overrideWith(
-          (ref) => AgentSettingsNotifier(
-            ref,
+          () => AgentSettingsNotifier(
             supportDirectory: supportDir,
             workspaceDirectory: workspaceDir,
             environment: const {},
@@ -239,22 +253,18 @@ User instructions.
       await _writeProjectSkill(projectB, 'project-b-skill');
       var currentProject = projectA;
       final storage = _MemoryLocalStorage();
-      final provider = StateNotifierProvider<AgentChatNotifier, AgentChatState>(
-        (ref) {
-          return AgentChatNotifier(
-            ref,
-            supportDir: supportDir,
-            skillEnvironment: const {},
-            imageProjectDirectoryResolver: () => Future.value(currentProject),
-          );
-        },
-      );
+      final provider = NotifierProvider<AgentChatNotifier, AgentChatState>(() {
+        return AgentChatNotifier(
+          supportDir: supportDir,
+          skillEnvironment: const {},
+          imageProjectDirectoryResolver: () => Future.value(currentProject),
+        );
+      });
       final container = ProviderContainer(
         overrides: [
           localStorageServiceProvider.overrideWithValue(storage),
           agentSettingsProvider.overrideWith(
-            (ref) => AgentSettingsNotifier(
-              ref,
+            () => AgentSettingsNotifier(
               supportDirectory: supportDir,
               environment: const {},
               workspaceDirectoryResolver: () => Future.value(currentProject),
@@ -286,7 +296,7 @@ User instructions.
     late Directory tempDir;
     late _MemoryLocalStorage storage;
     late ProviderContainer container;
-    late StateNotifierProvider<AgentChatNotifier, AgentChatState> provider;
+    final provider = agentChatNotifierProvider;
     late JsonlSessionRepo sessionRepo;
     late List<AgentChatRequest> requests;
     late AgentWireCompletion wireCompletion;
@@ -313,20 +323,18 @@ User instructions.
           AgentWireFinish(stopReason: StopReason.stop),
         ]);
       };
-      provider = StateNotifierProvider<AgentChatNotifier, AgentChatState>((
-        ref,
-      ) {
-        return AgentChatNotifier(
-          ref,
-          supportDir: tempDir,
-          workspaceDir: tempDir,
-          presetSkills: const [_testSkill, _mixedCaseSkill],
-          sessionRepo: sessionRepo,
-          completeRequest: (request) => wireCompletion(request),
-        );
-      });
       container = ProviderContainer(
         overrides: [
+          provider.overrideWith(
+            () => AgentChatNotifier(
+              supportDir: tempDir,
+              workspaceDir: tempDir,
+              presetSkills: const [_testSkill, _mixedCaseSkill],
+              sessionRepo: sessionRepo,
+              completeRequest: (request) => wireCompletion(request),
+              retryPolicy: _fastRetry,
+            ),
+          ),
           androidForegroundTaskServiceProvider.overrideWithValue(
             AndroidForegroundTaskService(
               supported: true,
@@ -336,8 +344,7 @@ User instructions.
           ),
           localStorageServiceProvider.overrideWithValue(storage),
           agentSettingsProvider.overrideWith(
-            (ref) => AgentSettingsNotifier(
-              ref,
+            () => AgentSettingsNotifier(
               supportDirectory: tempDir,
               workspaceDirectory: tempDir,
               environment: const {},
@@ -688,6 +695,460 @@ User instructions.
       },
     );
 
+    test(
+      'custom reasoning follows a session choice on its exact provider and model',
+      () async {
+        final config = container.read(promptAssistantConfigProvider.notifier);
+        const id = 'gemini-carbon';
+        for (final name in ['first', 'second']) {
+          await config.upsertProvider(
+            ProviderPreset.openaiCompatibleChat.createConfig(id: name),
+          );
+          await config.addProviderModels(name, [
+            id,
+          ], source: ModelSource.manual);
+        }
+        final chat = container.read(provider.notifier);
+        await chat.selectChatModel('first', id);
+        final original = container.read(provider).activeSessionId;
+        expect(container.read(provider).availableThinkingLevels, [
+          null,
+          ThinkingLevel.low,
+          ThinkingLevel.medium,
+          ThinkingLevel.high,
+        ]);
+        await chat.send('default');
+        await chat.setThinkingLevel(ThinkingLevel.high);
+        await chat.send('selected');
+        await chat.selectChatModel('second', id);
+        expect(container.read(provider).thinkingLevel, isNull);
+        await chat.send('other provider');
+        await chat.setThinkingLevel(ThinkingLevel.low);
+        await chat.send('other choice');
+        await chat.newSession();
+        await chat.switchSession(original);
+        await chat.send('restored on other provider');
+        await chat.selectChatModel('first', id);
+        await chat.send('restored on first provider');
+        await chat.setThinkingLevel(null);
+        await chat.send('back to default');
+        expect(requests.map((request) => request.reasoningRequest?.effort), [
+          null,
+          'high',
+          null,
+          'low',
+          'low',
+          'high',
+          null,
+        ]);
+      },
+    );
+
+    group('configured chat menu', () {
+      setUp(() async {
+        const id = 'gemini-carbon';
+        final config = container.read(promptAssistantConfigProvider.notifier);
+        await config.upsertProvider(
+          ProviderPreset.openaiCompatibleChat.createConfig(id: 'relay'),
+        );
+        await config.addProviderModels('relay', [
+          id,
+        ], source: ModelSource.manual);
+        final chat = container.read(provider.notifier);
+        await chat.selectChatModel('relay', id);
+      });
+
+      test('resetting the format allows the same chat effort again', () async {
+        final chat = container.read(provider.notifier);
+        final config = container.read(promptAssistantConfigProvider.notifier);
+        await chat.setThinkingLevel(ThinkingLevel.high);
+        await config.setModelReasoningFormat('relay', 'gemini-carbon', null);
+        expect(container.read(provider).thinkingLevel, isNull);
+        await chat.setThinkingLevel(ThinkingLevel.high);
+        expect(container.read(provider).thinkingLevel, ThinkingLevel.high);
+        await chat.send('reselected');
+        expect(requests.single.reasoningRequest?.effort, 'high');
+      });
+
+      test(
+        'a legacy custom selection belongs to its original declaration',
+        () async {
+          const model = 'gemini-carbon';
+          final current = container.read(promptAssistantConfigProvider);
+          final legacyConfig = current.copyWith(
+            providers: [
+              for (final p in current.providers)
+                if (p.id == 'relay')
+                  p.copyWith(
+                    modelReasoningFormats: {
+                      model: ModelReasoningFormat.chatEffort,
+                    },
+                  )
+                else
+                  p,
+            ],
+          );
+          await storage.setSetting(
+            StorageKeys.promptAssistantConfigJson,
+            legacyConfig.encode(),
+          );
+          container.invalidate(promptAssistantConfigProvider);
+          final config = container.read(promptAssistantConfigProvider.notifier);
+          final legacy = await sessionRepo.create(
+            const SessionCreateOptions(id: 'legacy-custom'),
+          );
+          await legacy.appendEntry(
+            ModelChangeEntry(
+              id: legacy.idGenerator(),
+              provider: 'relay',
+              modelId: model,
+            ),
+            'main',
+          );
+          await legacy.appendEntry(
+            ThinkingLevelEntry(id: legacy.idGenerator(), thinkingLevel: 'high'),
+            'main',
+          );
+          final chat = container.read(provider.notifier);
+          await chat.switchSession('legacy-custom');
+          expect(container.read(provider).thinkingLevel, ThinkingLevel.high);
+          await config.setModelReasoningFormat('relay', model, null);
+          await config.setTaskThinkingLevel(
+            AssistantTaskType.translate,
+            'relay',
+            model,
+            AssistantThinkingLevel.low,
+          );
+          expect(container.read(provider).thinkingLevel, isNull);
+          await chat.setThinkingLevel(ThinkingLevel.high);
+          await chat.send('selected again');
+          expect(requests.single.reasoningRequest?.effort, 'high');
+        },
+      );
+
+      test(
+        'a task declaration cannot restore chat effort from session history',
+        () async {
+          final chat = container.read(provider.notifier);
+          final config = container.read(promptAssistantConfigProvider.notifier);
+          const model = 'gemini-carbon';
+          await chat.setThinkingLevel(ThinkingLevel.high);
+          await chat.send('old selection');
+          final original = container.read(provider).activeSessionId;
+          await chat.newSession();
+          await config.setModelReasoningFormat('relay', model, null);
+          await config.setTaskThinkingLevel(
+            AssistantTaskType.translate,
+            'relay',
+            model,
+            AssistantThinkingLevel.low,
+          );
+          expect(container.read(provider).thinkingLevel, isNull);
+          await chat.switchSession(original);
+          expect(container.read(provider).thinkingLevel, isNull);
+          await chat.retryLastMessage();
+          expect(requests.last.reasoningRequest?.effort, isNull);
+          expect((await chat.rewindLastUserMessage())?.text, 'old selection');
+          await config.addProviderModels('relay', [
+            'another-model',
+          ], source: ModelSource.manual);
+          await chat.selectChatModel('relay', 'another-model');
+          await chat.selectChatModel('relay', model);
+          expect(container.read(provider).thinkingLevel, isNull);
+          await chat.send('still default');
+          await chat.newSession();
+          expect(container.read(provider).thinkingLevel, isNull);
+          expect(requests.map((r) => r.reasoningRequest?.effort), [
+            'high',
+            null,
+            null,
+          ]);
+        },
+      );
+
+      test(
+        'first send waits for the selected effort while provider storage is paused',
+        () async {
+          final chat = container.read(provider.notifier);
+          final writing = Completer<void>();
+          final release = Completer<void>();
+          storage.beforeConfigWrite = () {
+            writing.complete();
+            return release.future;
+          };
+          final selected = chat.setThinkingLevel(ThinkingLevel.high);
+          await writing.future;
+          final sent = chat.send('hello');
+          await Future<void>.delayed(Duration.zero);
+          final statusWhileBlocked = container.read(provider).status;
+          release.complete();
+          await Future.wait([selected, sent]);
+          expect(statusWhileBlocked, AgentChatRunStatus.idle);
+          expect(container.read(provider).thinkingLevel, ThinkingLevel.high);
+          expect(requests.single.model, 'gemini-carbon');
+          expect(requests.single.reasoningRequest?.effort, 'high');
+        },
+      );
+
+      testWidgets(
+        'selecting a level in the combined menu reaches the next request',
+        (tester) async {
+          final chat = container.read(provider.notifier);
+          final state = container.read(provider);
+          late Future<void> dispatch;
+          await tester.pumpWidget(
+            MaterialApp(
+              builder: (_, child) => UncontrolledProviderScope(
+                container: container,
+                child: child!,
+              ),
+              localizationsDelegates: AppLocalizations.localizationsDelegates,
+              supportedLocales: AppLocalizations.supportedLocales,
+              home: Scaffold(
+                body: Center(
+                  child: AgentChatConfigurationControl(
+                    config: container.read(promptAssistantConfigProvider),
+                    agentSettings: container.read(agentSettingsProvider),
+                    routeLabel: state.routeLabel,
+                    routeError: state.routeError,
+                    enabled: true,
+                    thinkingLevel: state.thinkingLevel,
+                    availableThinkingLevels: state.availableThinkingLevels,
+                    onModelSelected: chat.selectChatModel,
+                    onThinkingSelected: (level) =>
+                        dispatch = tester.runAsync(() async {
+                          await chat.setThinkingLevel(level);
+                          await chat.send('hello');
+                        }),
+                  ),
+                ),
+              ),
+            ),
+          );
+          await tester.tap(
+            find.byKey(const ValueKey('agent-chat-model-selector')),
+          );
+          await tester.pumpAndSettle();
+          final high = find.byKey(
+            const ValueKey('agent-chat-thinking-option-high'),
+          );
+          await tester.scrollUntilVisible(
+            high,
+            100,
+            scrollable: find
+                .descendant(
+                  of: find.byKey(
+                    const ValueKey('agent-chat-configuration-options'),
+                  ),
+                  matching: find.byType(Scrollable),
+                )
+                .first,
+          );
+          await Scrollable.ensureVisible(tester.element(high), alignment: 0.5);
+          expect(high.hitTestable(), findsOneWidget);
+          await tester.tap(high);
+          await tester.pump();
+          await dispatch;
+          await tester.pumpAndSettle();
+          expect(tester.takeException(), isNull);
+          expect(container.read(provider).thinkingLevel, ThinkingLevel.high);
+          expect(requests.single.model, 'gemini-carbon');
+          expect(requests.single.reasoningRequest?.effort, 'high');
+        },
+      );
+
+      test(
+        'retry after a reasoning error preserves model default on the new branch',
+        () async {
+          final chat = container.read(provider.notifier);
+          wireCompletion = (request) {
+            requests.add(request);
+            return Stream.fromIterable(
+              requests.length == 1
+                  ? const [_rejectedReasoning, _droppedStream]
+                  : const [
+                      AgentWireTextDelta('ok'),
+                      AgentWireFinish(stopReason: StopReason.stop),
+                    ],
+            );
+          };
+          await chat.setThinkingLevel(ThinkingLevel.high);
+          await chat.send('same prompt');
+          expect(
+            container.read(provider).error,
+            contains('Unsupported reasoning_effort'),
+          );
+          await chat.setThinkingLevel(null);
+          final config = container.read(promptAssistantConfigProvider.notifier);
+          final relay = container
+              .read(promptAssistantConfigProvider)
+              .providers
+              .firstWhere((p) => p.id == 'relay');
+          await config.upsertProvider(relay.copyWith(enabled: false));
+          await chat.retryLastMessage();
+          expect(requests, hasLength(1));
+          expect(
+            container
+                .read(provider)
+                .messages
+                .whereType<UserMessage>()
+                .last
+                .text,
+            'same prompt',
+          );
+          await config.upsertProvider(relay);
+          await chat.retryLastMessage();
+          final original = container.read(provider).activeSessionId;
+          await chat.newSession();
+          await chat.switchSession(original);
+          await chat.send('follow up');
+          expect(requests.map((r) => r.reasoningRequest?.effort), [
+            'high',
+            null,
+            null,
+          ]);
+          expect(
+            requests[1].messages.whereType<UserMessage>().last.text,
+            'same prompt',
+          );
+          expect(container.read(provider).thinkingLevel, isNull);
+        },
+      );
+    });
+
+    test(
+      'legacy thinking entries belong only to the provider and model that replied',
+      () async {
+        final config = container.read(promptAssistantConfigProvider.notifier);
+        const model = 'gpt-5.2';
+        for (final id in ['relay-a', 'relay-b']) {
+          await config.upsertProvider(
+            ProviderPreset.openaiCompatibleResponses.createConfig(id: id),
+          );
+          await config.addProviderModels(id, [
+            model,
+          ], source: ModelSource.manual);
+        }
+        final legacy = await sessionRepo.create(
+          const SessionCreateOptions(id: 'legacy-reasoning'),
+        );
+        await legacy.appendEntry(
+          ThinkingLevelEntry(id: legacy.idGenerator(), thinkingLevel: 'high'),
+          'main',
+        );
+        await legacy.appendMessage(UserMessage.text('old question'));
+        await legacy.appendMessage(
+          AssistantMessage(
+            content: const [AssistantTextContent('old answer')],
+            stopReason: StopReason.stop,
+            provider: 'relay-a',
+            model: model,
+          ),
+        );
+        final chat = container.read(provider.notifier);
+        await chat.selectChatModel('relay-a', model);
+        await chat.switchSession('legacy-reasoning');
+        await chat.send('restored');
+        await chat.selectChatModel('relay-b', model);
+        await chat.send('other provider');
+        await chat.selectChatModel('relay-a', model);
+        await chat.send('back');
+        expect(
+          requests.map((r) => (r.provider.id, r.reasoningRequest?.effort)),
+          [('relay-a', 'high'), ('relay-b', null), ('relay-a', 'high')],
+        );
+      },
+    );
+
+    test(
+      'the current model gets the final legacy thinking level without a reply',
+      () async {
+        final config = container.read(promptAssistantConfigProvider.notifier);
+        final relay = ProviderPreset.openaiCompatibleResponses.createConfig();
+        const firstModel = 'gpt-5.1';
+        const currentModel = 'gpt-5.2';
+        await config.upsertProvider(relay);
+        await config.addProviderModels(relay.id, [
+          firstModel,
+          currentModel,
+        ], source: ModelSource.manual);
+        final legacy = await sessionRepo.create(
+          const SessionCreateOptions(id: 'legacy-pending-thinking'),
+        );
+        await legacy.appendMessage(UserMessage.text('old question'));
+        await legacy.appendMessage(
+          AssistantMessage(
+            content: const [AssistantTextContent('old answer')],
+            stopReason: StopReason.stop,
+            provider: relay.id,
+            model: firstModel,
+          ),
+        );
+        await legacy.appendEntry(
+          ThinkingLevelEntry(id: legacy.idGenerator(), thinkingLevel: 'high'),
+          'main',
+        );
+
+        final chat = container.read(provider.notifier);
+        await chat.selectChatModel(relay.id, currentModel);
+        await chat.switchSession('legacy-pending-thinking');
+        expect(container.read(provider).thinkingLevel, ThinkingLevel.high);
+        await chat.selectChatModel(relay.id, firstModel);
+        expect(container.read(provider).thinkingLevel, isNull);
+      },
+    );
+
+    test(
+      'known Responses model persists explicit off separately from model default',
+      () async {
+        final config = container.read(promptAssistantConfigProvider.notifier);
+        const model = 'gpt-5.2';
+        await config.upsertProvider(
+          ProviderPreset.openaiCompatibleResponses.createConfig(id: 'relay'),
+        );
+        await config.addProviderModels('relay', [
+          model,
+        ], source: ModelSource.manual);
+        final chat = container.read(provider.notifier);
+        await chat.selectChatModel('relay', model);
+        expect(
+          container.read(provider).availableThinkingLevels,
+          containsAll([null, ThinkingLevel.off]),
+        );
+        await chat.setThinkingLevel(ThinkingLevel.off);
+        final original = container.read(provider).activeSessionId;
+        await chat.newSession();
+        await chat.switchSession(original);
+        expect(container.read(provider).thinkingLevel, ThinkingLevel.off);
+        await chat.send('explicit off');
+        await chat.setThinkingLevel(null);
+        await chat.send('default');
+        expect(requests.first.reasoningRequest?.enabled, isFalse);
+        expect(requests.last.reasoningRequest!.enabled, isNull);
+        expect(requests.last.reasoningRequest!.effort, isNull);
+      },
+    );
+
+    test(
+      'model default retains the DeepSeek replay protocol in chat requests',
+      () async {
+        final config = container.read(promptAssistantConfigProvider.notifier);
+        final relay = ProviderPreset.deepseek.createConfig();
+        const model = 'deepseek-reasoner';
+        await config.upsertProvider(relay);
+        await config.addProviderModels(relay.id, [
+          model,
+        ], source: ModelSource.manual);
+        final chat = container.read(provider.notifier);
+        await chat.selectChatModel(relay.id, model);
+        await chat.send('model default');
+        final request = requests.single;
+        expect(request.reasoning, isNull);
+        expect(request.reasoningRequest!.enabled, isNull);
+        expect(request.reasoningRequest!.preserveReasoningContent, isTrue);
+      },
+    );
+
     test('temporary route loss preserves the session thinking level', () async {
       final configNotifier = container.read(
         promptAssistantConfigProvider.notifier,
@@ -780,8 +1241,8 @@ User instructions.
 
         final state = container.read(provider);
         expect(state.routeReady, isTrue);
-        expect(state.availableThinkingLevels, isEmpty);
-        expect(state.thinkingLevel, ThinkingLevel.off);
+        expect(state.availableThinkingLevels, [null]);
+        expect(state.thinkingLevel, isNull);
         expect(
           container.read(agentSettingsProvider).settings.chat.modelReference,
           const AgentModelReference(
@@ -949,6 +1410,245 @@ User instructions.
             .text,
         'first second',
       );
+    });
+
+    group('auto retry', () {
+      test(
+        'a stream timeout retries when the provider is named Billing',
+        () async {
+          final config = container.read(promptAssistantConfigProvider.notifier);
+          final relay = ProviderPreset.openaiCompatibleChat
+              .createConfig()
+              .copyWith(name: 'Billing');
+          const model = 'gpt-5.2';
+          await config.upsertProvider(relay);
+          await config.addProviderModels(relay.id, [
+            model,
+          ], source: ModelSource.manual);
+          final chat = container.read(provider.notifier);
+          await chat.selectChatModel(relay.id, model);
+          wireCompletion = (request) async* {
+            requests.add(request);
+            if (requests.length == 1) {
+              yield agentWireErrorFrom(
+                ProviderResponseError('Upstream timeout', null),
+                request,
+              );
+            } else {
+              yield const AgentWireTextDelta('Recovered');
+              yield const AgentWireFinish(stopReason: StopReason.stop);
+            }
+          };
+          final retryErrors = <String>[];
+          final subscription = container.listen(provider, (_, next) {
+            if (next.retryStatus case final status?) {
+              retryErrors.add(status.errorMessage);
+            }
+          });
+          addTearDown(subscription.close);
+
+          await chat.send('Test');
+
+          expect(requests, hasLength(2));
+          expect(retryErrors, contains(contains('provider=Billing')));
+          expect(
+            container
+                .read(provider)
+                .messages
+                .whereType<AssistantMessage>()
+                .last
+                .text,
+            'Recovered',
+          );
+        },
+      );
+
+      test('transient failure continues the same operation', () async {
+        await _selectChatModel(container);
+        wireCompletion = (request) async* {
+          requests.add(request);
+          if (requests.length == 1) {
+            yield const AgentWireTextDelta('half an ans');
+            yield _droppedStream;
+          } else {
+            yield AgentWireTextDelta(
+              requests.length == 2 ? 'Recovered' : 'Next answer',
+            );
+            yield const AgentWireFinish(stopReason: StopReason.stop);
+          }
+        };
+        final phases = <AgentChatWorkPhase>[];
+        final retryStatuses = <AgentChatRetryStatus>[];
+        final errors = <String>[];
+        final subscription = container.listen(provider, (_, next) {
+          phases.add(next.workPhase);
+          if (next.retryStatus case final status?) retryStatuses.add(status);
+          if (next.error.isNotEmpty) errors.add(next.error);
+        });
+        addTearDown(subscription.close);
+        final notifier = container.read(provider.notifier);
+
+        await notifier.send('Test');
+
+        expect(requests, hasLength(2));
+        expect(requests[1].messages, hasLength(requests[0].messages.length));
+        expect(requests[1].messages.whereType<AssistantMessage>(), isEmpty);
+        expect(retryStatuses.first.attempt, 1);
+        expect(retryStatuses.first.maxAttempts, 3);
+        expect(phases, contains(AgentChatWorkPhase.retrying));
+        expect(errors, isEmpty);
+        final state = container.read(provider);
+        expect(state.retryStatus, isNull);
+        expect(state.status, AgentChatRunStatus.idle);
+        expect(
+          state.messages.whereType<AssistantMessage>().map((m) => m.text),
+          ['half an ans', 'Recovered'],
+        );
+        final records = await _sessionRecords(
+          sessionRepo,
+          state.activeSessionId,
+        );
+        expect(records.whereType<OperationStartedRecord>(), hasLength(1));
+        expect(
+          records.whereType<OperationFinishedRecord>().single.outcome,
+          OperationOutcomeKind.completed,
+        );
+
+        await notifier.send('Next');
+        final replayed = requests[2].messages.whereType<AssistantMessage>().map(
+          (m) => m.text,
+        );
+        expect(replayed, ['Recovered']);
+      });
+
+      test('exhausted retries surface the final error and count', () async {
+        await _selectChatModel(container);
+        wireCompletion = (request) {
+          requests.add(request);
+          return Stream<AgentWireEvent>.value(
+            const AgentWireError(
+              'LLM request failed: HTTP 503: provider=DeepSeek: overloaded',
+            ),
+          );
+        };
+
+        await container.read(provider.notifier).send('Test');
+
+        expect(requests, hasLength(4));
+        final state = container.read(provider);
+        expect(state.error, contains('HTTP 503'));
+        expect(state.errorRetryAttempts, 3);
+        expect(state.retryStatus, isNull);
+        expect(state.status, AgentChatRunStatus.idle);
+        final records = await _sessionRecords(
+          sessionRepo,
+          state.activeSessionId,
+        );
+        expect(records.whereType<OperationStartedRecord>(), hasLength(1));
+        final finished = records.whereType<OperationFinishedRecord>().single;
+        expect(finished.outcome, OperationOutcomeKind.failed);
+        expect(finished.error?.message, contains('HTTP 503'));
+      });
+
+      test('deterministic failure is reported without retrying', () async {
+        await _selectChatModel(container);
+        wireCompletion = (request) {
+          requests.add(request);
+          return Stream<AgentWireEvent>.value(
+            const AgentWireError(
+              'LLM request failed: HTTP 401: provider=DeepSeek: bad key',
+            ),
+          );
+        };
+
+        await container.read(provider.notifier).send('Test');
+
+        expect(requests, hasLength(1));
+        final state = container.read(provider);
+        expect(state.error, contains('HTTP 401'));
+        expect(state.errorRetryAttempts, 0);
+      });
+
+      test('stopping during backoff cancels the retry cleanly', () async {
+        await _selectChatModel(container);
+        wireCompletion = (request) {
+          requests.add(request);
+          return Stream<AgentWireEvent>.value(_droppedStream);
+        };
+        final notifier = container.read(provider.notifier);
+        Future<void>? stopping;
+        final subscription = container.listen(provider, (_, next) {
+          if (next.retryStatus != null && stopping == null) {
+            stopping = Future<void>.microtask(notifier.abort);
+          }
+        });
+        addTearDown(subscription.close);
+
+        await notifier.send('Test');
+        await stopping;
+
+        expect(requests, hasLength(1));
+        final state = container.read(provider);
+        expect(state.error, isEmpty);
+        expect(state.retryStatus, isNull);
+        expect(state.status, AgentChatRunStatus.idle);
+        expect(state.workPhase, AgentChatWorkPhase.idle);
+        final records = await _sessionRecords(
+          sessionRepo,
+          state.activeSessionId,
+        );
+        expect(records.whereType<OperationStartedRecord>(), hasLength(1));
+        expect(
+          records.whereType<OperationFinishedRecord>().single.outcome,
+          OperationOutcomeKind.aborted,
+        );
+
+        wireCompletion = (request) {
+          requests.add(request);
+          return Stream<AgentWireEvent>.fromIterable(const [
+            AgentWireTextDelta('fresh'),
+            AgentWireFinish(stopReason: StopReason.stop),
+          ]);
+        };
+        await notifier.send('Again');
+        expect(requests, hasLength(2));
+      });
+
+      test('a retried tool loop finishes before the send settles', () async {
+        await _selectChatModel(container);
+        wireCompletion = (request) async* {
+          requests.add(request);
+          switch (requests.length) {
+            case 1:
+              yield _droppedStream;
+            case 2:
+              yield const AgentWireTextDelta('Looking that up now.');
+              yield const AgentWireToolCallDone(
+                id: 'call_1',
+                name: 'read_skill',
+                arguments: {'name': 'test-skill'},
+              );
+              yield const AgentWireFinish(stopReason: StopReason.toolUse);
+            default:
+              yield AgentWireTextDelta('Answer ${requests.length}.');
+              yield const AgentWireFinish(stopReason: StopReason.stop);
+          }
+        };
+        final notifier = container.read(provider.notifier);
+
+        await notifier.send('Test');
+
+        expect(requests, hasLength(3));
+        expect(
+          requests[2].messages.whereType<ToolResultMessage>().single.toolCallId,
+          'call_1',
+        );
+        final state = container.read(provider);
+        expect(state.status, AgentChatRunStatus.idle);
+        expect(state.error, isEmpty);
+        await notifier.send('Follow-up');
+        expect(requests, hasLength(4));
+      });
     });
 
     test('persists steering and follow-up input before delivery', () async {
@@ -1234,7 +1934,9 @@ User instructions.
 
       await notifier.newSession();
       await notifier.switchSession(sessionId);
-      final checkpoint = await notifier.beginEditedMessageRewind();
+      final checkpoint = await notifier.beginEditedMessageRewind(
+        notifier.lastVisibleUserEntry!.id,
+      );
       expect(checkpoint, isNotNull);
       final rewind = checkpoint!;
       expect(rewind.resources, isEmpty);
@@ -1318,6 +2020,108 @@ User instructions.
         expect(container.read(provider).compacting, isFalse);
       },
     );
+
+    Future<void> seedCompactableSession(AgentChatNotifier notifier) async {
+      await _selectChatModel(container);
+      final longReply = List.filled(20000, 'word').join(' ');
+      wireCompletion = (request) {
+        requests.add(request);
+        return Stream<AgentWireEvent>.fromIterable([
+          AgentWireTextDelta(longReply),
+          const AgentWireFinish(stopReason: StopReason.stop),
+        ]);
+      };
+      await notifier.send('first');
+      await notifier.send('second');
+      requests.clear();
+    }
+
+    test('stopping a manual compaction during backoff ends it', () async {
+      final notifier = container.read(provider.notifier);
+      await seedCompactableSession(notifier);
+      wireCompletion = (request) {
+        requests.add(request);
+        return Stream<AgentWireEvent>.value(_rejectedReasoning);
+      };
+
+      final rejection = await notifier.compactNow();
+      expect(
+        rejection,
+        isA<AgentChatCompactionFailed>().having(
+          (outcome) => outcome.message,
+          'message',
+          contains(_rejectedReasoning.message),
+        ),
+      );
+      expect(requests, hasLength(1));
+      requests.clear();
+
+      final config = container.read(promptAssistantConfigProvider.notifier);
+      await config.upsertProvider(
+        ProviderPreset.deepseek.createConfig().copyWith(name: 'Billing'),
+      );
+      wireCompletion = (request) {
+        requests.add(request);
+        return Stream<AgentWireEvent>.value(
+          agentWireErrorFrom(
+            ProviderResponseError('Upstream timeout', null),
+            request,
+          ),
+        );
+      };
+      Future<void>? stopping;
+      String? retryError;
+      final subscription = container.listen(provider, (_, next) {
+        if (next.retryStatus case final status? when stopping == null) {
+          retryError = status.errorMessage;
+          stopping = Future<void>.microtask(notifier.abort);
+        }
+      });
+      addTearDown(subscription.close);
+
+      final outcome = await notifier.compactNow();
+      await stopping;
+
+      expect(stopping, isNotNull);
+      expect(retryError, contains('provider=Billing'));
+      expect(requests, hasLength(1));
+      expect(outcome, isA<AgentChatCompactionCancelled>());
+      final state = container.read(provider);
+      expect(state.compacting, isFalse);
+      expect(state.retryStatus, isNull);
+      expect(state.error, isEmpty);
+      expect(state.workPhase, AgentChatWorkPhase.idle);
+    });
+
+    test('a summary that returns after stopping is not written', () async {
+      final notifier = container.read(provider.notifier);
+      await seedCompactableSession(notifier);
+      final contextBefore = container.read(provider).messages;
+      Future<void>? stopping;
+      wireCompletion = (request) {
+        requests.add(request);
+        stopping ??= notifier.abort();
+        return Stream<AgentWireEvent>.fromIterable(const [
+          AgentWireTextDelta('summary'),
+          AgentWireFinish(stopReason: StopReason.stop),
+        ]);
+      };
+
+      final outcome = await notifier.compactNow();
+      await stopping;
+
+      expect(requests, isNotEmpty);
+      expect(outcome, isA<AgentChatCompactionCancelled>());
+      final state = container.read(provider);
+      expect(state.messages, contextBefore);
+      final metadata = (await sessionRepo.list()).firstWhere(
+        (item) => item.id == state.activeSessionId,
+      );
+      final entries = await (await sessionRepo.open(
+        metadata,
+      )).findEntriesOnBranch();
+      expect(entries.whereType<CompactionEntry>(), isEmpty);
+    });
 
     test('a manual context window unlocks an unplaceable model', () async {
       final notifier = container.read(provider.notifier);
@@ -1421,6 +2225,16 @@ Future<void> _selectChatModel(ProviderContainer container) async {
   await Future<void>.delayed(const Duration(milliseconds: 10));
 }
 
+Future<List<LaneRecord>> _sessionRecords(
+  JsonlSessionRepo repo,
+  String sessionId,
+) async {
+  final metadata = (await repo.list()).firstWhere(
+    (item) => item.id == sessionId,
+  );
+  return (await repo.open(metadata)).findRecords();
+}
+
 Future<void> _writeProjectSkill(Directory project, String name) async {
   final skillDirectory = Directory(
     '${project.path}${Platform.pathSeparator}.pi'
@@ -1456,7 +2270,7 @@ AssistantMessage _assistant(Usage usage) {
 // settings reject every write until their own load finishes.
 Future<void> _waitForInitialized(
   ProviderContainer container,
-  StateNotifierProvider<AgentChatNotifier, AgentChatState> provider,
+  NotifierProvider<AgentChatNotifier, AgentChatState> provider,
 ) async {
   await _waitForProviderState<AgentChatState>(
     container,
@@ -1506,7 +2320,7 @@ Future<void> _waitForCondition(
 
 Future<void> _waitForSkill(
   ProviderContainer container,
-  StateNotifierProvider<AgentChatNotifier, AgentChatState> provider,
+  NotifierProvider<AgentChatNotifier, AgentChatState> provider,
   String name,
 ) => _waitForProviderState<AgentChatState>(
   container,
@@ -1517,6 +2331,7 @@ Future<void> _waitForSkill(
 
 class _MemoryLocalStorage extends LocalStorageService {
   final Map<String, Object?> _values = {};
+  Future<void> Function()? beforeConfigWrite;
 
   @override
   T? getSetting<T>(String key, {T? defaultValue}) {
@@ -1526,6 +2341,9 @@ class _MemoryLocalStorage extends LocalStorageService {
 
   @override
   Future<void> setSetting<T>(String key, T value) async {
+    if (key == StorageKeys.promptAssistantConfigJson) {
+      await beforeConfigWrite?.call();
+    }
     _values[key] = value;
   }
 }

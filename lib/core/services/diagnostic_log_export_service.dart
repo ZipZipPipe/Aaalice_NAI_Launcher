@@ -10,9 +10,11 @@ import 'package:path_provider/path_provider.dart';
 import '../agent/private_data_guard.dart';
 import '../constants/app_version.dart';
 import '../utils/app_logger.dart';
-import '../utils/fatal_diagnostics.dart';
+import '../utils/log_redaction.dart';
+import '../utils/log_url_redaction.dart';
 import 'diagnostic_agent_audit.dart';
 import 'file_export_service.dart';
+import 'update_installer_service.dart';
 
 final diagnosticLogExportServiceProvider = Provider<DiagnosticLogExportService>(
   (ref) => DiagnosticLogExportService(),
@@ -38,7 +40,9 @@ class DiagnosticLogExportService {
   DiagnosticLogExportService({
     Future<List<File>> Function()? loadLogFiles,
     Future<List<File>> Function()? loadCrashFiles,
+    Future<List<File>> Function()? loadUpdaterFiles,
     Future<File?> Function()? loadAgentAuditFile,
+    Future<File?> Function()? loadMcpAuditFile,
     Future<void> Function()? flushLogs,
     DiagnosticArchiveExporter? exportArchive,
     DateTime Function()? now,
@@ -49,7 +53,9 @@ class DiagnosticLogExportService {
        assert(maxTotalSourceBytes > 0),
        _loadLogFiles = loadLogFiles ?? AppLogger.getLogFiles,
        _loadCrashFiles = loadCrashFiles ?? _defaultCrashFiles,
+       _loadUpdaterFiles = loadUpdaterFiles ?? _defaultUpdaterFiles,
        _loadAgentAuditFile = loadAgentAuditFile ?? _defaultAgentAuditFile,
+       _loadMcpAuditFile = loadMcpAuditFile ?? _defaultMcpAuditFile,
        _flushLogs = flushLogs ?? AppLogger.flush,
        _exportArchive = exportArchive ?? _defaultExportArchive,
        _now = now ?? DateTime.now,
@@ -64,7 +70,9 @@ class DiagnosticLogExportService {
 
   final Future<List<File>> Function() _loadLogFiles;
   final Future<List<File>> Function() _loadCrashFiles;
+  final Future<List<File>> Function() _loadUpdaterFiles;
   final Future<File?> Function() _loadAgentAuditFile;
+  final Future<File?> Function() _loadMcpAuditFile;
   final Future<void> Function() _flushLogs;
   final DiagnosticArchiveExporter _exportArchive;
   final DateTime Function() _now;
@@ -72,41 +80,18 @@ class DiagnosticLogExportService {
   final int _maxPerFileBytes;
   final int _maxTotalSourceBytes;
 
-  static Future<void> cleanupStaleTemporaryFiles({
-    Duration minimumAge = Duration.zero,
-    DateTime? now,
-  }) async {
-    final temporaryDirectory = await getTemporaryDirectory();
-    final exportDirectory = Directory(
-      p.join(temporaryDirectory.path, 'exports'),
-    );
-    if (!await exportDirectory.exists()) return;
-
-    final cutoff = (now ?? DateTime.now()).subtract(minimumAge);
-    await for (final entity in exportDirectory.list(followLinks: false)) {
-      final name = p.basename(entity.path);
-      final isDiagnosticExport = name.contains('_nai-launcher-diagnostics-');
-      if (!isDiagnosticExport) continue;
-      try {
-        final modified = await entity.stat().then((stat) => stat.modified);
-        if (modified.isAfter(cutoff)) continue;
-        await entity.delete(recursive: entity is Directory);
-      } on FileSystemException {
-        // A locked export is either still in use or will be retried next launch.
-      }
-    }
-  }
-
   Future<DiagnosticLogExportResult> export({
     required String dialogTitle,
   }) async {
     await _flushLogs();
     final files = await _collectReadableFiles();
-    final auditFile = await _loadAgentAuditFile();
-    final auditPath = auditFile != null && await auditFile.exists()
-        ? auditFile.path
-        : null;
-    if (auditPath != null) files.insert(0, auditFile!);
+    final auditPaths = <String>{};
+    for (final load in [_loadAgentAuditFile, _loadMcpAuditFile]) {
+      final auditFile = await load();
+      if (auditFile == null || !await auditFile.exists()) continue;
+      if (!auditPaths.add(auditFile.path)) continue;
+      files.insert(0, auditFile);
+    }
     if (files.isEmpty) {
       return const DiagnosticLogExportResult(DiagnosticLogExportStatus.noLogs);
     }
@@ -128,7 +113,7 @@ class DiagnosticLogExportService {
               archivePath: archivePath,
               stagingDirectoryPath: stagingDirectory.path,
               sourcePaths: sourcePaths,
-              auditPath: auditPath,
+              auditPaths: auditPaths,
               createdAt: timestamp,
               diagnosticsMetadata: diagnosticsMetadata,
               fileLoggingEnabled: fileLoggingEnabled,
@@ -136,7 +121,7 @@ class DiagnosticLogExportService {
               maxTotalSourceBytes: _maxTotalSourceBytes,
             ),
           );
-          return _exportArchive(archivePath, fileName, dialogTitle);
+          return await _exportArchive(archivePath, fileName, dialogTitle);
         } finally {
           if (await stagingDirectory.exists()) {
             await stagingDirectory.delete(recursive: true);
@@ -156,6 +141,7 @@ class DiagnosticLogExportService {
     final candidates = <File>[
       ...await _loadLogFiles(),
       ...await _loadCrashFiles(),
+      ...await _loadUpdaterFiles(),
     ];
     final files = <File>[];
     final seenPaths = <String>{};
@@ -176,7 +162,7 @@ class DiagnosticLogExportService {
     required String archivePath,
     required String stagingDirectoryPath,
     required List<String> sourcePaths,
-    required String? auditPath,
+    required Set<String> auditPaths,
     required DateTime createdAt,
     required String diagnosticsMetadata,
     required bool fileLoggingEnabled,
@@ -220,7 +206,7 @@ class DiagnosticLogExportService {
             maxBytes: archivedBytes,
             snapshotLength: sourceLength,
             wasTruncated: wasTruncated,
-            isAgentAudit: sourcePath == auditPath,
+            isAgentAudit: auditPaths.contains(sourcePath),
           );
           remainingSourceBytes -= archivedBytes;
           await encoder.addFile(
@@ -243,7 +229,7 @@ class DiagnosticLogExportService {
       final metadata = <String, Object>{
         'schemaVersion': 1,
         'createdAt': createdAt.toUtc().toIso8601String(),
-        'environment': _sanitize(diagnosticsMetadata),
+        'environment': _sanitize(diagnosticsMetadata, multiline: true),
         'fileLoggingEnabled': fileLoggingEnabled,
         'logs': includedNames,
         'truncatedLogs': truncatedNames,
@@ -277,10 +263,21 @@ class DiagnosticLogExportService {
     required bool wasTruncated,
     required bool isAgentAudit,
   }) async {
-    final sink = target.openWrite(encoding: utf8);
     final startOffset = snapshotLength > maxBytes
         ? snapshotLength - maxBytes
         : 0;
+    if (!isAgentAudit &&
+        p.extension(source.path) == '.json' &&
+        await _writeSanitizedJson(
+          source,
+          target,
+          startOffset,
+          snapshotLength,
+        )) {
+      return;
+    }
+
+    final sink = target.openWrite(encoding: utf8);
     var insidePrivateKey =
         !isAgentAudit &&
         await _privateKeyOpenNearOffset(source, startOffset, snapshotLength);
@@ -323,6 +320,26 @@ class DiagnosticLogExportService {
       await sink.flush();
       await sink.close();
     }
+  }
+
+  static Future<bool> _writeSanitizedJson(
+    File source,
+    File target,
+    int startOffset,
+    int snapshotLength,
+  ) async {
+    final Object? sanitized;
+    try {
+      final text = await source
+          .openRead(startOffset, snapshotLength)
+          .transform(utf8.decoder)
+          .join();
+      sanitized = jsonDecode(text, reviver: _sanitizeJsonValue);
+    } on FormatException {
+      return false;
+    }
+    await target.writeAsString(jsonEncode(sanitized), flush: true);
+    return true;
   }
 
   static Future<bool> _startsMidLine(File source, int offset) async {
@@ -390,16 +407,103 @@ class DiagnosticLogExportService {
     r'-----END (?:[A-Z0-9 ]+ )?PRIVATE KEY(?: BLOCK)?-----',
     caseSensitive: false,
   );
+  static final RegExp _linePattern = RegExp(r'[^\r\n]+');
+  static final RegExp _urlField = RegExp(
+    r'''([ \t]+(?:[\w.-]+[=:][ \t]*)?["'`(<]?)?'''
+    '$logUrlPattern',
+    caseSensitive: false,
+    unicode: true,
+  );
 
-  static String _sanitize(String value) {
-    final credentialsRedacted = FatalDiagnostics.redactSensitiveText(value);
-    final pathsRedacted = PrivateDataGuard.redactAbsolutePaths(
-      credentialsRedacted,
+  // The updater embeds its app directory unquoted before this fixed reason.
+  static final RegExp _updaterProxyTimeout = RegExp(
+    r'^(Stdio proxy processes in )(.+)( did not exit within 15 seconds\.)$',
+  );
+
+  static Object? _sanitizeJsonValue(Object? key, Object? value) {
+    if (value is! String) return value;
+    if (key == 'message') {
+      final timeout = _updaterProxyTimeout.firstMatch(value);
+      if (timeout != null) {
+        return '${timeout[1]}${_sanitize(timeout[2]!)}${timeout[3]}';
+      }
+    }
+    return _sanitize(
+      value,
+      multiline: true,
+      jsonKey: key is String ? key : null,
     );
-    if (PrivateDataGuard.detect(pathsRedacted) != null) {
+  }
+
+  static String _sanitize(
+    String value, {
+    bool multiline = false,
+    String? jsonKey,
+  }) {
+    final credentialsRedacted = redactLogText(value);
+    final pathsRedacted = multiline
+        ? credentialsRedacted.replaceAllMapped(
+            _linePattern,
+            (match) => _redactLinePaths(match[0]!),
+          )
+        : _redactLinePaths(credentialsRedacted);
+    final guardedText = jsonKey == null
+        ? pathsRedacted
+        : '${jsonEncode(jsonKey)}: $pathsRedacted';
+    if (PrivateDataGuard.detect(guardedText, absolutePaths: false) != null) {
       return '[REDACTED SENSITIVE LOG LINE]';
     }
     return pathsRedacted;
+  }
+
+  static String _redactLinePaths(String line) {
+    final starts = PrivateDataGuard.absolutePathStarts(line);
+    final lastSingleQuote = line.lastIndexOf("'");
+    final urls = _remoteUrlFields(line).iterator;
+    RegExpMatch? nextUrl() => urls.moveNext() ? urls.current : null;
+    late var url = nextUrl();
+    final redacted = StringBuffer();
+    var cursor = 0;
+    for (final start in starts) {
+      if (start < cursor) continue;
+      while (url != null && url.end <= start) {
+        url = nextUrl();
+      }
+      if (url != null && url.start <= start) continue;
+      final quote = start > 0 ? line[start - 1] : '';
+      var end = line.length;
+      if (quote == "'") {
+        var closing = lastSingleQuote;
+        if (url != null && url[1] != null) {
+          final beforeUrl = line.lastIndexOf("'", url.start - 1);
+          if (beforeUrl >= start) closing = beforeUrl;
+        }
+        if (closing >= start) end = closing;
+      } else if (quote == '"' || quote == '`') {
+        final closing = line.indexOf(quote, start);
+        if (closing >= 0) end = closing;
+      } else {
+        while (url != null && url[1] == null) {
+          url = nextUrl();
+        }
+        if (url != null) end = url.start;
+      }
+      redacted.write(line.substring(cursor, start));
+      redacted.write('[absolute path]');
+      cursor = end;
+    }
+    redacted.write(line.substring(cursor));
+    return redacted.toString();
+  }
+
+  static Iterable<RegExpMatch> _remoteUrlFields(String line) sync* {
+    if (!line.contains('://')) return;
+    for (final match in _urlField.allMatches(line)) {
+      final scheme = match[2]!;
+      if (scheme.length > 'C://'.length && scheme.toLowerCase() != 'file://') {
+        yield match;
+      }
+    }
   }
 
   static String _uniqueFileName(String requested, Set<String> used) {
@@ -433,9 +537,37 @@ class DiagnosticLogExportService {
     return files.take(10).toList(growable: false);
   }
 
+  /// 更新脚本在应用进程之外运行，安装失败的唯一线索就在这批文件里。
+  static Future<List<File>> _defaultUpdaterFiles() async {
+    final directory = await UpdateInstallerService.resolveUpdateDirectory();
+    if (!await directory.exists()) return const [];
+
+    // 同目录还放着几百 MB 的更新包与 .part 续传文件，只收文本证据。
+    const diagnosticExtensions = {'.log', '.json'};
+    final files = await directory
+        .list(followLinks: false)
+        .where(
+          (entry) =>
+              entry is File &&
+              diagnosticExtensions.contains(p.extension(entry.path)),
+        )
+        .cast<File>()
+        .toList();
+    files.sort(
+      (left, right) =>
+          right.lastModifiedSync().compareTo(left.lastModifiedSync()),
+    );
+    return files.take(10).toList(growable: false);
+  }
+
   static Future<File?> _defaultAgentAuditFile() async {
     final support = await getApplicationSupportDirectory();
     return File(p.join(support.path, 'agent', 'audit-v1.jsonl'));
+  }
+
+  static Future<File?> _defaultMcpAuditFile() async {
+    final support = await getApplicationSupportDirectory();
+    return File(p.join(support.path, 'agent', 'mcp-audit-v1.jsonl'));
   }
 
   static Future<bool> _defaultExportArchive(

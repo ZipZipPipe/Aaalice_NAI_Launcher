@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import '../../models/gallery/gallery_index_admission.dart';
 import '../../models/gallery/local_image_record.dart';
 import '../../models/gallery/nai_image_metadata.dart';
 import 'gallery_filter_service.dart';
@@ -30,7 +31,8 @@ abstract class LocalGalleryService {
   Future<LocalGalleryQueryPage> queryPage({
     required int page,
     int pageSize = 50,
-    String searchQuery = '',
+    FilterCriteria criteria = const FilterCriteria(),
+    bool includeFilePathMatches = false,
   });
 
   Future<int?> getImageIdByPath(String filePath);
@@ -40,11 +42,16 @@ abstract class LocalGalleryService {
   Future<int> getFavoriteCount();
   Future<NaiImageMetadata?> getMetadata(String filePath);
   Future<void> refresh({bool scan = true});
-  Future<bool> addNewImageImmediately(
+  Future<GalleryIndexAdmission> addNewImageImmediately(
     String filePath, {
     NaiImageMetadata? metadata,
   });
+
+  /// Removes files that are already gone from disk without re-enumerating the
+  /// gallery root, and returns how many tracked files were dropped.
+  Future<int> removeDeletedImagesImmediately(List<String> filePaths);
   int get filteredCount;
+  int imageCountInFolder(String path);
   int get totalCount;
   FilterCriteria get currentFilter;
   Future<void> setSearchQuery(String query);

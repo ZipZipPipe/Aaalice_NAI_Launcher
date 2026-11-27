@@ -5,6 +5,7 @@ import '../../../../core/utils/localization_extension.dart';
 import '../../../../data/models/prompt/official_wordlist.dart';
 import '../../../../data/models/prompt/random_category.dart';
 import '../../../../data/models/prompt/random_preset.dart';
+import '../../../adaptive/adaptive_pinned_header_sliver.dart';
 import '../../../providers/random_preset_provider.dart';
 import '../../../themes/core/layered_surface_style.dart';
 import 'category_card.dart';
@@ -12,59 +13,48 @@ import 'category_card.dart';
 class CategoryCardList extends ConsumerWidget {
   const CategoryCardList({
     super.key,
-    this.onAddCategory,
     this.query = '',
-    this.shrinkWrap = false,
     this.overviewHeader,
+    this.leadingSlivers = const [],
   });
 
-  final VoidCallback? onAddCategory;
   final String query;
-  final bool shrinkWrap;
   final Widget? overviewHeader;
+
+  /// 排在总览上方、与列表共用同一滚动视图的页面顶部区域
+  final List<Widget> leadingSlivers;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final preset = ref.watch(randomPresetNotifierProvider).selectedPreset;
-    if (preset == null) {
-      return Center(
-        child: Text(context.l10n.randomManager_selectPresetRequired),
-      );
-    }
-
-    final categories = _filteredCategories(preset, query);
-    final list = categories.isEmpty
-        ? _NoCategoryResults(
-            hasQuery: query.isNotEmpty,
-            canEdit: !preset.isDefault,
+    return CustomScrollView(
+      key: const ValueKey('random-manager-category-scroll'),
+      physics: const ClampingScrollPhysics(),
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+      slivers: [
+        ...leadingSlivers,
+        if (preset == null)
+          SliverFillRemaining(
+            hasScrollBody: false,
+            child: Center(
+              child: Text(context.l10n.randomManager_selectPresetRequired),
+            ),
           )
-        : ListView.separated(
-            shrinkWrap: shrinkWrap,
-            physics: shrinkWrap
-                ? const NeverScrollableScrollPhysics()
-                : const ClampingScrollPhysics(),
-            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-            padding: const EdgeInsets.only(bottom: 4),
-            itemCount: categories.length,
-            separatorBuilder: (_, _) => const SizedBox(height: 8),
-            itemBuilder: (context, index) {
-              final category = categories[index];
-              return CategoryCard(
-                key: ValueKey(category.id),
-                category: category,
-                presetId: preset.id,
-                isPresetDefault: preset.isDefault,
-              );
-            },
-          );
+        else
+          ..._buildPresetSlivers(context, preset),
+      ],
+    );
+  }
 
-    return Padding(
-      padding: EdgeInsets.fromLTRB(overviewHeader == null ? 0 : 16, 16, 16, 16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        mainAxisSize: shrinkWrap ? MainAxisSize.min : MainAxisSize.max,
-        children: [
-          Container(
+  List<Widget> _buildPresetSlivers(BuildContext context, RandomPreset preset) {
+    final categories = _filteredCategories(preset, query);
+    final leading = overviewHeader == null ? 0.0 : 16.0;
+    return [
+      AdaptivePinnedHeaderSliver(
+        backgroundColor: Theme.of(context).colorScheme.surface,
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(leading, 16, 16, 12),
+          child: Container(
             key: const ValueKey('random-manager-overview-card'),
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
@@ -78,19 +68,36 @@ class CategoryCardList extends ConsumerWidget {
                   overviewHeader!,
                   const SizedBox(height: 14),
                 ],
-                _RecipeSummary(
-                  preset: preset,
-                  visibleCount: categories.length,
-                  onAddCategory: onAddCategory,
-                ),
+                _RecipeSummary(preset: preset, visibleCount: categories.length),
               ],
             ),
           ),
-          const SizedBox(height: 12),
-          if (shrinkWrap) list else Expanded(child: list),
-        ],
+        ),
       ),
-    );
+      SliverPadding(
+        padding: EdgeInsets.fromLTRB(leading, 0, 16, 20),
+        sliver: categories.isEmpty
+            ? SliverToBoxAdapter(
+                child: _NoCategoryResults(
+                  hasQuery: query.isNotEmpty,
+                  canEdit: !preset.isDefault,
+                ),
+              )
+            : SliverList.separated(
+                itemCount: categories.length,
+                separatorBuilder: (_, _) => const SizedBox(height: 8),
+                itemBuilder: (context, index) {
+                  final category = categories[index];
+                  return CategoryCard(
+                    key: ValueKey(category.id),
+                    category: category,
+                    presetId: preset.id,
+                    isPresetDefault: preset.isDefault,
+                  );
+                },
+              ),
+      ),
+    ];
   }
 
   List<RandomCategory> _filteredCategories(
@@ -118,15 +125,10 @@ class CategoryCardList extends ConsumerWidget {
 }
 
 class _RecipeSummary extends ConsumerWidget {
-  const _RecipeSummary({
-    required this.preset,
-    required this.visibleCount,
-    required this.onAddCategory,
-  });
+  const _RecipeSummary({required this.preset, required this.visibleCount});
 
   final RandomPreset preset;
   final int visibleCount;
-  final VoidCallback? onAddCategory;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -146,23 +148,24 @@ class _RecipeSummary extends ConsumerWidget {
       runSpacing: 6,
       crossAxisAlignment: WrapCrossAlignment.center,
       children: [
-        Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              '$enabledCount/${preset.categoryCount}',
-              style: theme.textTheme.labelLarge?.copyWith(
-                fontFeatures: const [FontFeature.tabularFigures()],
+        // 计数与类别名写成同一段文字，窄屏放大文字时整体换行
+        Text.rich(
+          TextSpan(
+            children: [
+              TextSpan(
+                text: '$enabledCount/${preset.categoryCount} ',
+                style: theme.textTheme.labelLarge?.copyWith(
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
               ),
-            ),
-            const SizedBox(width: 6),
-            Text(
-              context.l10n.randomManager_categories,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: colors.onSurfaceVariant,
+              TextSpan(
+                text: context.l10n.randomManager_categories,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: colors.onSurfaceVariant,
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
         _InlineMetric(
           icon: Icons.layers_outlined,
@@ -180,7 +183,7 @@ class _RecipeSummary extends ConsumerWidget {
       ],
     );
     final addButton = !preset.isDefault && preset.categories.isNotEmpty
-        ? AddCategoryButton(onPressed: onAddCategory)
+        ? const AddCategoryButton()
         : null;
     if (addButton == null) return metrics;
 

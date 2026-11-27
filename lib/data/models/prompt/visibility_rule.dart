@@ -1,4 +1,8 @@
+import 'dart:math' as math;
+
 import 'package:freezed_annotation/freezed_annotation.dart';
+
+import 'rule_tag_match.dart';
 
 part 'visibility_rule.freezed.dart';
 part 'visibility_rule.g.dart';
@@ -29,7 +33,7 @@ enum VisibilityConditionType {
 /// 根据构图决定是否生成某类别
 /// 例如: portrait 时不生成下装, full body 时才生成鞋子
 @freezed
-class VisibilityRule with _$VisibilityRule {
+abstract class VisibilityRule with _$VisibilityRule {
   const VisibilityRule._();
 
   const factory VisibilityRule({
@@ -76,31 +80,32 @@ class VisibilityRule with _$VisibilityRule {
   /// [context] 当前上下文，包含已选择的标签
   /// 返回 true 如果条件匹配
   bool checkCondition(Map<String, List<String>> context) {
-    final sourceValues = context[sourceCategoryId] ?? [];
-    final sourceSet = sourceValues.toSet();
+    // 生成结果可能带权重括号，用户输入可能用下划线，按比较键匹配
+    final sourceValues = (context[sourceCategoryId] ?? const <String>[])
+        .map(ruleTagMatchKey)
+        .toList();
+    final expected = ruleTagMatchKey(conditionValue);
 
     switch (conditionType) {
       case VisibilityConditionType.tagExists:
-        return sourceSet.contains(conditionValue);
+        return sourceValues.contains(expected);
 
       case VisibilityConditionType.tagNotExists:
-        return !sourceSet.contains(conditionValue);
+        return !sourceValues.contains(expected);
 
       case VisibilityConditionType.valueEquals:
-        return sourceValues.isNotEmpty && sourceValues.first == conditionValue;
+        return sourceValues.isNotEmpty && sourceValues.first == expected;
 
       case VisibilityConditionType.valueNotEquals:
-        return sourceValues.isEmpty || sourceValues.first != conditionValue;
+        return sourceValues.isEmpty || sourceValues.first != expected;
 
       case VisibilityConditionType.valueInList:
-        final expectedValues =
-            conditionValue.split(',').map((s) => s.trim()).toSet();
-        return sourceValues.any((v) => expectedValues.contains(v));
+        final expectedValues = ruleTagMatchKeysOfList(conditionValue);
+        return sourceValues.any(expectedValues.contains);
 
       case VisibilityConditionType.valueNotInList:
-        final excludedValues =
-            conditionValue.split(',').map((s) => s.trim()).toSet();
-        return !sourceValues.any((v) => excludedValues.contains(v));
+        final excludedValues = ruleTagMatchKeysOfList(conditionValue);
+        return !sourceValues.any(excludedValues.contains);
     }
   }
 
@@ -120,7 +125,7 @@ class VisibilityRule with _$VisibilityRule {
 ///
 /// 管理多个可见性规则
 @freezed
-class VisibilityRuleSet with _$VisibilityRuleSet {
+abstract class VisibilityRuleSet with _$VisibilityRuleSet {
   const VisibilityRuleSet._();
 
   const factory VisibilityRuleSet({
@@ -131,28 +136,29 @@ class VisibilityRuleSet with _$VisibilityRuleSet {
   factory VisibilityRuleSet.fromJson(Map<String, dynamic> json) =>
       _$VisibilityRuleSetFromJson(json);
 
-  /// 检查类别是否可见
+  /// 检查目标是否可见
   ///
+  /// 命中的规则中最高优先级一档决定结果，同档只要有一条隐藏即隐藏；
+  /// 一条都没命中时，存在"条件匹配时可见"的规则就说明目标只在其条件成立时出现。
   /// [categoryId] 目标类别ID
   /// [context] 当前上下文
   bool isCategoryVisible(String categoryId, Map<String, List<String>> context) {
-    // 获取所有针对该类别的规则，按优先级排序
     final applicableRules = rules
         .where((r) => r.targetCategoryId == categoryId && r.enabled)
-        .toList()
-      ..sort((a, b) => b.priority.compareTo(a.priority));
+        .toList();
+    if (applicableRules.isEmpty) return true;
 
-    if (applicableRules.isEmpty) return true; // 无规则时默认可见
-
-    // 使用最高优先级的匹配规则
-    for (final rule in applicableRules) {
-      if (rule.checkCondition(context)) {
-        return rule.visibleWhenMatched;
-      }
+    final matchedRules = applicableRules
+        .where((r) => r.checkCondition(context))
+        .toList();
+    if (matchedRules.isEmpty) {
+      return !applicableRules.any((r) => r.visibleWhenMatched);
     }
 
-    // 没有规则匹配时默认可见
-    return true;
+    final topPriority = matchedRules.map((r) => r.priority).reduce(math.max);
+    return matchedRules
+        .where((r) => r.priority == topPriority)
+        .every((r) => r.visibleWhenMatched);
   }
 
   /// 获取所有可见的类别ID

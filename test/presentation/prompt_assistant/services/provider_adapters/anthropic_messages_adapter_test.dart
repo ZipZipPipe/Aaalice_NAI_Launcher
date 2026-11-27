@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nai_launcher/core/agent/agent_types.dart';
 import 'package:nai_launcher/presentation/prompt_assistant/models/agent_protocol.dart';
-import 'package:nai_launcher/presentation/prompt_assistant/models/prompt_assistant_models.dart';
+import 'package:nai_launcher/data/models/prompt_assistant/prompt_assistant_models.dart';
 import 'package:nai_launcher/presentation/prompt_assistant/services/provider_adapters/anthropic_messages_adapter.dart';
 
 void main() {
@@ -235,6 +235,122 @@ void main() {
           'data': encoded,
         },
       },
+    ]);
+  });
+
+  test(
+    'agent payload splits images out of error tool results into the same user turn',
+    () {
+      const adapter = AnthropicMessagesAdapter();
+      final encoded = base64Encode([7, 8, 9]);
+      final request = AgentChatRequest(
+        sessionId: 'session',
+        provider: const ProviderConfig(
+          id: 'anthropic',
+          name: 'Anthropic',
+          protocol: ProviderProtocol.anthropicMessages,
+          baseUrl: 'https://api.anthropic.com',
+        ),
+        model: 'claude-opus-5-5',
+        systemPrompt: 'system',
+        messages: [
+          ToolResultMessage(
+            toolCallId: 'call-err',
+            toolName: 'inspect_image',
+            content: [
+              const ToolResultTextContent('failed to process'),
+              ToolResultImageContent(
+                ImageContent(
+                  source: ImageSource.base64(
+                    mimeType: 'image/png',
+                    base64Data: encoded,
+                  ),
+                ),
+              ),
+            ],
+            isError: true,
+          ),
+          ToolResultMessage(
+            toolCallId: 'call-ok',
+            toolName: 'read',
+            content: const [ToolResultTextContent('ok')],
+            isError: false,
+          ),
+        ],
+        tools: const [],
+        apiKey: 'key',
+      );
+
+      final content =
+          ((adapter.buildAgentPayload(request)['messages'] as List).single
+                  as Map)['content']
+              as List;
+
+      expect(content.length, 4);
+      expect(content[0], {
+        'type': 'tool_result',
+        'tool_use_id': 'call-err',
+        'content': [
+          {'type': 'text', 'text': 'failed to process'},
+          {'type': 'text', 'text': '(image attached after the tool results)'},
+        ],
+        'is_error': true,
+      });
+      expect(content[1], {
+        'type': 'tool_result',
+        'tool_use_id': 'call-ok',
+        'content': 'ok',
+        'is_error': false,
+      });
+      expect(content[2], {
+        'type': 'text',
+        'text':
+            'Images from the error result of tool call call-err (inspect_image):',
+      });
+      expect(content[3], {
+        'type': 'image',
+        'source': {
+          'type': 'base64',
+          'media_type': 'image/png',
+          'data': encoded,
+        },
+      });
+    },
+  );
+
+  test('agent payload drops thinking blocks from another model', () {
+    const adapter = AnthropicMessagesAdapter();
+    final request = AgentChatRequest(
+      sessionId: 'session',
+      provider: const ProviderConfig(
+        id: 'anthropic',
+        name: 'Anthropic',
+        protocol: ProviderProtocol.anthropicMessages,
+        baseUrl: 'https://api.anthropic.com',
+      ),
+      model: 'claude-opus-5-5',
+      systemPrompt: 'system',
+      messages: [
+        AssistantMessage(
+          provider: 'openai',
+          model: 'gpt-6.2-sol',
+          content: const [
+            AssistantThinkingContent('other model reasoning', signature: 'sig'),
+            AssistantTextContent('visible reply'),
+          ],
+          stopReason: StopReason.stop,
+        ),
+      ],
+      tools: const [],
+      apiKey: 'key',
+    );
+
+    final content =
+        ((adapter.buildAgentPayload(request)['messages'] as List).single
+            as Map)['content'];
+
+    expect(content, [
+      {'type': 'text', 'text': 'visible reply'},
     ]);
   });
 }

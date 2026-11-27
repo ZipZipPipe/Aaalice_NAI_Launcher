@@ -31,6 +31,7 @@ class ImageCardViewData {
     required this.imageHeight,
     required this.sourceFilePath,
     this.postprocessPhase,
+    this.imageContentFooterHeight = 0,
   });
 
   final Uint8List? imageBytes;
@@ -56,6 +57,9 @@ class ImageCardViewData {
   final int? imageWidth;
   final int? imageHeight;
   final String? sourceFilePath;
+
+  /// [imageContent] 停靠在卡片底部的控件高度，卡片浮层避让到它上方。
+  final double imageContentFooterHeight;
 }
 
 @immutable
@@ -67,15 +71,18 @@ class ImageCardCapabilities {
     required this.enableGlossEffect,
     required this.hoverEffectsEnabled,
     required this.shareWarmupEnabled,
-    required this.enableSaveAction,
     required this.enableCopyAction,
     required this.enableSelection,
     this.selectionMode = false,
     this.showSelectionOnHover = true,
+    this.showHoverActionBar = true,
+    this.pinnedHoverActions = const [],
     required this.onTap,
     required this.onDoubleTap,
     required this.onLongPress,
     required this.onSelectionChanged,
+    required this.onSave,
+    required this.onSaveAs,
     required this.onFullscreen,
     required this.onUpscale,
     required this.onReversePrompt,
@@ -93,6 +100,7 @@ class ImageCardCapabilities {
     required this.onOpenInExplorer,
     required this.onSaveToLibrary,
     required this.onFavoriteToggle,
+    required this.onDelete,
   });
 
   final bool allowRepeatedModifierTaps;
@@ -101,15 +109,20 @@ class ImageCardCapabilities {
   final bool enableGlossEffect;
   final bool hoverEffectsEnabled;
   final bool shareWarmupEnabled;
-  final bool enableSaveAction;
   final bool enableCopyAction;
   final bool enableSelection;
   final bool selectionMode;
   final bool showSelectionOnHover;
+  final bool showHoverActionBar;
+
+  /// 悬停时按顺序排在收藏左侧的动作，同时从底部悬停动作条中移除。
+  final List<ImageCardActionId> pinnedHoverActions;
   final VoidCallback? onTap;
   final VoidCallback? onDoubleTap;
   final VoidCallback? onLongPress;
   final ValueChanged<bool>? onSelectionChanged;
+  final ImageCardCallback? onSave;
+  final ImageCardCallback? onSaveAs;
   final ImageCardCallback? onFullscreen;
   final ImageCardCallback? onUpscale;
   final ImageCardCallback? onReversePrompt;
@@ -127,4 +140,5 @@ class ImageCardCapabilities {
   final ImageCardCallback? onOpenInExplorer;
   final void Function(Uint8List imageBytes, String prompt)? onSaveToLibrary;
   final ImageCardCallback? onFavoriteToggle;
+  final ImageCardCallback? onDelete;
 }

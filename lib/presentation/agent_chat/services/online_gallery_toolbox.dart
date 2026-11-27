@@ -1,17 +1,22 @@
+import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/agent/agent_types.dart';
-import '../../../core/agent/resources/agent_chat_resource_reference.dart';
 import '../../../core/agent/resources/agent_chat_resource_reference_codec.dart';
 import '../../../core/online_gallery/gallery_tag_query.dart';
 import '../../../data/datasources/remote/danbooru_api_service.dart';
+import '../../../data/datasources/remote/online_gallery/gallery_source_adapter.dart';
 import '../../../data/models/online_gallery/gallery_item.dart';
 import '../../../data/models/online_gallery/gallery_source.dart';
+import '../../providers/online_gallery_command_service.dart';
 import '../../providers/online_gallery_provider.dart';
 import 'defined_agent_tool.dart';
+import 'online_gallery_item_lookup.dart';
+import 'online_gallery_resource_identity.dart';
+import 'online_gallery_view_json.dart';
 import 'toolbox_json.dart';
 
-/// Source-capability-aware online-gallery tools backed by the visible gallery.
+/// Source-capability-aware tools for browsing and resolving online gallery works.
 class OnlineGalleryToolbox {
   OnlineGalleryToolbox(this._ref);
 
@@ -45,9 +50,12 @@ class OnlineGalleryToolbox {
     description:
         'Browse an online gallery and return structured stable resource_ref objects only; this tool never displays images. '
         'When source is omitted, the request uses danbooru; an explicit valid source is always respected. '
+        'Every call is defined by its own parameters: omitted filters use their defaults and never inherit what the visible gallery had before. '
+        'quick_tag_cloud is the exception: it browses the codex, category and filters currently selected in the gallery and returns them as quick_tag_cloud. '
         'A query may contain at most 6 ordinary tags globally. Sources can enforce lower server limits, so the client pushes down a supported seed and applies remaining tags as residual local filters. '
         'When random=true, limit=N means randomly sample exactly N items from the matching feed (when available); never fetch a larger page and choose items yourself. '
-        'To show returned media, pass 1-12 resource_ref objects to display_images.',
+        'To show returned media, pass 1-12 resource_ref objects to display_images. '
+        'media_id is null when the listing has no real cover yet; that resource_ref resolves to the first media of the work.',
     parameters: toolboxObject(
       properties: {
         'source': {
@@ -66,7 +74,11 @@ class OnlineGalleryToolbox {
           'description':
               'Space/comma-separated query with at most 6 ordinary tags; metatags do not count toward this global cap.',
         },
-        'prompt': {'type': 'string', 'maxLength': 4000},
+        'prompt': {
+          'type': 'string',
+          'maxLength': 4000,
+          'description': 'Prompt filter; no prompt filter when omitted.',
+        },
         'ratings': {
           'type': 'array',
           'items': {
@@ -84,11 +96,28 @@ class OnlineGalleryToolbox {
         'ranking_scale': {
           'type': 'string',
           'enum': PopularScale.values.map((value) => value.name).toList(),
+          'description':
+              'Defaults to ${_browseDefaults.popularScale.name} when omitted.',
         },
-        'ranking_date': {'type': 'string'},
-        'ai_tag_time_range': {'type': 'string'},
-        'ai_tag_period': {'type': 'string'},
-        'load_more': {'type': 'boolean'},
+        'ranking_date': {
+          'type': 'string',
+          'description': 'Defaults to the latest ranking when omitted.',
+        },
+        'ai_tag_time_range': {
+          'type': 'string',
+          'description':
+              'Defaults to ${_browseDefaults.aiTagTimeRange} when omitted.',
+        },
+        'ai_tag_period': {
+          'type': 'string',
+          'description':
+              'Defaults to ${_browseDefaults.aiTagPopularPeriod} when omitted.',
+        },
+        'load_more': {
+          'type': 'boolean',
+          'description':
+              'Loads the next page of the browse made with the same parameters; repeat them unchanged. Fails with pagination_scope_changed once the gallery shows anything else.',
+        },
         'limit': {
           'type': 'integer',
           'minimum': 1,
@@ -139,6 +168,7 @@ class OnlineGalleryToolbox {
       );
     }
 
+    final scope = _BrowseScope(source, feed, params);
     final notifier = _ref.read(onlineGalleryNotifierProvider.notifier);
     void abortGallery(String? reason) => notifier.cancelActiveRequests(
       reason: reason ?? 'Agent gallery tool cancelled',
@@ -151,16 +181,15 @@ class OnlineGalleryToolbox {
       return await notifier.runWithExplicitNetworkAccess(() async {
         final limit = (params['limit'] as int? ?? 30).clamp(1, 100);
         if (params['load_more'] == true) {
-          final state = _ref.read(onlineGalleryNotifierProvider);
-          if (state.activeSourceId != source || state.viewMode.name != mode) {
+          if (!scope.describes(_ref.read(onlineGalleryNotifierProvider))) {
             return agentToolError(
               'pagination_scope_changed',
-              'The active source or mode changed; start a new browse request.',
+              'The gallery no longer shows the browse these parameters describe; repeat the request without load_more.',
             );
           }
           await notifier.loadMore();
         } else {
-          await _configureBrowse(notifier, source, mode, params, signal);
+          await _configureBrowse(notifier, scope, signal);
         }
         throwIfAborted(signal);
         var state = _ref.read(onlineGalleryNotifierProvider);
@@ -200,7 +229,9 @@ class OnlineGalleryToolbox {
         return agentToolJsonResult({
           'ok': true,
           'source': source.key,
-          'mode': state.viewMode.name,
+          'mode': feed.name,
+          if (source == GallerySourceId.quickTagCloud)
+            'quick_tag_cloud': quickTagCloudFiltersJson(state),
           'random': params['random'] == true,
           'requested_limit': limit,
           'page': state.page,
@@ -242,60 +273,78 @@ class OnlineGalleryToolbox {
     name: 'get_online_gallery_detail',
     label: 'Get Online Gallery Detail',
     description:
-        'Load complete metadata and character prompts for a currently browsed stable work.',
-    parameters: _identitySchema,
-    executeWithControl: (_, params, signal, __) async {
-      final item = _find(params);
-      if (item == null) {
-        return agentToolError(
-          'not_loaded',
-          'The work is not in the current source cache; browse it first.',
-        );
-      }
-      final notifier = _ref.read(onlineGalleryNotifierProvider.notifier);
-      void abortDetail(String? _) => notifier.cancelDetail(item);
-
-      signal?.addListener(abortDetail);
-      try {
-        throwIfAborted(signal);
-        return await notifier.runWithExplicitNetworkAccess(() async {
-          final detail = await notifier.loadDetail(item);
-          throwIfAborted(signal);
-          return agentToolJsonResult({
-            'ok': true,
-            'item': _itemJson(detail.item),
-            'prompt': detail.prompt,
-            'negative_prompt': detail.negativePrompt,
-            'description': detail.description,
-            'tags': detail.rawTags,
-            'character_prompts': [
-              for (final value in detail.characterPrompts)
-                {
-                  'label': value.label,
-                  'prompt': value.prompt,
-                  'negative_prompt': value.negativePrompt,
-                },
-            ],
-            'contributors': [
-              for (final contributor in detail.contributors)
-                {'name': contributor.name, 'role': contributor.role},
-            ],
-            'media': [
-              for (final media in detail.media)
-                _mediaJson(
-                  media,
-                  source: detail.item.sourceId,
-                  workId: detail.item.sourceWorkId,
-                  title: detail.item.title,
-                ),
-            ],
-          });
-        });
-      } finally {
-        signal?.removeListener(abortDetail);
-      }
-    },
+        'Get a work directly by source and work_id without browsing first. '
+        'Each image in media[] reports structured generation parameters in '
+        'metadata and prompts in prompt, negative_prompt and character_prompts. '
+        'Set include_raw_metadata to receive the original text in raw_metadata. '
+        'This can add up to $_rawMetadataCharacterLimit Unicode code points per image.',
+    parameters: toolboxObject(
+      properties: {
+        ..._identityProperties,
+        'include_raw_metadata': {
+          'type': 'boolean',
+          'description':
+              'Include raw_metadata and its truncation flag for each image. Defaults to false.',
+        },
+      },
+      required: const ['source', 'work_id'],
+    ),
+    executeWithControl: (_, params, signal, __) =>
+        _executeDetail(params, signal),
   );
+
+  Future<AgentToolResult> _executeDetail(
+    Map<String, dynamic> params,
+    AbortSignal? signal,
+  ) async {
+    final source = _source(params['source']);
+    if (source == null) {
+      return agentToolError('unknown_source', 'Unknown gallery source.');
+    }
+    final identity = OnlineGalleryResourceIdentity(
+      source: source,
+      workId: params['work_id'] as String,
+    );
+    final notifier = _ref.read(onlineGalleryNotifierProvider.notifier);
+    final lookupToken = CancelToken();
+    GalleryItem? loadingItem;
+    void abortDetail(String? reason) {
+      lookupToken.cancel(reason);
+      if (loadingItem case final item?) notifier.cancelDetail(item);
+    }
+
+    GalleryDetail? detail;
+    signal?.addListener(abortDetail);
+    try {
+      throwIfAborted(signal);
+      detail = await notifier.runWithExplicitNetworkAccess(() async {
+        final item = await locateOnlineGalleryItem(
+          identity,
+          visibleItem: visibleOnlineGalleryItem(_ref, identity),
+          adapter: _ref.read(onlineGallerySourceAdaptersProvider)[source]!,
+          cancelToken: lookupToken,
+        );
+        throwIfAborted(signal);
+        if (item == null) return null;
+        loadingItem = item;
+        return notifier.loadDetail(item);
+      });
+    } on GallerySourceException catch (error) {
+      if (error.code != GallerySourceErrorCode.detailNotFound) rethrow;
+    } finally {
+      signal?.removeListener(abortDetail);
+    }
+    throwIfAborted(signal);
+    if (detail == null) {
+      return agentToolError('not_found', 'The requested work was not found.');
+    }
+    return agentToolJsonResult(
+      _detailJson(
+        detail,
+        includeRawMetadata: params['include_raw_metadata'] == true,
+      ),
+    );
+  }
 
   DefinedAgentTool _toggleFavorite() => DefinedAgentTool(
     name: 'toggle_online_gallery_favorite',
@@ -327,57 +376,39 @@ class OnlineGalleryToolbox {
 
   Future<void> _configureBrowse(
     OnlineGalleryNotifier notifier,
-    GallerySourceId source,
-    String mode,
-    Map<String, dynamic> params,
+    _BrowseScope scope,
     AbortSignal? signal,
   ) async {
-    final ratings = toolboxStrings(params['ratings']);
-    final random = params['random'] as bool? ?? false;
     await notifier.runWithDeferredLoading(() async {
       // A prior random session belongs to its original query and source. Leave
       // it before configuring a new request so enabling random resamples.
       await notifier.setRandomEnabled(false);
-      await notifier.setRatings(ratings.toSet());
-      await notifier.setFuzzySearchEnabled(params['fuzzy'] as bool? ?? false);
-      if (mode == 'ranking') {
-        await notifier.setPopularSource(source);
-        await notifier.switchToPopular();
-        final scaleName = params['ranking_scale'] as String?;
-        if (scaleName != null) {
-          await notifier.setPopularScale(
-            PopularScale.values.firstWhere((value) => value.name == scaleName),
+      await notifier.setRatings(scope.ratings);
+      await notifier.setFuzzySearchEnabled(scope.fuzzy);
+      await notifier.setArtistHuntEnabled(_browseDefaults.artistHuntEnabled);
+      switch (scope.feed) {
+        case GalleryFeedKind.ranking:
+          await notifier.setPopularSource(scope.source);
+          await notifier.switchToPopular();
+          await notifier.setPopularScale(scope.rankingScale);
+          await notifier.setPopularDate(scope.rankingDate);
+          await notifier.setAiTagPopularPeriod(scope.aiTagPeriod);
+          await notifier.searchPopular(
+            query: scope.query,
+            prompt: scope.prompt,
           );
-        }
-        final date = params['ranking_date'] as String?;
-        if (date != null) await notifier.setPopularDate(DateTime.parse(date));
-        if (params['ai_tag_period'] case final String period) {
-          await notifier.setAiTagPopularPeriod(period);
-        }
-        await notifier.searchPopular(
-          query: params['query'] as String? ?? '',
-          prompt: params['prompt'] as String? ?? '',
-        );
-      } else if (mode == 'favorites') {
-        await notifier.setFavoritesSource(source);
-        await notifier.switchToFavorites();
-        await notifier.searchFavorites(params['query'] as String? ?? '');
-      } else {
-        await notifier.setSource(source);
-        await notifier.switchToSearch();
-        if (params['ai_tag_time_range'] case final String range) {
-          await notifier.setAiTagTimeRange(range);
-        }
-        if ((params['prompt'] as String? ?? '').isNotEmpty) {
-          await notifier.searchWithPrompt(
-            params['query'] as String? ?? '',
-            prompt: params['prompt'] as String,
-          );
-        } else {
-          await notifier.search(params['query'] as String? ?? '');
-        }
+        case GalleryFeedKind.favorites:
+          await notifier.setFavoritesSource(scope.source);
+          await notifier.switchToFavorites();
+          await notifier.searchFavorites(scope.query);
+        case GalleryFeedKind.search:
+          await notifier.setSource(scope.source);
+          await notifier.switchToSearch();
+          await notifier.clearDateRange();
+          await notifier.setAiTagTimeRange(scope.aiTagTimeRange);
+          await notifier.searchWithPrompt(scope.query, prompt: scope.prompt);
       }
-      if (random) await notifier.setRandomEnabled(true);
+      if (scope.random) await notifier.setRandomEnabled(true);
     });
     throwIfAborted(signal);
     await notifier.loadPosts(refresh: true);
@@ -386,13 +417,74 @@ class OnlineGalleryToolbox {
   GalleryItem? _find(Map<String, dynamic> params) {
     final source = _source(params['source']);
     if (source == null) return null;
-    final workId = params['work_id'] as String;
-    return _ref
-        .read(onlineGalleryNotifierProvider)
-        .posts
-        .where((item) => item.sourceId == source && item.sourceWorkId == workId)
-        .firstOrNull;
+    final identity = OnlineGalleryResourceIdentity(
+      source: source,
+      workId: params['work_id'] as String,
+    );
+    return visibleOnlineGalleryItem(_ref, identity);
   }
+}
+
+const _browseDefaults = OnlineGalleryState();
+
+class _BrowseScope {
+  _BrowseScope(this.source, this.feed, Map<String, dynamic> params)
+    : query = (params['query'] as String? ?? '').trim(),
+      prompt = (params['prompt'] as String? ?? '').trim(),
+      ratings = OnlineGalleryCommandService.normalizeRatings(
+        toolboxStrings(params['ratings']).toSet(),
+      ),
+      fuzzy = params['fuzzy'] as bool? ?? _browseDefaults.fuzzySearchEnabled,
+      random = params['random'] as bool? ?? _browseDefaults.randomEnabled,
+      rankingScale = switch (params['ranking_scale']) {
+        final String name => PopularScale.values.byName(name),
+        _ => _browseDefaults.popularScale,
+      },
+      rankingDate = switch (params['ranking_date']) {
+        final String date => DateTime.parse(date),
+        _ => _browseDefaults.popularDate,
+      },
+      aiTagPeriod =
+          params['ai_tag_period'] as String? ??
+          _browseDefaults.aiTagPopularPeriod,
+      aiTagTimeRange =
+          params['ai_tag_time_range'] as String? ??
+          _browseDefaults.aiTagTimeRange;
+
+  final GallerySourceId source;
+  final GalleryFeedKind feed;
+  final String query;
+  final String prompt;
+  final Set<String> ratings;
+  final bool fuzzy;
+  final bool random;
+  final PopularScale rankingScale;
+  final DateTime? rankingDate;
+  final String aiTagPeriod;
+  final String aiTagTimeRange;
+
+  bool describes(OnlineGalleryState state) =>
+      state.activeSourceId == source &&
+      state.activeFeedKind == feed &&
+      state.randomEnabled == random &&
+      state.fuzzySearchEnabled == fuzzy &&
+      state.artistHuntEnabled == _browseDefaults.artistHuntEnabled &&
+      OnlineGalleryCommandService.setEquals(state.selectedRatings, ratings) &&
+      switch (feed) {
+        GalleryFeedKind.search =>
+          state.searchQuery == query &&
+              state.promptQuery == prompt &&
+              state.aiTagTimeRange == aiTagTimeRange &&
+              state.dateRangeStart == _browseDefaults.dateRangeStart &&
+              state.dateRangeEnd == _browseDefaults.dateRangeEnd,
+        GalleryFeedKind.ranking =>
+          state.popularQuery == query &&
+              state.popularPromptQuery == prompt &&
+              state.popularScale == rankingScale &&
+              state.popularDate == rankingDate &&
+              state.aiTagPopularPeriod == aiTagPeriod,
+        GalleryFeedKind.favorites => state.favoriteSearchQuery == query,
+      };
 }
 
 GallerySourceId? _browseSource(dynamic value) =>
@@ -408,7 +500,6 @@ Map<String, dynamic> _capabilitiesJson(GallerySourceId source) {
     'label': source.label,
     'search': value.supportsSearch,
     'fuzzy': value.supportsFuzzySearch,
-    'date_range': value.supportsDateRange,
     'ratings': value.supportsRatings,
     'prompt_query': value.supportsPromptQuery,
     'ranking': value.rankingKinds.map((kind) => kind.name).toList(),
@@ -437,13 +528,9 @@ Map<String, dynamic> _capabilitiesJson(GallerySourceId source) {
 Map<String, dynamic> _itemJson(GalleryItem item) => {
   'source': item.sourceId.key,
   'work_id': item.sourceWorkId,
-  'media_id': item.cover.id,
+  'media_id': item.coverMediaId,
   'resource_ref': AgentChatResourceReferenceCodec.encodeJsonMap(
-    AgentChatResourceReference(
-      kind: AgentChatResourceKind.onlineGalleryMedia,
-      source: item.sourceId.key,
-      resourceId: item.sourceWorkId,
-      mediaId: item.cover.id,
+    OnlineGalleryResourceIdentity.coverOf(item).toReference(
       display: {
         'source_label': item.sourceId.label,
         if (item.title?.trim().isNotEmpty == true) 'title': item.title!.trim(),
@@ -461,19 +548,55 @@ Map<String, dynamic> _itemJson(GalleryItem item) => {
   'tags': item.tags,
 };
 
+Map<String, dynamic> _detailJson(
+  GalleryDetail detail, {
+  required bool includeRawMetadata,
+}) => {
+  'ok': true,
+  'item': _itemJson(detail.item),
+  'prompt': detail.prompt,
+  'negative_prompt': detail.negativePrompt,
+  'description': detail.description,
+  'tags': detail.rawTags,
+  'character_prompts': [
+    for (final character in detail.characterPrompts) _characterJson(character),
+  ],
+  'contributors': [
+    for (final contributor in detail.contributors)
+      {'name': contributor.name, 'role': contributor.role},
+  ],
+  'media': [
+    for (final media in detail.media)
+      _mediaJson(
+        media,
+        source: detail.item.sourceId,
+        workId: detail.item.sourceWorkId,
+        title: detail.item.title,
+        includeRawMetadata: includeRawMetadata,
+      ),
+  ],
+};
+
+Map<String, dynamic> _characterJson(GalleryCharacterPrompt character) => {
+  'label': character.label,
+  'prompt': character.prompt,
+  'negative_prompt': character.negativePrompt,
+};
+
 Map<String, dynamic> _mediaJson(
   GalleryMedia media, {
   required GallerySourceId source,
   required String workId,
+  required bool includeRawMetadata,
   String? title,
 }) => {
   'media_id': media.id,
   'resource_ref': AgentChatResourceReferenceCodec.encodeJsonMap(
-    AgentChatResourceReference(
-      kind: AgentChatResourceKind.onlineGalleryMedia,
-      source: source.key,
-      resourceId: workId,
+    OnlineGalleryResourceIdentity(
+      source: source,
+      workId: workId,
       mediaId: media.id,
+    ).toReference(
       display: {
         'source_label': source.label,
         if (title?.trim().isNotEmpty == true) 'title': title!.trim(),
@@ -486,7 +609,30 @@ Map<String, dynamic> _mediaJson(
   'media_type': media.mediaType,
   'prompt': media.prompt,
   'negative_prompt': media.negativePrompt,
+  'metadata': media.generationParametersFor(source),
+  if (media.metadataFormat != null) 'metadata_format': media.metadataFormat,
+  if (media.metadataError != null) 'metadata_error': media.metadataError,
+  'character_prompts': [
+    for (final character in media.characterPrompts)
+      {
+        ..._characterJson(character),
+        if (character.hasCustomPosition) ...{
+          'position_x': character.positionX,
+          'position_y': character.positionY,
+        },
+      },
+  ],
+  if (includeRawMetadata) ..._rawMetadataJson(media.rawMetadata),
 };
+
+const _rawMetadataCharacterLimit = 8000;
+
+Map<String, dynamic> _rawMetadataJson(String? raw) {
+  final text = raw == null
+      ? null
+      : String.fromCharCodes(raw.runes.take(_rawMetadataCharacterLimit));
+  return {'raw_metadata': text, 'raw_metadata_truncated': text != raw};
+}
 
 final _identityProperties = <String, dynamic>{
   'source': {

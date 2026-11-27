@@ -4,8 +4,11 @@ import 'package:flutter/material.dart';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../widgets/common/decoded_memory_image.dart';
 import '../../widgets/common/image_viewport_surface.dart';
 import '../../../core/utils/localization_extension.dart';
+import '../../../data/models/director/director_emotion.dart';
+import '../../../data/models/director/director_prompt_params.dart';
 import '../../../data/models/director/director_tool_type.dart';
 import '../../adaptive/adaptive_layout.dart';
 import '../../adaptive/interaction_policy.dart';
@@ -13,6 +16,9 @@ import '../../providers/director_tools_notifier.dart';
 import '../../providers/subscription_provider.dart';
 import '../../widgets/common/app_toast.dart';
 import '../../widgets/common/themed_confirm_dialog.dart';
+import '../../widgets/common/themed_slider.dart';
+import 'widgets/director_result_variant_selector.dart';
+import 'widgets/pixel_snap_panel.dart';
 
 class DirectorToolsScreen extends ConsumerStatefulWidget {
   const DirectorToolsScreen({super.key, required this.sourceImage});
@@ -42,7 +48,9 @@ class _DirectorToolsScreenState extends ConsumerState<DirectorToolsScreen> {
   @override
   void initState() {
     super.initState();
-    _promptController = TextEditingController();
+    _promptController = TextEditingController(
+      text: _activePromptText(ref.read(directorToolsNotifierProvider)),
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       ref.read(directorToolsNotifierProvider.notifier).init(widget.sourceImage);
     });
@@ -59,12 +67,10 @@ class _DirectorToolsScreenState extends ConsumerState<DirectorToolsScreen> {
     final theme = Theme.of(context);
     final state = ref.watch(directorToolsNotifierProvider);
 
-    ref.listen(directorToolsNotifierProvider, (prev, next) {
-      if (prev?.prompt != next.prompt &&
-          _promptController.text != next.prompt) {
-        _promptController.text = next.prompt;
-      }
-    });
+    ref.listen(
+      directorToolsNotifierProvider.select(_activePromptText),
+      (_, next) => _syncPromptController(next),
+    );
 
     return LayoutBuilder(
       builder: (context, screenConstraints) {
@@ -127,6 +133,18 @@ class _DirectorToolsScreenState extends ConsumerState<DirectorToolsScreen> {
     );
   }
 
+  static String _activePromptText(DirectorToolsState state) =>
+      state.activePromptParams?.prompt ?? '';
+
+  /// 输入时状态与输入框本就一致，只有切换工具或重新打开才会改写，光标不会被打断。
+  void _syncPromptController(String text) {
+    if (_promptController.text == text) return;
+    _promptController.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+  }
+
   double _sidePanelWidth(double availableWidth, double textScale) {
     final scaleAllowance = (textScale - 1).clamp(0, 2) * 24;
     return (availableWidth * 0.36 + scaleAllowance).clamp(320, 400);
@@ -173,7 +191,7 @@ class _DirectorToolsScreenState extends ConsumerState<DirectorToolsScreen> {
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(16),
-        child: Image.memory(source, fit: BoxFit.contain, gaplessPlayback: true),
+        child: _CappedPreview(bytes: source),
       ),
     );
   }
@@ -200,13 +218,7 @@ class _DirectorToolsScreenState extends ConsumerState<DirectorToolsScreen> {
                       ),
                     ),
                     const SizedBox(height: 4),
-                    Flexible(
-                      child: Image.memory(
-                        state.sourceImage!,
-                        fit: BoxFit.contain,
-                        gaplessPlayback: true,
-                      ),
-                    ),
+                    Flexible(child: _CappedPreview(bytes: state.sourceImage!)),
                   ],
                 ),
               ),
@@ -218,7 +230,10 @@ class _DirectorToolsScreenState extends ConsumerState<DirectorToolsScreen> {
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Text(
-                      context.l10n.img2img_directorResult,
+                      _resultTitle(state),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
                       style: const TextStyle(
                         color: Colors.white70,
                         fontSize: 12,
@@ -226,11 +241,19 @@ class _DirectorToolsScreenState extends ConsumerState<DirectorToolsScreen> {
                     ),
                     const SizedBox(height: 4),
                     Flexible(
-                      child: Image.memory(
-                        state.result!,
-                        fit: BoxFit.contain,
-                        gaplessPlayback: true,
-                      ),
+                      child: state.selectedTool.producesPixelArt
+                          // 像素画按原尺寸解码并最近邻放大，任何重采样都会把刚对齐的硬边缘糊回去。
+                          ? Image.memory(
+                              state.result!,
+                              fit: BoxFit.contain,
+                              gaplessPlayback: true,
+                              filterQuality: FilterQuality.none,
+                            )
+                          : _CappedPreview(
+                              key: const ValueKey('director-result-preview'),
+                              bytes: state.result!,
+                              evictOnDispose: true,
+                            ),
                     ),
                   ],
                 ),
@@ -239,6 +262,18 @@ class _DirectorToolsScreenState extends ConsumerState<DirectorToolsScreen> {
           ],
         );
       },
+    );
+  }
+
+  String _resultTitle(DirectorToolsState state) {
+    final l10n = context.l10n;
+    final selected = state.selectedResult;
+    if (state.results.length <= 1 || selected == null) {
+      return l10n.img2img_directorResult;
+    }
+    return l10n.img2img_directorResultWithVariant(
+      l10n.img2img_directorResult,
+      selected.label(l10n, state.selectedResultIndex),
     );
   }
 
@@ -262,10 +297,24 @@ class _DirectorToolsScreenState extends ConsumerState<DirectorToolsScreen> {
         if (state.error != null) ...[
           const SizedBox(height: 12),
           Text(
-            state.error!,
+            pixelSnapErrorText(context.l10n, state.errorCause) ?? state.error!,
             style: theme.textTheme.bodySmall?.copyWith(
               color: theme.colorScheme.error,
             ),
+          ),
+        ],
+        if (state.pixelSnapResult != null && state.result != null) ...[
+          const SizedBox(height: 12),
+          PixelSnapSummary(output: state.pixelSnapResult!),
+        ],
+        if (state.results.length > 1) ...[
+          const SizedBox(height: 16),
+          DirectorResultVariantSelector(
+            results: state.results,
+            selectedIndex: state.selectedResultIndex,
+            onSelected: ref
+                .read(directorToolsNotifierProvider.notifier)
+                .selectResult,
           ),
         ],
         if (state.result != null) ...[
@@ -300,12 +349,21 @@ class _DirectorToolsScreenState extends ConsumerState<DirectorToolsScreen> {
       widgets.addAll(_buildColorizeOptions(theme, state));
     } else if (tool == DirectorToolType.fixEmotion) {
       widgets.addAll(_buildEmotionOptions(theme, state));
+    } else if (tool == DirectorToolType.pixelSnap) {
+      widgets.add(
+        PixelSnapOptionsSection(
+          options: state.pixelSnap,
+          enabled: !state.isRunning,
+        ),
+      );
     }
 
-    if (tool.needsPrompt) {
+    if (state.activePromptParams != null) {
       widgets.add(const SizedBox(height: 12));
       widgets.add(
         TextField(
+          // 各工具各用一个输入框，撤销栈不会把另一个工具的文字撤回来。
+          key: ValueKey(tool),
           controller: _promptController,
           minLines: 1,
           maxLines: 4,
@@ -323,20 +381,20 @@ class _DirectorToolsScreenState extends ConsumerState<DirectorToolsScreen> {
     return widgets;
   }
 
-  List<Widget> _buildColorizeOptions(
+  static String _defryText(double defry) => '${defry.round()}';
+
+  List<Widget> _buildDefrySlider(
     ThemeData theme,
-    DirectorToolsState state,
-  ) {
+    DirectorPromptParams params, {
+    required String label,
+  }) {
     return [
       Row(
         children: [
+          Expanded(child: Text(label, style: theme.textTheme.bodyMedium)),
+          const SizedBox(width: 8),
           Text(
-            context.l10n.img2img_directorDefry,
-            style: theme.textTheme.bodyMedium,
-          ),
-          const Spacer(),
-          Text(
-            '${state.defry}',
+            _defryText(params.defry.toDouble()),
             style: theme.textTheme.bodyMedium?.copyWith(
               fontWeight: FontWeight.w600,
             ),
@@ -344,15 +402,30 @@ class _DirectorToolsScreenState extends ConsumerState<DirectorToolsScreen> {
         ],
       ),
       const SizedBox(height: 4),
-      Slider(
-        value: state.defry.toDouble(),
-        min: 0,
-        max: 5,
-        divisions: 5,
-        label: '${state.defry}',
+      NamedSlider(
+        label: label,
+        valueText: _defryText,
+        value: params.defry.toDouble(),
+        min: DirectorPromptParams.minDefry.toDouble(),
+        max: DirectorPromptParams.maxDefry.toDouble(),
+        divisions:
+            DirectorPromptParams.maxDefry - DirectorPromptParams.minDefry,
         onChanged: (v) => ref
             .read(directorToolsNotifierProvider.notifier)
             .updateDefry(v.round()),
+      ),
+    ];
+  }
+
+  List<Widget> _buildColorizeOptions(
+    ThemeData theme,
+    DirectorToolsState state,
+  ) {
+    return [
+      ..._buildDefrySlider(
+        theme,
+        state.colorizeParams,
+        label: context.l10n.img2img_directorDefry,
       ),
       Text(
         context.l10n.img2img_directorDefryHint,
@@ -365,31 +438,28 @@ class _DirectorToolsScreenState extends ConsumerState<DirectorToolsScreen> {
 
   List<Widget> _buildEmotionOptions(ThemeData theme, DirectorToolsState state) {
     return [
-      Row(
+      Text(
+        context.l10n.img2img_directorEmotionMood,
+        style: theme.textTheme.bodyMedium,
+      ),
+      const SizedBox(height: 8),
+      Wrap(
+        spacing: 8,
+        runSpacing: 8,
         children: [
-          Text(
-            context.l10n.img2img_directorEmotionLevel,
-            style: theme.textTheme.bodyMedium,
-          ),
-          const Spacer(),
-          Text(
-            '${state.defry}',
-            style: theme.textTheme.bodyMedium?.copyWith(
-              fontWeight: FontWeight.w600,
+          for (final emotion in DirectorEmotion.values)
+            _buildEmotionChip(
+              theme,
+              emotion,
+              selected: state.selectedEmotion == emotion,
             ),
-          ),
         ],
       ),
-      const SizedBox(height: 4),
-      Slider(
-        value: state.defry.toDouble(),
-        min: 0,
-        max: 5,
-        divisions: 5,
-        label: '${state.defry}',
-        onChanged: (v) => ref
-            .read(directorToolsNotifierProvider.notifier)
-            .updateDefry(v.round()),
+      const SizedBox(height: 12),
+      ..._buildDefrySlider(
+        theme,
+        state.emotionParams,
+        label: context.l10n.img2img_directorEmotionLevel,
       ),
       Text(
         context.l10n.img2img_directorEmotionLevelHint,
@@ -397,89 +467,104 @@ class _DirectorToolsScreenState extends ConsumerState<DirectorToolsScreen> {
           color: theme.colorScheme.onSurfaceVariant,
         ),
       ),
-      const SizedBox(height: 12),
-      Text(
-        context.l10n.img2img_directorEmotionPresets,
-        style: theme.textTheme.bodyMedium,
-      ),
-      const SizedBox(height: 8),
-      Wrap(
-        spacing: 8,
-        runSpacing: 8,
-        children: emotionPresets.map((preset) {
-          final notifier = ref.read(directorToolsNotifierProvider.notifier);
-          final isActive = notifier.activePreset?.mood == preset.mood;
-          return ChoiceChip(
-            label: Text(preset.label),
-            selected: isActive,
-            onSelected: (_) {
-              notifier.applyEmotionPreset(preset);
-              _promptController.text = preset.extraTags;
-            },
-          );
-        }).toList(),
-      ),
     ];
+  }
+
+  Widget _buildEmotionChip(
+    ThemeData theme,
+    DirectorEmotion emotion, {
+    required bool selected,
+  }) {
+    return ChoiceChip(
+      // Chip 默认单行淡出，窄屏放大字号时长标签宁可折行也不能被截掉。
+      label: Text(emotion.label(context.l10n), softWrap: true, maxLines: 3),
+      selected: selected,
+      // 对勾挤占宽度会让大字号标签被截断；描边不参与布局，选中态不只靠色面。
+      showCheckmark: false,
+      side: selected
+          ? BorderSide(color: theme.colorScheme.primary)
+          : BorderSide.none,
+      onSelected: (_) => ref
+          .read(directorToolsNotifierProvider.notifier)
+          .selectEmotion(emotion),
+    );
   }
 
   Widget _buildRunButton(ThemeData theme, DirectorToolsState state) {
     final label = state.selectedTool.labelKey(context.l10n);
     final isOpus = ref.watch(isOpusSubscriptionProvider);
     final cost = state.estimatedAnlasCost(isOpus: isOpus);
+    final runsLocally = state.selectedTool.runsLocally;
 
-    return Row(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Expanded(
-          child: FilledButton.icon(
-            onPressed:
-                state.isRunning ||
-                    state.imageWidth <= 0 ||
-                    state.imageHeight <= 0
-                ? null
-                : () => _runTool(),
-            icon: state.isRunning
-                ? const SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.play_arrow_rounded, size: 20),
-            label: Text(
-              state.isRunning
-                  ? context.l10n.img2img_directorRunning
-                  : context.l10n.img2img_directorRun(label),
-            ),
-            style: FilledButton.styleFrom(minimumSize: const Size(0, 48)),
-          ),
-        ),
-        if (state.imageWidth > 0 && state.imageHeight > 0) ...[
-          const SizedBox(width: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-            decoration: BoxDecoration(
-              color: theme.colorScheme.primaryContainer.withValues(alpha: 0.5),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  Icons.diamond_outlined,
-                  size: 14,
-                  color: theme.colorScheme.primary,
+        Row(
+          children: [
+            Expanded(
+              child: FilledButton.icon(
+                onPressed:
+                    state.isRunning ||
+                        state.imageWidth <= 0 ||
+                        state.imageHeight <= 0
+                    ? null
+                    : () => _runTool(),
+                icon: state.isRunning
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.play_arrow_rounded, size: 20),
+                label: Text(
+                  state.isRunning
+                      ? context.l10n.img2img_directorRunning
+                      : context.l10n.img2img_directorRun(label),
                 ),
-                const SizedBox(width: 4),
-                Text(
-                  cost == 0 ? 'Free' : '$cost',
-                  style: TextStyle(
-                    color: theme.colorScheme.primary,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
+                style: FilledButton.styleFrom(minimumSize: const Size(0, 48)),
+              ),
+            ),
+            if (!runsLocally &&
+                state.imageWidth > 0 &&
+                state.imageHeight > 0) ...[
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 8,
+                ),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.primaryContainer.withValues(
+                    alpha: 0.5,
                   ),
+                  borderRadius: BorderRadius.circular(10),
                 ),
-              ],
-            ),
-          ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.diamond_outlined,
+                      size: 14,
+                      color: theme.colorScheme.primary,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      cost == 0 ? 'Free' : '$cost',
+                      style: TextStyle(
+                        color: theme.colorScheme.primary,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ),
+        if (runsLocally && state.isRunning) ...[
+          const SizedBox(height: 12),
+          PixelSnapProgressPanel(progress: state.progress),
         ],
       ],
     );
@@ -517,35 +602,59 @@ class _DirectorToolsScreenState extends ConsumerState<DirectorToolsScreen> {
 
   Future<void> _runTool() async {
     final requestState = ref.read(directorToolsNotifierProvider);
-    final label = requestState.selectedTool.labelKey(context.l10n);
-    final cost = requestState.estimatedAnlasCost(
-      isOpus: ref.read(isOpusSubscriptionProvider),
-    );
-    final confirmed = await ThemedConfirmDialog.show(
-      context: context,
-      title: context.l10n.img2img_directorConfirmTitle,
-      content: context.l10n.img2img_directorConfirmContent(label, cost),
-      confirmText: context.l10n.common_confirm,
-      cancelText: context.l10n.common_cancel,
-      type: ThemedConfirmDialogType.warning,
-      icon: Icons.toll_outlined,
-    );
-    if (!confirmed || !mounted) return;
+    // 本机工具不花 Anlas，弹消耗确认只会让用户以为要扣费。
+    if (!requestState.selectedTool.runsLocally) {
+      final billing = await ref
+          .read(subscriptionNotifierProvider.notifier)
+          .freshBillingView();
+      if (!mounted) return;
+      final label = requestState.selectedTool.labelKey(context.l10n);
+      final cost = requestState.estimatedAnlasCost(isOpus: billing.isOpus);
+      final confirmed = await ThemedConfirmDialog.show(
+        context: context,
+        title: context.l10n.img2img_directorConfirmTitle,
+        content: context.l10n.img2img_directorConfirmContent(label, cost),
+        confirmText: context.l10n.common_confirm,
+        cancelText: context.l10n.common_cancel,
+        type: ThemedConfirmDialogType.warning,
+        icon: Icons.toll_outlined,
+      );
+      if (!confirmed || !mounted) return;
+    }
 
     final notifier = ref.read(directorToolsNotifierProvider.notifier);
-    await notifier.runTool();
+    await notifier.runTool(requestState);
 
     if (!mounted) return;
     final state = ref.read(directorToolsNotifierProvider);
     if (state.result != null) {
-      await notifier.registerResult();
-      if (mounted) {
-        final label = state.selectedTool.labelKey(context.l10n);
-        AppToast.success(
-          context,
-          context.l10n.img2img_directorResultReady(label),
-        );
-      }
+      final registration = await notifier.registerResult();
+      if (mounted) _showRegistrationOutcome(state.selectedTool, registration);
+    }
+  }
+
+  void _showRegistrationOutcome(
+    DirectorToolType tool,
+    DirectorResultRegistration registration,
+  ) {
+    final l10n = context.l10n;
+    final label = tool.labelKey(l10n);
+    final failed = registration.failedCount;
+    final total = registration.total;
+    if (registration.succeeded) {
+      AppToast.success(context, l10n.img2img_directorResultReady(label));
+    } else if (registration.allFailed) {
+      AppToast.error(context, l10n.img2img_directorResultSaveFailed(label));
+    } else if (registration.selectedFailed) {
+      AppToast.error(
+        context,
+        l10n.img2img_directorResultSelectedSaveFailed(label, failed, total),
+      );
+    } else {
+      AppToast.warning(
+        context,
+        l10n.img2img_directorResultPartiallySaved(label, failed, total),
+      );
     }
   }
 
@@ -609,6 +718,34 @@ class _ToolListTile extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// 原图与结果都可能远大于屏幕；按显示器尺寸封顶解码，拖动窗口时缓存键不变、不反复整图解码。
+class _CappedPreview extends StatelessWidget {
+  const _CappedPreview({
+    super.key,
+    required this.bytes,
+    this.evictOnDispose = false,
+  });
+
+  final Uint8List bytes;
+
+  /// 结果每次运行都是新字节，离开页面后不该继续占着解码缓存。
+  final bool evictOnDispose;
+
+  @override
+  Widget build(BuildContext context) {
+    final display = View.of(context).display;
+    final logicalDisplay = display.size / display.devicePixelRatio;
+    return DecodedMemoryImage(
+      bytes: bytes,
+      fit: BoxFit.contain,
+      filterQuality: FilterQuality.medium,
+      maxLogicalWidth: logicalDisplay.width,
+      maxLogicalHeight: logicalDisplay.height,
+      evictOnDispose: evictOnDispose,
     );
   }
 }

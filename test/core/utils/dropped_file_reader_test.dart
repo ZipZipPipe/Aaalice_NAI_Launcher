@@ -1,14 +1,55 @@
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:nai_launcher/core/utils/share_temp_directories.dart';
 import 'package:nai_launcher/presentation/utils/dropped_file_reader.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:super_clipboard/super_clipboard.dart';
 
+import '../../helpers/log_capture.dart';
+import '../../helpers/novelai_exif_fixture.dart';
+import '../../helpers/novelai_jpeg_layout_fixture.dart';
+import '../../helpers/novelai_webp_layout_fixture.dart';
+import '../../helpers/riff_webp_builder.dart';
+import '../../helpers/shared_compute_gate.dart';
 import '../../helpers/webp_metadata_fixture.dart';
 
 void main() {
   group('DroppedFileReader', () {
+    test('issues every native read before returning control', () async {
+      final pngBytes = Uint8List.fromList([1, 2, 3]);
+      final reader = _SessionBoundDataReader(pngBytes: pngBytes);
+
+      final pending = DroppedFileReader.read(reader);
+      reader.endSession();
+
+      expect(reader.requests, {
+        'fileUri',
+        'suggestedName',
+        'png',
+        'jpeg',
+        'uri',
+        'html',
+        'plainText',
+      });
+      final result = await pending;
+      expect(result!.bytes, pngBytes);
+      expect(reader.lateRequests, isEmpty);
+    });
+
+    test('closes representations that were requested but never read', () async {
+      final reader = _SessionBoundDataReader(pngBytes: Uint8List(4));
+
+      await DroppedFileReader.read(reader, allowRemoteImages: false);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(reader.jpegCallbackFinished, isTrue);
+      expect(reader.jpegReads, 0);
+    });
+
     test('skips remote URL lookup when remote images are disabled', () async {
       final reader = _PlainTextDataReader(
         'https://cdn.example.test/images/copied.png',
@@ -132,6 +173,38 @@ void main() {
       });
     });
 
+    for (final metadataOnly in [true, false]) {
+      test('404 日志去除签名和片段，metadataOnly=$metadataOnly', () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        addTearDown(() => server.close(force: true));
+        final subscription = server.listen((request) async {
+          request.response.statusCode = HttpStatus.notFound;
+          await request.response.close();
+        });
+        addTearDown(subscription.cancel);
+        final uri = Uri.parse(
+          'http://${server.address.address}:${server.port}'
+          '/attachments/111/222/image.png'
+          '?ex=6a1b2c3d&is=6a1a0000&hm=0123456789abcdef#frag',
+        );
+
+        final logs = await captureLogs(() async {
+          final result = metadataOnly
+              ? await DroppedFileReader.downloadRemoteMetadataPrefix(uri)
+              : await DroppedFileReader.downloadRemoteImage(uri);
+          expect(result, isNull);
+        });
+
+        final text = logs.join('\n');
+        expect(text, contains(uri.path));
+        expect(text, isNot(contains('?')));
+        expect(text, isNot(contains('ex=')));
+        expect(text, isNot(contains('is=')));
+        expect(text, isNot(contains('hm=')));
+        expect(text, isNot(contains('#frag')));
+      });
+    }
+
     test('remote metadata probe requests and caps the byte prefix', () async {
       final sourceBytes = Uint8List.fromList(
         List<int>.generate(96 * 1024, (index) => index % 251),
@@ -169,6 +242,127 @@ void main() {
       );
     });
 
+    test(
+      'metadata source downloads the whole WebP when EXIF lies past the prefix',
+      () async {
+        final original = riffWebp([
+          ...novelAiStealthWebp.sublist(12),
+          ...riffChunk('JUNK', Uint8List(80 * 1024)),
+          ...riffChunk(
+            'EXIF',
+            novelAiExif(
+              userComment: asciiUserComment(
+                novelAiEnvelopeJson(prompt: 'tail exif prompt', seed: 5),
+              ),
+            ),
+          ),
+        ]);
+        final server = await _RangeImageServer.start(original, 'webp');
+        addTearDown(server.close);
+
+        final result = await DroppedFileReader.downloadRemoteMetadataSource(
+          server.uri,
+        );
+
+        expect(result?.bytes, orderedEquals(original));
+        expect(result?.original?.bytes, same(result?.bytes));
+        expect(server.requestedRanges, [
+          'bytes=0-${DroppedFileReader.discordMetadataProbeBytes - 1}',
+          null,
+        ]);
+      },
+    );
+
+    test('metadata source keeps only the prefix of a PNG', () async {
+      final original = Uint8List(96 * 1024)
+        ..setAll(0, const [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      final server = await _RangeImageServer.start(original, 'png');
+      addTearDown(server.close);
+
+      final result = await DroppedFileReader.downloadRemoteMetadataSource(
+        server.uri,
+      );
+
+      expect(
+        result?.bytes,
+        hasLength(DroppedFileReader.discordMetadataProbeBytes),
+      );
+      expect(result?.original, isNull);
+      expect(server.requestedRanges, hasLength(1));
+    });
+
+    test('metadata source returns a WebP that fits in the prefix', () async {
+      final original = novelAiLayoutWebp(exif: rewrittenCameraExif());
+      final server = await _RangeImageServer.start(original, 'webp');
+      addTearDown(server.close);
+
+      final result = await DroppedFileReader.downloadRemoteMetadataSource(
+        server.uri,
+      );
+
+      expect(result?.bytes, orderedEquals(original));
+      expect(result?.original, isNull);
+      expect(server.requestedRanges, hasLength(1));
+    });
+
+    test(
+      'metadata source downloads the whole JPEG when its header outgrows the prefix',
+      () async {
+        final jpeg = novelAiLayoutJpeg(
+          exifTiffs: [
+            novelAiExif(
+              userComment: asciiUserComment(
+                novelAiEnvelopeJson(prompt: 'late exif prompt', seed: 9),
+              ),
+            ),
+          ],
+        );
+        final original = Uint8List.fromList([
+          ...jpeg.sublist(0, 2),
+          0xFF,
+          0xE2,
+          0xFF,
+          0xFF,
+          ...Uint8List(0xFFFF - 2),
+          ...jpeg.sublist(2),
+        ]);
+        final server = await _RangeImageServer.start(original, 'jpeg');
+        addTearDown(server.close);
+
+        final result = await DroppedFileReader.downloadRemoteMetadataSource(
+          server.uri,
+        );
+
+        expect(result?.bytes, orderedEquals(original));
+        expect(result?.original?.bytes, same(result?.bytes));
+        expect(server.requestedRanges, [
+          'bytes=0-${DroppedFileReader.discordMetadataProbeBytes - 1}',
+          null,
+        ]);
+      },
+    );
+
+    test(
+      'metadata source keeps the prefix of a JPEG whose header fits',
+      () async {
+        final jpeg = novelAiLayoutJpeg(exifTiffs: [cameraExifTiff()]);
+        final original = Uint8List.fromList([...jpeg, ...Uint8List(96 * 1024)]);
+        final server = await _RangeImageServer.start(original, 'jpeg');
+        addTearDown(server.close);
+
+        final result = await DroppedFileReader.downloadRemoteMetadataSource(
+          server.uri,
+        );
+
+        expect(
+          result?.bytes,
+          hasLength(DroppedFileReader.discordMetadataProbeBytes),
+        );
+        expect(result?.original, isNull);
+        expect(server.requestedRanges, hasLength(1));
+      },
+    );
+
     test('reads direct clipboard WebP bytes without a file URI', () async {
       final bytes = buildNovelAiWebpFixture(
         comment: const {'prompt': 'clipboard fixture'},
@@ -180,12 +374,136 @@ void main() {
         allowRemoteImages: false,
       );
 
-      expect(result?.fileName, 'clipboard.WEBP');
+      expect(result?.fileName, 'clipboard.webp');
+      expect(result?.bytes, bytes);
+      expect(result?.sourcePath, isNull);
+      expect(result?.sourceUri, isNull);
+    });
+
+    test('keeps reading when the suggested name lookup fails', () async {
+      final bytes = buildNovelAiWebpFixture(
+        comment: const {'prompt': 'clipboard fixture'},
+      );
+      final reader = _FailingSuggestedNameWebpDataReader(
+        bytes,
+        fileName: 'clipboard.WEBP',
+      );
+
+      final result = await DroppedFileReader.read(
+        reader,
+        allowRemoteImages: false,
+      );
+
+      expect(result?.fileName, 'clipboard.webp');
+      expect(result?.bytes, bytes);
+    });
+
+    test('reads a dropped local file behind the shared compute gate', () async {
+      final directory = await Directory.systemTemp.createTemp('drop-local-');
+      addTearDown(() => directory.delete(recursive: true));
+      final bytes = buildNovelAiWebpFixture(
+        comment: const {'prompt': 'local fixture'},
+      );
+      final file = File('${directory.path}${Platform.pathSeparator}drop.webp');
+      await file.writeAsBytes(bytes);
+
+      final result = await expectQueuedBehindSharedComputeGate(
+        () => DroppedFileReader.read(
+          _FileUriDataReader(file.uri),
+          allowRemoteImages: false,
+        ),
+      );
+
+      expect(result?.fileName, 'drop.webp');
+      expect(result?.bytes, bytes);
+      expect(result?.sourcePath, file.path);
+    });
+
+    test('a file the launcher exported is read without a source', () async {
+      final directory = await Directory.systemTemp.createTemp('drop-export-');
+      addTearDown(() => directory.delete(recursive: true));
+      final original = PathProviderPlatform.instance;
+      PathProviderPlatform.instance = _TemporaryPathProvider(directory.path);
+      addTearDown(() => PathProviderPlatform.instance = original);
+      final exports = await ShareTempDirectories.resolve(
+        ShareTempDirectories.dragExport,
+      );
+      final bytes = buildNovelAiWebpFixture(
+        comment: const {'prompt': 'exported fixture'},
+      );
+      final file = File(p.join(exports.path, 'run_a', 'item_a', 'drop.webp'));
+      await file.create(recursive: true);
+      await file.writeAsBytes(bytes);
+
+      final result = await DroppedFileReader.read(
+        _FileUriDataReader(file.uri),
+        allowRemoteImages: false,
+      );
+
       expect(result?.bytes, bytes);
       expect(result?.sourcePath, isNull);
       expect(result?.sourceUri, isNull);
     });
   });
+}
+
+class _TemporaryPathProvider extends PathProviderPlatform {
+  _TemporaryPathProvider(this.temporaryPath);
+
+  final String temporaryPath;
+
+  @override
+  Future<String?> getTemporaryPath() async => temporaryPath;
+}
+
+/// 按 Range 头返回 206 片段，没有 Range 时返回整个文件，并记录每次请求的 Range。
+class _RangeImageServer {
+  _RangeImageServer._(this._server, this._bytes, this._subtype) {
+    _server.listen(_handle);
+  }
+
+  static Future<_RangeImageServer> start(
+    Uint8List bytes,
+    String subtype,
+  ) async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    return _RangeImageServer._(server, bytes, subtype);
+  }
+
+  static final RegExp _rangePattern = RegExp(r'^bytes=(\d+)-(\d+)$');
+
+  final HttpServer _server;
+  final Uint8List _bytes;
+  final String _subtype;
+  final List<String?> requestedRanges = [];
+
+  Uri get uri => Uri.parse(
+    'http://${_server.address.address}:${_server.port}/original.$_subtype',
+  );
+
+  Future<void> close() => _server.close(force: true);
+
+  Future<void> _handle(HttpRequest request) async {
+    final range = request.headers.value(HttpHeaders.rangeHeader);
+    requestedRanges.add(range);
+    final response = request.response
+      ..headers.contentType = ContentType('image', _subtype);
+    final match = range == null ? null : _rangePattern.firstMatch(range);
+    if (match == null) {
+      response.add(_bytes);
+    } else {
+      final start = int.parse(match.group(1)!);
+      final end = math.min(int.parse(match.group(2)!), _bytes.length - 1);
+      response
+        ..statusCode = HttpStatus.partialContent
+        ..headers.set(
+          HttpHeaders.contentRangeHeader,
+          'bytes $start-$end/${_bytes.length}',
+        )
+        ..add(Uint8List.sublistView(_bytes, start, end + 1));
+    }
+    await response.close();
+  }
 }
 
 Future<HttpServer> _startImageServer(Uint8List bytes) async {
@@ -198,35 +516,26 @@ Future<HttpServer> _startImageServer(Uint8List bytes) async {
   return server;
 }
 
-class _PlainTextDataReader extends DataReader {
-  _PlainTextDataReader(this.text);
+/// 只声明 [formats] 的拖入项；读值、读文件默认都不提供。
+class _StubDataReader extends Fake implements DataReader {
+  _StubDataReader(this.formats);
 
-  final String text;
-
-  @override
-  bool canProvide(DataFormat format) => format == Formats.plainText;
+  final List<DataFormat> formats;
 
   @override
-  List<DataFormat> getFormats(List<DataFormat> allFormats) {
-    return allFormats
-        .where((format) => format == Formats.plainText)
-        .toList(growable: false);
-  }
+  bool canProvide(DataFormat format) =>
+      formats.any((provided) => identical(provided, format));
+
+  @override
+  List<DataFormat> getFormats(List<DataFormat> allFormats) =>
+      allFormats.where(canProvide).toList(growable: false);
 
   @override
   ReadProgress? getValue<T extends Object>(
     ValueFormat<T> format,
     AsyncValueChanged<T?> onValue, {
     ValueChanged<Object>? onError,
-  }) {
-    if (!identical(format, Formats.plainText)) {
-      return null;
-    }
-    Future<void>.microtask(() async {
-      await onValue(text as T);
-    });
-    return _CompletedReadProgress();
-  }
+  }) => null;
 
   @override
   ReadProgress? getFile(
@@ -235,9 +544,7 @@ class _PlainTextDataReader extends DataReader {
     ValueChanged<Object>? onError,
     bool allowVirtualFiles = true,
     bool synthesizeFilesFromURIs = true,
-  }) {
-    return null;
-  }
+  }) => null;
 
   @override
   bool isSynthesized(DataFormat format) => false;
@@ -251,49 +558,51 @@ class _PlainTextDataReader extends DataReader {
   @override
   Future<VirtualFileReceiver?> getVirtualFileReceiver({
     FileFormat? format,
-  }) async {
-    return null;
-  }
+  }) async => null;
 
   @override
   List<PlatformFormat> get platformFormats => const [];
+
+  ReadProgress _deliver(Future<void> Function() delivery) {
+    Future<void>.microtask(delivery);
+    return _CompletedReadProgress();
+  }
 }
 
-class _ImageAndUriDataReader extends DataReader {
+class _PlainTextDataReader extends _StubDataReader {
+  _PlainTextDataReader(this.text) : super([Formats.plainText]);
+
+  final String text;
+
+  @override
+  ReadProgress? getValue<T extends Object>(
+    ValueFormat<T> format,
+    AsyncValueChanged<T?> onValue, {
+    ValueChanged<Object>? onError,
+  }) => identical(format, Formats.plainText)
+      ? _deliver(() async => onValue(text as T))
+      : null;
+}
+
+class _ImageAndUriDataReader extends _StubDataReader {
   _ImageAndUriDataReader({
     required this.uri,
     required this.imageBytes,
     required this.synthesizedImage,
-  });
+  }) : super([Formats.png, Formats.uri]);
 
   final Uri uri;
   final Uint8List imageBytes;
   final bool synthesizedImage;
 
   @override
-  bool canProvide(DataFormat format) {
-    return identical(format, Formats.png) || identical(format, Formats.uri);
-  }
-
-  @override
-  List<DataFormat> getFormats(List<DataFormat> allFormats) {
-    return allFormats.where(canProvide).toList(growable: false);
-  }
-
-  @override
   ReadProgress? getValue<T extends Object>(
     ValueFormat<T> format,
     AsyncValueChanged<T?> onValue, {
     ValueChanged<Object>? onError,
-  }) {
-    if (!identical(format, Formats.uri)) {
-      return null;
-    }
-    Future<void>.microtask(() async {
-      await onValue(NamedUri(uri) as T);
-    });
-    return _CompletedReadProgress();
-  }
+  }) => identical(format, Formats.uri)
+      ? _deliver(() async => onValue(NamedUri(uri) as T))
+      : null;
 
   @override
   ReadProgress? getFile(
@@ -302,51 +611,114 @@ class _ImageAndUriDataReader extends DataReader {
     ValueChanged<Object>? onError,
     bool allowVirtualFiles = true,
     bool synthesizeFilesFromURIs = true,
-  }) {
-    if (!identical(format, Formats.png)) {
-      return null;
-    }
-    Future<void>.microtask(() async {
-      await onFile(_MemoryDataReaderFile(imageBytes, fileName: 'preview.png'));
-    });
-    return _CompletedReadProgress();
-  }
+  }) => identical(format, Formats.png)
+      ? _deliver(
+          () async => onFile(
+            _MemoryDataReaderFile(imageBytes, fileName: 'preview.png'),
+          ),
+        )
+      : null;
 
   @override
-  bool isSynthesized(DataFormat format) {
-    return identical(format, Formats.png) && synthesizedImage;
-  }
-
-  @override
-  bool isVirtual(DataFormat format) => false;
+  bool isSynthesized(DataFormat format) =>
+      identical(format, Formats.png) && synthesizedImage;
 
   @override
   Future<String?> getSuggestedName() async => 'preview.png';
-
-  @override
-  Future<VirtualFileReceiver?> getVirtualFileReceiver({
-    FileFormat? format,
-  }) async {
-    return null;
-  }
-
-  @override
-  List<PlatformFormat> get platformFormats => const [];
 }
 
-class _WebpDataReader extends DataReader {
-  _WebpDataReader(this.bytes, {required this.fileName});
+class _WebpDataReader extends _StubDataReader {
+  _WebpDataReader(this.bytes, {required this.fileName}) : super([Formats.webp]);
 
   final Uint8List bytes;
   final String fileName;
 
   @override
-  bool canProvide(DataFormat format) => identical(format, Formats.webp);
+  ReadProgress? getFile(
+    FileFormat? format,
+    AsyncValueChanged<DataReaderFile> onFile, {
+    ValueChanged<Object>? onError,
+    bool allowVirtualFiles = true,
+    bool synthesizeFilesFromURIs = true,
+  }) => identical(format, Formats.webp)
+      ? _deliver(
+          () async => onFile(_MemoryDataReaderFile(bytes, fileName: fileName)),
+        )
+      : null;
 
   @override
-  List<DataFormat> getFormats(List<DataFormat> allFormats) => allFormats
-      .where((format) => identical(format, Formats.webp))
-      .toList(growable: false);
+  Future<String?> getSuggestedName() async => fileName;
+}
+
+class _FailingSuggestedNameWebpDataReader extends _WebpDataReader {
+  _FailingSuggestedNameWebpDataReader(super.bytes, {required super.fileName});
+
+  @override
+  Future<String?> getSuggestedName() =>
+      Future<String?>.error(const FileSystemException('name lookup failed'));
+}
+
+class _FileUriDataReader extends _StubDataReader {
+  _FileUriDataReader(this.uri) : super([Formats.fileUri]);
+
+  final Uri uri;
+
+  @override
+  ReadProgress? getValue<T extends Object>(
+    ValueFormat<T> format,
+    AsyncValueChanged<T?> onValue, {
+    ValueChanged<Object>? onError,
+  }) => identical(format, Formats.fileUri)
+      ? _deliver(() async => onValue(uri as T))
+      : null;
+}
+
+/// Mirrors a drop session: requests made after [endSession] fail like a
+/// disposed native reader.
+class _SessionBoundDataReader extends _StubDataReader {
+  _SessionBoundDataReader({required this.pngBytes})
+    : super([..._values.keys, Formats.png, Formats.jpeg]);
+
+  static final Map<DataFormat, String> _values = {
+    Formats.fileUri: 'fileUri',
+    Formats.uri: 'uri',
+    Formats.htmlText: 'html',
+    Formats.plainText: 'plainText',
+  };
+
+  final Uint8List pngBytes;
+  final requests = <String>{};
+  final lateRequests = <String>[];
+  var jpegCallbackFinished = false;
+  var jpegReads = 0;
+  var _sessionEnded = false;
+
+  void endSession() => _sessionEnded = true;
+
+  void _record(String name) {
+    if (_sessionEnded) {
+      lateRequests.add(name);
+      throw StateError('Reader not found: $name');
+    }
+    requests.add(name);
+  }
+
+  @override
+  ReadProgress? getValue<T extends Object>(
+    ValueFormat<T> format,
+    AsyncValueChanged<T?> onValue, {
+    ValueChanged<Object>? onError,
+  }) {
+    final name = _values[format];
+    if (name == null) return null;
+    _record(name);
+    final Object value = switch (name) {
+      'fileUri' => Uri.file('/dropped/readme.txt'),
+      'uri' => NamedUri(Uri.parse('https://cdn.example.test/original.png')),
+      _ => '<img src="https://cdn.example.test/original.png">',
+    };
+    return _deliver(() async => onValue(value as T));
+  }
 
   @override
   ReadProgress? getFile(
@@ -356,36 +728,41 @@ class _WebpDataReader extends DataReader {
     bool allowVirtualFiles = true,
     bool synthesizeFilesFromURIs = true,
   }) {
-    if (!identical(format, Formats.webp)) return null;
-    Future<void>.microtask(
-      () async => onFile(_MemoryDataReaderFile(bytes, fileName: fileName)),
-    );
-    return _CompletedReadProgress();
+    if (identical(format, Formats.png)) {
+      _record('png');
+      return _deliver(
+        () async => onFile(_MemoryDataReaderFile(pngBytes, fileName: 'a.png')),
+      );
+    }
+    if (identical(format, Formats.jpeg)) {
+      _record('jpeg');
+      final file = _CountingDataReaderFile(onRead: () => jpegReads++);
+      return _deliver(() async {
+        await onFile(file);
+        jpegCallbackFinished = true;
+      });
+    }
+    return null;
   }
 
   @override
-  ReadProgress? getValue<T extends Object>(
-    ValueFormat<T> format,
-    AsyncValueChanged<T?> onValue, {
-    ValueChanged<Object>? onError,
-  }) => null;
+  Future<String?> getSuggestedName() {
+    _record('suggestedName');
+    return Future.value('dropped.png');
+  }
+}
+
+class _CountingDataReaderFile extends _MemoryDataReaderFile {
+  _CountingDataReaderFile({required this.onRead})
+    : super(Uint8List(1), fileName: 'b.jpg');
+
+  final VoidCallback onRead;
 
   @override
-  bool isSynthesized(DataFormat format) => false;
-
-  @override
-  bool isVirtual(DataFormat format) => false;
-
-  @override
-  Future<String?> getSuggestedName() async => fileName;
-
-  @override
-  Future<VirtualFileReceiver?> getVirtualFileReceiver({
-    FileFormat? format,
-  }) async => null;
-
-  @override
-  List<PlatformFormat> get platformFormats => const [];
+  Future<Uint8List> readAll() {
+    onRead();
+    return super.readAll();
+  }
 }
 
 class _MemoryDataReaderFile extends DataReaderFile {

@@ -1,8 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:hive/hive.dart';
+import 'package:hive_ce/hive_ce.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../core/utils/app_logger.dart';
@@ -34,7 +33,7 @@ class VibeLibraryStorageService {
   VibeLibraryStorageService({
     VibeFileStorageService? fileStorage,
     VibeLibraryRepositoryProtocol? repository,
-    VibeGenerationStateRepository? generationStateRepository,
+    VibeGenerationStateRepositoryProtocol? generationStateRepository,
   }) : _files = fileStorage ?? VibeFileStorageService(),
        _repository = repository ?? HiveVibeLibraryRepository(),
        _generation =
@@ -44,7 +43,6 @@ class VibeLibraryStorageService {
     _writer = VibeLibraryEntryWriter(_repository, _files, _displayCache);
     _categories = VibeLibraryCategoryRepository(
       _repository,
-      getEntriesByCategory: getEntriesByCategory,
       updateEntryCategory: updateEntryCategory,
     );
     _sync = VibeLibrarySyncService(_repository, _files, _displayCache);
@@ -52,7 +50,7 @@ class VibeLibraryStorageService {
 
   final VibeFileStorageService _files;
   final VibeLibraryRepositoryProtocol _repository;
-  final VibeGenerationStateRepository _generation;
+  final VibeGenerationStateRepositoryProtocol _generation;
   late final VibeDisplayCacheRepository _displayCache;
   late final VibeLibraryEntryReader _reader;
   late final VibeLibraryEntryWriter _writer;
@@ -95,6 +93,11 @@ class VibeLibraryStorageService {
       _reader.loadBundleChild(id, childIndex);
   Future<List<VibeLibraryEntry>> getAllEntries() => _reader.all();
   Future<List<VibeLibraryEntry>> getDisplayEntries() => _reader.display();
+
+  Stream<VibeLibraryEntry> streamStoredEntries() => _repository.streamEntries();
+  Future<List<VibeLibraryCategory>> readStoredCategories() =>
+      _repository.readCategories();
+
   Future<List<VibeLibraryEntry>> getEntriesByCategory(String? categoryId) =>
       _reader.byCategory(categoryId);
   Future<List<VibeLibraryEntry>> searchEntries(String query) =>
@@ -234,7 +237,6 @@ class VibeLibraryStorageService {
         scannedCount: 0,
         upsertedCount: 0,
         deletedCount: 0,
-        failedCount: 1,
         errors: [error.toString()],
       );
     }
@@ -267,26 +269,16 @@ class VibeLibraryStorageService {
   Future<int> getCategoriesCount() async => (await getAllCategories()).length;
   Future<bool> categoryExists(String id) async => await getCategory(id) != null;
   Future<void> clearAllCategories() => _repository.clearCategories();
-  Future<Set<String>> getAllTags() => _categories.getAllTags();
+  Future<Set<String>> getAllTags() => _reader.tags();
   Future<List<VibeLibraryEntry>> getEntriesByTag(String tag) =>
-      _categories.getEntriesByTag(tag);
+      _reader.byTag(tag);
   Future<List<VibeLibraryEntry>> getEntriesByUsage({int limit = 20}) =>
-      _categories.getEntriesByUsage(limit: limit);
+      _reader.byUsage(limit: limit);
 
-  Future<void> saveGenerationState({
-    required List<Map<String, dynamic>> vibeReferences,
-    required List<Map<String, dynamic>> preciseReferences,
-    required bool normalizeVibeStrength,
-  }) => saveGenerationStateJson(
-    jsonEncode({
-      'vibeReferences': vibeReferences,
-      'preciseReferences': preciseReferences,
-      'normalizeVibeStrength': normalizeVibeStrength,
-      'savedAt': DateTime.now().toIso8601String(),
-    }),
-  );
-  Future<void> saveGenerationStateJson(String stateJson) =>
-      _generation.saveJson(stateJson);
+  /// [stateJson] is the whole state as UTF-8 JSON; it embeds base64 images,
+  /// so callers encode it off the UI isolate.
+  Future<void> saveGenerationStateUtf8Json(Uint8List stateJson) =>
+      _generation.saveUtf8Json(stateJson);
   Future<Map<String, dynamic>?> loadGenerationState() async {
     try {
       final value = await loadGenerationStateJson();

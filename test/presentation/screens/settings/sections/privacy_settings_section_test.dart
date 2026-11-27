@@ -1,10 +1,11 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hive/hive.dart';
+import 'package:hive_ce/hive_ce.dart';
 import 'package:nai_launcher/core/constants/storage_keys.dart';
 import 'package:nai_launcher/core/services/danbooru_tags_lazy_service.dart';
 import 'package:nai_launcher/l10n/app_localizations.dart';
@@ -13,13 +14,16 @@ import 'package:nai_launcher/presentation/screens/settings/sections/privacy_sett
 import 'package:nai_launcher/presentation/screens/settings/widgets/settings_card.dart';
 import 'package:nai_launcher/presentation/widgets/online_gallery/blacklist_settings_panel.dart';
 
+import '../../../../helpers/adaptive_panel_expectations.dart';
+
 void main() {
   late Directory hiveDir;
 
   setUpAll(() async {
     hiveDir = Directory.systemTemp.createTempSync('privacy_settings_hive_');
     Hive.init(hiveDir.path);
-    await Hive.openBox(StorageKeys.settingsBox);
+    // 内存后端：落盘写一旦从 widget test 的 FakeAsync 时钟发起就不会完成，会锁死 box
+    await Hive.openBox(StorageKeys.settingsBox, bytes: Uint8List(0));
   });
 
   setUp(() async {
@@ -27,7 +31,8 @@ void main() {
   });
 
   tearDownAll(() async {
-    await Hive.close();
+    // 有界等待：box 被锁死时快速失败，不把整个测试分片拖到看门狗超时
+    await Hive.close().timeout(const Duration(seconds: 10));
     if (await hiveDir.exists()) {
       await hiveDir.delete(recursive: true);
     }
@@ -156,6 +161,7 @@ void main() {
       findsOne,
     );
     await tester.ensureVisible(find.text('保存'));
+    expectPanelHeaderScrollsWithContent(tester);
     expect(find.text('保存'), findsOneWidget);
     final panelRect = tester.getRect(panel);
     expect(panelRect.left, greaterThanOrEqualTo(safePadding.left));

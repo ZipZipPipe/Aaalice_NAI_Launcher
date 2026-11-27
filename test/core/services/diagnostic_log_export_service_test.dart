@@ -34,6 +34,16 @@ void main() {
           'Authorization: Basic dXNlcjpwYXNz\n'
           'Bearer secret-token-value\n'
           'api_key=secret-api-key\n'
+          'https://cdn.discordapp.com/attachments/111/222/image.png'
+          '?ex=6a1b2c3d&is=6a1a0000&hm=0123456789abcdef#frag\n'
+          'https://danbooru.donmai.us/posts.json'
+          '?api_key=xyz&login=bob&tags=secret\n'
+          'https://api.example.test/items?api_key=archive-fixture-key&limit=1 '
+          'repeated archive-fixture-key\n'
+          'https://legacy.example.test/posts.json'
+          '?api_key= [REDACTED]&login=old-login&tags=old-tag#old-fragment '
+          'status=429\n'
+          'https://legacy.example.test/about?api_key= [REDACTED], status=401\n'
           'Cookie: sessionid=live-session-secret\n'
           'cookie=raw-cookie-value session_key=raw-session-key\n'
           'unlabelled=ghp_12345678901234567890\n'
@@ -53,6 +63,7 @@ void main() {
     final service = DiagnosticLogExportService(
       loadLogFiles: () async => [logFile],
       loadCrashFiles: () async => const [],
+      loadUpdaterFiles: () async => const [],
       flushLogs: () async => flushed = true,
       exportArchive: (sourcePath, fileName, dialogTitle) async {
         expect(fileName, 'nai-launcher-diagnostics-20260221-123456.zip');
@@ -77,6 +88,29 @@ void main() {
       archive.findFile('logs/app.log')!.content as List<int>,
     );
     expect(exportedLog, contains('request failed'));
+    expect(
+      exportedLog,
+      contains('https://cdn.discordapp.com/attachments/111/222/image.png'),
+    );
+    expect(exportedLog, contains('https://danbooru.donmai.us/posts.json'));
+    expect(
+      exportedLog,
+      contains('https://api.example.test/items repeated [REDACTED]\n'),
+    );
+    expect(exportedLog, isNot(contains('archive-fixture-key')));
+    expect(
+      exportedLog,
+      contains('https://legacy.example.test/posts.json status=429\n'),
+    );
+    expect(
+      exportedLog,
+      contains('https://legacy.example.test/about, status=401\n'),
+    );
+    expect(exportedLog, isNot(contains('ex=')));
+    expect(exportedLog, isNot(contains('hm=')));
+    expect(exportedLog, isNot(contains('xyz')));
+    expect(exportedLog, isNot(contains('bob')));
+    expect(exportedLog, isNot(contains('secret')));
     expect(exportedLog, contains('[absolute path]'));
     expect(exportedLog, isNot(contains('dXNlcjpwYXNz')));
     expect(exportedLog, isNot(contains('secret-token-value')));
@@ -104,6 +138,221 @@ void main() {
     expect(metadata['logs'], ['app.log']);
   });
 
+  Future<(String, String)> exportSanitized(
+    String text, {
+    String fileName = 'paths.log',
+  }) async {
+    final source = await File(
+      p.join(tempDirectory.path, fileName),
+    ).writeAsString(text);
+    late Uint8List bytes;
+    final service = DiagnosticLogExportService(
+      loadLogFiles: () async => [source],
+      loadCrashFiles: () async => const [],
+      loadUpdaterFiles: () async => const [],
+      loadAgentAuditFile: () async => null,
+      loadMcpAuditFile: () async => null,
+      flushLogs: () async {},
+      diagnosticsMetadata: () => text,
+      exportArchive: (path, _, _) async {
+        bytes = await File(path).readAsBytes();
+        return true;
+      },
+    );
+
+    final result = await service.export(dialogTitle: 'Export');
+    expect(result.status, DiagnosticLogExportStatus.exported);
+    final archive = ZipDecoder().decodeBytes(bytes);
+    final log = utf8.decode(
+      archive.findFile('logs/$fileName')!.content as List<int>,
+    );
+    final metadata =
+        jsonDecode(
+              utf8.decode(
+                archive.findFile('diagnostics.json')!.content as List<int>,
+              ),
+            )
+            as Map<String, dynamic>;
+    expect(await source.readAsString(), text);
+    return (log, metadata['environment'] as String);
+  }
+
+  group('export path redaction', () {
+    final cases = <(String, String)>[
+      (
+        r'file=C:\Users\John Smith\OneDrive Personal\secret file.png done'
+            '\n',
+        'file=[absolute path]\n',
+      ),
+      (
+        r'Deleted: C:\x.png (1/2)'
+            '\n',
+        'Deleted: [absolute path]\n',
+      ),
+      (
+        r'C:\Users\Alice\private(2026)'
+            '\n',
+        '[absolute path]\n',
+      ),
+      (
+        r'C:\Users\A B\private.v1 copy'
+            '\n',
+        '[absolute path]\n',
+      ),
+      (
+        r'C:\Users\张 三\日本語 フォルダ\画像 名前.png'
+            '\n',
+        '[absolute path]\n',
+      ),
+      (
+        r"FileSystemException: msg, path = 'C:\Users\A B\x.png' "
+            '(OS Error: 拒绝访问。, errno = 5)\n',
+        "FileSystemException: msg, path = '[absolute path]' "
+            '(OS Error: 拒绝访问。, errno = 5)\n',
+      ),
+      (
+        r"'C:\Users\O' Connor\a.png' done"
+            '\n',
+        "'[absolute path]' done\n",
+      ),
+      ('''"C:\\Users\\O'Connor\\a.png" done\n''', '"[absolute path]" done\n'),
+      (
+        r"`C:\Users\O'Connor\a.png` done"
+            '\n',
+        '`[absolute path]` done\n',
+      ),
+      (
+        r'from "C:\Users\A B\x.png" to "D:\private folder\y.png" done'
+            '\n',
+        'from "[absolute path]" to "[absolute path]" done\n',
+      ),
+      (
+        r'\\host\private share\name file.png'
+            '\n',
+        '[absolute path]\n',
+      ),
+      ('//host/private share/name file.png\n', '[absolute path]\n'),
+      ('file:///C:/Users/A B/name file.png\n', '[absolute path]\n'),
+      ('/home/A B/name file.png\n', '[absolute path]\n'),
+      ('/private/var/folders/A B/a.png\n', '[absolute path]\n'),
+      (
+        '/Applications/Example App.app/Contents/MacOS/Example\n',
+        '[absolute path]\n',
+      ),
+      ('/storage/emulated/0/private folder/a.png\n', '[absolute path]\n'),
+      (
+        r'file=C:\Users\A B\x.png done'
+            '\nnext line stays\n',
+        'file=[absolute path]\nnext line stays\n',
+      ),
+      (
+        'GET https://host/Users/x 200 12:30 package:lib/a.dart\n',
+        'GET https://host/Users/x 200 12:30 package:lib/a.dart\n',
+      ),
+      ('GET /users.json 404\n', 'GET /users.json 404\n'),
+      (
+        'file=/private/A B/a.png '
+            'url=https://reader:pass@host/Users/x?tags=secret，状态码=429\n',
+        'file=[absolute path] url=https://host/Users/x，状态码=429\n',
+      ),
+      (
+        'Failed to persist cloud sync secret: PlatformException\n',
+        'Failed to persist cloud sync secret: [REDACTED]\n',
+      ),
+      (
+        r'"C:\Users\A B\x.png done'
+            '\n',
+        '"[absolute path]\n',
+      ),
+      (
+        r'`C:\Users\A B\x.png done'
+            '\n',
+        '`[absolute path]\n',
+      ),
+      (
+        r"'C:\Users\A B\x.png done"
+            '\n',
+        "'[absolute path]\n",
+      ),
+      (
+        r"from 'C:\a.png' to 'D:\b.png' done"
+            '\n',
+        "from '[absolute path]' done\n",
+      ),
+      (
+        'from "file:///C:/Users/A B/a.png" to "/home/A B/b.png" done\n',
+        'from "[absolute path]" to "[absolute path]" done\n',
+      ),
+    ];
+    for (var index = 0; index < cases.length; index++) {
+      final (input, expected) = cases[index];
+      test('sanitizes log and multiline metadata case $index', () async {
+        final (log, environment) = await exportSanitized(input);
+        expect(log, expected);
+        expect(environment, expected);
+      });
+    }
+
+    test(
+      'preserves metadata line separators and a final unterminated line',
+      () async {
+        final (log, environment) = await exportSanitized(
+          r'file=C:\Users\A B\x.png done'
+          '\r\nnext line stays\rfinal line',
+        );
+        expect(log, 'file=[absolute path]\nnext line stays\nfinal line\n');
+        expect(
+          environment,
+          'file=[absolute path]\r\nnext line stays\rfinal line',
+        );
+      },
+    );
+
+    test('redacts thousands of quoted paths in one line', () async {
+      final input =
+          '${List.generate(3000, (index) => '"C:\\Users\\A B\\$index.png" done').join(' | ')}\n';
+      final expected =
+          '${List.filled(3000, '"[absolute path]" done').join(' | ')}\n';
+      final (log, environment) = await exportSanitized(input);
+      expect(log, expected);
+      expect(environment, expected);
+    });
+  });
+
+  test(
+    'redacts nested string values while preserving exported JSON types',
+    () async {
+      final (exported, _) = await exportSanitized(
+        jsonEncode({
+          'asset': {
+            'downloadUrl':
+                'https://host/package.zip?token=fixture-secret '
+                'copy=fixture-secret',
+            'token': 'opaque-fixture',
+          },
+          'details': [r'C:\QA\App Folder\installer.log', 15, false, null],
+        }),
+        fileName: 'pending_update.json',
+      );
+      expect(jsonDecode(exported), {
+        'asset': {
+          'downloadUrl': 'https://host/package.zip copy=[REDACTED]',
+          'token': '[REDACTED SENSITIVE LOG LINE]',
+        },
+        'details': ['[absolute path]', 15, false, null],
+      });
+    },
+  );
+
+  test('uses line redaction for malformed JSON in the ZIP', () async {
+    final (exported, _) = await exportSanitized(
+      r'{"message":"C:\QA\App Folder'
+      '\nnext line\n',
+      fileName: 'update_incomplete.json',
+    );
+    expect(exported, '{"message":"[absolute path]\nnext line\n');
+  });
+
   test(
     'exports only projected audit events from the support directory',
     () async {
@@ -129,7 +378,8 @@ void main() {
       late Uint8List bytes;
       final service = DiagnosticLogExportService(
         loadLogFiles: () async => [],
-        loadCrashFiles: () async => [],
+        loadCrashFiles: () async => const [],
+        loadUpdaterFiles: () async => const [],
         flushLogs: () async {},
         diagnosticsMetadata: () => 'test',
         exportArchive: (path, _, _) async {
@@ -185,6 +435,7 @@ void main() {
     final service = DiagnosticLogExportService(
       loadLogFiles: () async => [older, newer],
       loadCrashFiles: () async => const [],
+      loadUpdaterFiles: () async => const [],
       flushLogs: () async {},
       exportArchive: (sourcePath, _, _) async {
         archivePath = p.join(tempDirectory.path, 'bounded.zip');
@@ -236,6 +487,7 @@ void main() {
       final service = DiagnosticLogExportService(
         loadLogFiles: () async => [source],
         loadCrashFiles: () async => const [],
+        loadUpdaterFiles: () async => const [],
         flushLogs: () async {},
         exportArchive: (sourcePath, _, _) async {
           archivePath = p.join(tempDirectory.path, 'partial-tail.zip');
@@ -276,6 +528,7 @@ void main() {
       final service = DiagnosticLogExportService(
         loadLogFiles: () async => [source],
         loadCrashFiles: () async => const [],
+        loadUpdaterFiles: () async => const [],
         flushLogs: () async {},
         exportArchive: (sourcePath, _, _) async {
           archivePath = p.join(tempDirectory.path, 'private-key-tail.zip');
@@ -300,41 +553,12 @@ void main() {
     },
   );
 
-  test(
-    'startup cleanup removes only stale diagnostic export artifacts',
-    () async {
-      final exportDirectory = await Directory(
-        p.join(tempDirectory.path, 'exports'),
-      ).create();
-      final oldArchive = await File(
-        p.join(exportDirectory.path, '1_nai-launcher-diagnostics-old.zip'),
-      ).writeAsString('old');
-      final oldStaging = await Directory(
-        '${oldArchive.path}.contents',
-      ).create();
-      final unrelated = await File(
-        p.join(exportDirectory.path, 'other-export.zip'),
-      ).writeAsString('keep');
-      final now = DateTime.now().add(const Duration(days: 3));
-      await oldArchive.setLastModified(now.subtract(const Duration(days: 2)));
-      await unrelated.setLastModified(now.subtract(const Duration(days: 2)));
-
-      await DiagnosticLogExportService.cleanupStaleTemporaryFiles(
-        minimumAge: const Duration(days: 1),
-        now: now,
-      );
-
-      expect(await oldArchive.exists(), isFalse);
-      expect(await oldStaging.exists(), isFalse);
-      expect(await unrelated.exists(), isTrue);
-    },
-  );
-
   test('does not open an exporter when there are no logs', () async {
     var exporterCalled = false;
     final service = DiagnosticLogExportService(
       loadLogFiles: () async => const [],
       loadCrashFiles: () async => const [],
+      loadUpdaterFiles: () async => const [],
       flushLogs: () async {},
       exportArchive: (sourcePath, fileName, dialogTitle) async {
         exporterCalled = true;
@@ -348,6 +572,89 @@ void main() {
     expect(exporterCalled, isFalse);
   });
 
+  test('includes updater evidence and leaves update packages out', () async {
+    final updateDirectory = Directory(
+      p.join(tempDirectory.path, 'nai_launcher_updates'),
+    )..createSync();
+    await File(
+      p.join(updateDirectory.path, 'update_4.2.1.log'),
+    ).writeAsString('[2026-09-27] Installer exited with code 3.\n');
+    await File(
+      p.join(updateDirectory.path, 'update_result.json'),
+    ).writeAsString(
+      jsonEncode({
+        'success': false,
+        'version': '4.2.1',
+        'message':
+            r'Stdio proxy processes in C:\QA\App Folder did not exit within 15 seconds.',
+        'logPath': r'C:\Users\Test User\AppData\Local\Temp\update_4.2.1.log',
+      }),
+    );
+    await File(
+      p.join(updateDirectory.path, 'update_started.json'),
+    ).writeAsString('{"version":"4.2.1","appPid":1234}');
+    // 同目录的安装包体积可达几百 MB，绝不能进诊断包。
+    await File(
+      p.join(updateDirectory.path, 'setup.exe'),
+    ).writeAsBytes(List<int>.filled(4096, 7));
+    await File(
+      p.join(updateDirectory.path, 'setup.exe.part'),
+    ).writeAsBytes(List<int>.filled(4096, 7));
+
+    late Uint8List exportedBytes;
+    final service = DiagnosticLogExportService(
+      loadLogFiles: () async => const [],
+      loadCrashFiles: () async => const [],
+      loadUpdaterFiles: () async => updateDirectory
+          .listSync()
+          .whereType<File>()
+          .where(
+            (file) => const {
+              '.log',
+              '.json',
+            }.contains(p.extension(file.path)),
+          )
+          .toList(),
+      flushLogs: () async {},
+      exportArchive: (sourcePath, fileName, dialogTitle) async {
+        exportedBytes = await File(sourcePath).readAsBytes();
+        return true;
+      },
+      diagnosticsMetadata: () => 'test',
+    );
+
+    final result = await service.export(dialogTitle: 'Export logs');
+
+    expect(result.status, DiagnosticLogExportStatus.exported);
+    final archive = ZipDecoder().decodeBytes(exportedBytes);
+    final names = archive.files.map((file) => file.name);
+    expect(
+      names,
+      containsAll([
+        'logs/update_4.2.1.log',
+        'logs/update_result.json',
+        'logs/update_started.json',
+      ]),
+    );
+    expect(names, isNot(contains('logs/setup.exe')));
+    expect(names, isNot(contains('logs/setup.exe.part')));
+    final updateResult =
+        jsonDecode(
+              utf8.decode(
+                archive.findFile('logs/update_result.json')!.content
+                    as List<int>,
+              ),
+            )
+            as Map<String, dynamic>;
+    expect(updateResult['success'], isFalse);
+    expect(updateResult['version'], '4.2.1');
+    expect(
+      updateResult['message'],
+      'Stdio proxy processes in [absolute path] did not exit within 15 seconds.',
+    );
+    expect(updateResult['logPath'], '[absolute path]');
+  });
+
   test('reports cancellation from the platform exporter', () async {
     final logFile = await File(
       p.join(tempDirectory.path, 'app.log'),
@@ -355,6 +662,7 @@ void main() {
     final service = DiagnosticLogExportService(
       loadLogFiles: () async => [logFile],
       loadCrashFiles: () async => const [],
+      loadUpdaterFiles: () async => const [],
       flushLogs: () async {},
       exportArchive: (sourcePath, fileName, dialogTitle) async => false,
       diagnosticsMetadata: () => 'test',

@@ -4,11 +4,11 @@ import 'dart:ui';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart' show visibleForTesting;
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../../core/constants/api_constants.dart';
 import '../../../core/models/image_generation_artifact.dart';
+import '../../../core/network/browser_multipart_body.dart';
 import '../../../core/network/dio_client.dart';
 import '../../../core/network/critical_network_activity.dart';
 import '../../../core/network/nai_api_endpoint_service.dart';
@@ -19,6 +19,7 @@ import '../../models/image/image_stream_chunk.dart';
 import 'nai_generation_response_processor.dart';
 import 'nai_generation_transport.dart';
 import 'nai_image_enhancement_api_service.dart';
+import 'nai_image_upload_cache.dart';
 
 part 'nai_image_generation_api_service.g.dart';
 
@@ -32,7 +33,8 @@ class NAIImageGenerationApiService {
     this._enhancementService,
     NaiApiEndpointService endpointService, [
     CriticalNetworkActivityCoordinator? networkActivity,
-  ]) : _transport = NaiGenerationTransport(dio, endpointService),
+    NaiImageUploadCache? uploadCache,
+  ]) : _transport = NaiGenerationTransport(dio, endpointService, uploadCache),
        _responseProcessor = NaiGenerationResponseProcessor(),
        _networkActivity =
            networkActivity ?? CriticalNetworkActivityCoordinator.instance;
@@ -63,26 +65,25 @@ class NAIImageGenerationApiService {
   /// Maps model-specific sampler compatibility exactly as the legacy service.
   @visibleForTesting
   static String mapSamplerForModel(String sampler, String model) {
-    if (sampler == Samplers.ddim || sampler == Samplers.ddimV3) {
-      if (ImageModels.isV4Model(model) || model == 'N/A') {
-        AppLogger.w(
-          'Model $model does not support DDIM sampler, falling back to Euler Ancestral',
-          'ImgGen',
-        );
-        return Samplers.kEulerAncestral;
-      }
-      if (model.contains('diffusion-3')) {
-        AppLogger.i('Mapping DDIM to DDIM v3 for model: $model', 'ImgGen');
-        return Samplers.ddimV3;
-      }
+    final mapped = Samplers.resolveForModel(sampler, model);
+    if (mapped == sampler) return sampler;
+    if (mapped == Samplers.kEulerAncestral) {
+      AppLogger.w(
+        'Model $model does not support DDIM sampler, falling back to Euler Ancestral',
+        'ImgGen',
+      );
+    } else {
+      AppLogger.i('Mapping DDIM to DDIM v3 for model: $model', 'ImgGen');
     }
-    return sampler;
+    return mapped;
   }
 
   /// Retained for callers and tests that inspect the official multipart shape.
   @visibleForTesting
-  static FormData buildGenerationFormData(Map<String, dynamic> requestData) {
-    return NaiGenerationTransport.buildGenerationFormData(requestData);
+  static BrowserMultipartBody buildGenerationMultipart(
+    Map<String, dynamic> requestData,
+  ) {
+    return NaiGenerationTransport.buildGenerationMultipart(requestData);
   }
 
   Future<(List<Uint8List>, Map<int, String>)> generateImage(
@@ -91,6 +92,7 @@ class NAIImageGenerationApiService {
     bool focusedInpaintEnabled = false,
     double minimumContextMegaPixels = 88.0,
     Rect? focusedSelectionRect,
+    Rect? focusedContextCrop,
     NaiGenerationCancellationLease? cancellationLease,
   }) async {
     final result = await _generateImageArtifacts(
@@ -99,6 +101,7 @@ class NAIImageGenerationApiService {
       focusedInpaintEnabled: focusedInpaintEnabled,
       minimumContextMegaPixels: minimumContextMegaPixels,
       focusedSelectionRect: focusedSelectionRect,
+      focusedContextCrop: focusedContextCrop,
       cancellationLease: cancellationLease,
     );
     return (
@@ -116,6 +119,7 @@ class NAIImageGenerationApiService {
     bool focusedInpaintEnabled = false,
     double minimumContextMegaPixels = 88.0,
     Rect? focusedSelectionRect,
+    Rect? focusedContextCrop,
     NaiGenerationCancellationLease? cancellationLease,
   }) {
     return generateImage(
@@ -124,6 +128,7 @@ class NAIImageGenerationApiService {
       focusedInpaintEnabled: focusedInpaintEnabled,
       minimumContextMegaPixels: minimumContextMegaPixels,
       focusedSelectionRect: focusedSelectionRect,
+      focusedContextCrop: focusedContextCrop,
       cancellationLease: cancellationLease,
     );
   }
@@ -134,6 +139,7 @@ class NAIImageGenerationApiService {
     bool focusedInpaintEnabled = false,
     double minimumContextMegaPixels = 88.0,
     Rect? focusedSelectionRect,
+    Rect? focusedContextCrop,
     NaiGenerationCancellationLease? cancellationLease,
   }) async {
     final result = await generateImageWithEncodingsCancellable(
@@ -142,6 +148,7 @@ class NAIImageGenerationApiService {
       focusedInpaintEnabled: focusedInpaintEnabled,
       minimumContextMegaPixels: minimumContextMegaPixels,
       focusedSelectionRect: focusedSelectionRect,
+      focusedContextCrop: focusedContextCrop,
       cancellationLease: cancellationLease,
     );
     return result.$1;
@@ -153,6 +160,7 @@ class NAIImageGenerationApiService {
     bool focusedInpaintEnabled = false,
     double minimumContextMegaPixels = 88.0,
     Rect? focusedSelectionRect,
+    Rect? focusedContextCrop,
     NaiGenerationCancellationLease? cancellationLease,
   }) async {
     final result = await _generateImageArtifacts(
@@ -161,6 +169,7 @@ class NAIImageGenerationApiService {
       focusedInpaintEnabled: focusedInpaintEnabled,
       minimumContextMegaPixels: minimumContextMegaPixels,
       focusedSelectionRect: focusedSelectionRect,
+      focusedContextCrop: focusedContextCrop,
       cancellationLease: cancellationLease,
     );
     return result.$1;
@@ -173,6 +182,7 @@ class NAIImageGenerationApiService {
     required bool focusedInpaintEnabled,
     required double minimumContextMegaPixels,
     Rect? focusedSelectionRect,
+    Rect? focusedContextCrop,
     NaiGenerationCancellationLease? cancellationLease,
   }) async {
     final activity = _networkActivity.acquire(
@@ -188,6 +198,7 @@ class NAIImageGenerationApiService {
         focusedInpaintEnabled: focusedInpaintEnabled,
         minimumContextMegaPixels: minimumContextMegaPixels,
         focusedSelectionRect: focusedSelectionRect,
+        focusedContextCrop: focusedContextCrop,
       );
       final response = await _transport.sendZip(
         command.buildResult.requestData,
@@ -230,6 +241,7 @@ class NAIImageGenerationApiService {
     bool focusedInpaintEnabled = false,
     double minimumContextMegaPixels = 88.0,
     Rect? focusedSelectionRect,
+    Rect? focusedContextCrop,
     NaiGenerationCancellationLease? cancellationLease,
   }) {
     final effectiveLease = _effectiveCancellationLease(cancellationLease);
@@ -243,6 +255,7 @@ class NAIImageGenerationApiService {
       focusedInpaintEnabled: focusedInpaintEnabled,
       minimumContextMegaPixels: minimumContextMegaPixels,
       focusedSelectionRect: focusedSelectionRect,
+      focusedContextCrop: focusedContextCrop,
     );
   }
 
@@ -253,6 +266,7 @@ class NAIImageGenerationApiService {
     required bool focusedInpaintEnabled,
     required double minimumContextMegaPixels,
     Rect? focusedSelectionRect,
+    Rect? focusedContextCrop,
   }) async* {
     // async* does not execute until listen, so an abandoned stream owns no
     // transport request. Leases and the legacy epoch retain pre-listen cancel.
@@ -275,6 +289,7 @@ class NAIImageGenerationApiService {
         focusedInpaintEnabled: focusedInpaintEnabled,
         minimumContextMegaPixels: minimumContextMegaPixels,
         focusedSelectionRect: focusedSelectionRect,
+        focusedContextCrop: focusedContextCrop,
       );
       if (request.cancelToken.isCancelled) {
         yield ImageStreamChunk.error('Cancelled');
@@ -309,33 +324,24 @@ class NAIImageGenerationApiService {
     required bool focusedInpaintEnabled,
     required double minimumContextMegaPixels,
     Rect? focusedSelectionRect,
+    Rect? focusedContextCrop,
   }) async {
     final focusedRequest = await _responseProcessor.prepareFocusedInpaint(
       params,
       enabled: focusedInpaintEnabled,
       minimumContextMegaPixels: minimumContextMegaPixels,
       focusedSelectionRect: focusedSelectionRect,
+      focusedContextCrop: focusedContextCrop,
     );
     final effectiveParams = _responseProcessor.applyFocusedRequest(
       params,
       focusedRequest,
     );
 
-    if (effectiveParams.hasVibeReferencesV4 &&
-        effectiveParams.hasPreciseReferences) {
-      AppLogger.d(
-        'Both Vibe Transfer and Precise Reference are enabled; skipping vibe payload in favor of Precise Reference',
-        'ImgGen',
-      );
-    }
-    final preciseReferences = effectiveParams.isV45Model
-        ? effectiveParams.enabledPreciseReferences
-        : <PreciseReference>[];
     final buildResult =
         await NAIImageRequestBuilder(
           params: effectiveParams,
           encodeVibe: _enhancementService.encodeVibe,
-          preciseReferences: preciseReferences,
         ).build(
           sampler: mapSamplerForModel(
             effectiveParams.sampler,
@@ -376,8 +382,14 @@ class _PreparedGeneration {
 /// that started the in-flight request.
 @Riverpod(keepAlive: true)
 NAIImageGenerationApiService naiImageGenerationApiService(Ref ref) {
-  final dio = ref.watch(imageGenerationDioClientProvider);
+  final dio = ref.watch(dioClientProvider);
   final enhancementService = ref.watch(naiImageEnhancementApiServiceProvider);
   final endpointService = ref.watch(naiApiEndpointServiceProvider);
-  return NAIImageGenerationApiService(dio, enhancementService, endpointService);
+  return NAIImageGenerationApiService(
+    dio,
+    enhancementService,
+    endpointService,
+    CriticalNetworkActivityCoordinator.instance,
+    ref.watch(naiImageUploadCacheProvider),
+  );
 }

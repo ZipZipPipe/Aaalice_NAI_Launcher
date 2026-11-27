@@ -2,14 +2,16 @@ import 'dart:async';
 import 'dart:math';
 import 'dart:typed_data';
 
-import 'package:hive/hive.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../../core/comfyui/comfyui.dart';
 import '../../../core/comfyui/object_info_parser.dart';
-import '../../../core/constants/storage_keys.dart';
+import '../../../core/storage/local_storage_service.dart';
 import '../../../core/utils/app_logger.dart';
 import '../../../l10n/app_localizations.dart';
+import '../../../data/models/image/image_stream_chunk.dart';
+import '../generation/stream_preview_decode.dart';
+import '../generation/stream_preview_publication.dart';
 
 part 'comfyui_provider.g.dart';
 
@@ -19,20 +21,15 @@ part 'comfyui_provider.g.dart';
 class ComfyUISettings extends _$ComfyUISettings {
   @override
   ComfyUISettingsState build() {
-    final box = Hive.box(StorageKeys.settingsBox);
-    final storedServerUrl =
-        box.get(
-              StorageKeys.comfyuiServerUrl,
-              defaultValue: 'http://127.0.0.1:8188',
-            )
-            as String;
+    final storage = ref.read(localStorageServiceProvider);
+    final storedServerUrl = storage.getComfyUIServerUrl();
     final serverUrl = normalizeComfyUIBaseUrl(storedServerUrl);
     if (serverUrl != storedServerUrl) {
-      box.put(StorageKeys.comfyuiServerUrl, serverUrl);
+      unawaited(storage.setComfyUIServerUrl(serverUrl));
     }
     return ComfyUISettingsState(
       serverUrl: serverUrl,
-      enabled: box.get(StorageKeys.comfyuiEnabled, defaultValue: false) as bool,
+      enabled: storage.getComfyUIEnabled(),
     );
   }
 
@@ -50,9 +47,9 @@ class ComfyUISettings extends _$ComfyUISettings {
   }
 
   void _persist() {
-    final box = Hive.box(StorageKeys.settingsBox);
-    box.put(StorageKeys.comfyuiServerUrl, state.serverUrl);
-    box.put(StorageKeys.comfyuiEnabled, state.enabled);
+    final storage = ref.read(localStorageServiceProvider);
+    unawaited(storage.setComfyUIServerUrl(state.serverUrl));
+    unawaited(storage.setComfyUIEnabled(state.enabled));
   }
 }
 
@@ -140,6 +137,7 @@ class ComfyUIWorkflows extends _$ComfyUIWorkflows {
 
   Future<void> _initAsync() async {
     await _manager.loadAllTemplates();
+    if (!ref.mounted) return;
     state = _manager.templates;
   }
 
@@ -168,6 +166,9 @@ class ComfyUIWorkflows extends _$ComfyUIWorkflows {
 @riverpod
 class ComfyUITask extends _$ComfyUITask {
   static const String _tag = 'ComfyUI-Task';
+  late StreamPreviewPublication _previewPublication;
+
+  int _cancellationGeneration = 0;
 
   static String _summarizeInputImages(Map<String, Uint8List> images) {
     return images.entries
@@ -180,7 +181,14 @@ class ComfyUITask extends _$ComfyUITask {
   }
 
   @override
-  ComfyUITaskState build() => const ComfyUITaskState();
+  ComfyUITaskState build() {
+    _previewPublication = StreamPreviewPublication(
+      resolve: ref.read(streamPreviewImageResolverProvider),
+      lifecycle: ref.read(streamPreviewLifecycleReaderProvider),
+    );
+    ref.onDispose(_previewPublication.clear);
+    return const ComfyUITaskState();
+  }
 
   /// 执行工作流
   ///
@@ -192,6 +200,26 @@ class ComfyUITask extends _$ComfyUITask {
     Map<String, Uint8List> inputImages = const {},
     Map<String, dynamic> paramValues = const {},
   }) async {
+    // 发起界面可在执行中关闭；任务期间自行保活，结束后再交回 autoDispose 回收
+    final keepAliveLink = ref.keepAlive();
+    try {
+      return await _runWorkflow(
+        templateId: templateId,
+        inputImages: inputImages,
+        paramValues: paramValues,
+      );
+    } finally {
+      keepAliveLink.close();
+    }
+  }
+
+  Future<List<Uint8List>?> _runWorkflow({
+    required String templateId,
+    required Map<String, Uint8List> inputImages,
+    required Map<String, dynamic> paramValues,
+  }) async {
+    final cancellationGeneration = _cancellationGeneration;
+    _previewPublication.clear();
     final connNotifier = ref.read(comfyUIConnectionProvider.notifier);
     final connStatus = ref.read(comfyUIConnectionProvider);
     final workflows = ref.read(comfyUIWorkflowsProvider.notifier);
@@ -247,85 +275,14 @@ class ComfyUITask extends _$ComfyUITask {
     }
 
     try {
-      final outputNodeIds = template.outputSlots
-          .map((slot) => slot.nodeId)
-          .toSet();
-
-      // 1. 上传图像
-      state = state.copyWith(status: ComfyUITaskStatus.uploading, progress: 0);
-      AppLogger.d('Uploading inputs for template=$templateId', _tag);
-      final uploadedFiles = await manager.uploadInputImages(
-        api: conn!.api!,
+      return await _runConnectedWorkflow(
+        conn: conn!,
+        manager: manager,
         template: template,
-        imageData: inputImages,
+        inputImages: inputImages,
+        paramValues: paramValues,
+        cancellationGeneration: cancellationGeneration,
       );
-      AppLogger.d(
-        'Inputs uploaded for template=$templateId: $uploadedFiles',
-        _tag,
-      );
-
-      // 2. 处理种子：-1 表示随机
-      final effectiveParams = Map<String, dynamic>.from(paramValues);
-      final seedSlot = template.slots.where((s) => s.id == 'seed').toList();
-      if (seedSlot.isNotEmpty) {
-        final seedValue =
-            effectiveParams['seed'] ?? seedSlot.first.defaultValue;
-        if (seedValue is int && seedValue == -1) {
-          effectiveParams['seed'] = Random().nextInt(4294967295);
-        }
-      }
-
-      // 3. 构建可执行工作流
-      AppLogger.d('Building workflow for template=$templateId', _tag);
-      final workflow = manager.buildExecutableWorkflow(
-        template: template,
-        paramValues: effectiveParams,
-        uploadedFiles: uploadedFiles,
-      );
-      AppLogger.d(
-        'Validating workflow node types for template=$templateId',
-        _tag,
-      );
-      await manager.validateWorkflowNodeTypes(
-        api: conn.api!,
-        workflow: workflow,
-      );
-      AppLogger.d(
-        'Workflow node validation passed: template=$templateId',
-        _tag,
-      );
-
-      // 4. 提交工作流
-      state = state.copyWith(status: ComfyUITaskStatus.queued);
-      AppLogger.i(
-        'Queue prompt start: template=$templateId, clientId=${conn.clientId}',
-        _tag,
-      );
-      final result = await conn.api!.queuePrompt(
-        workflow: workflow,
-        clientId: conn.clientId,
-      );
-      state = state.copyWith(promptId: result.promptId);
-      conn.ws!.trackPrompt(result.promptId);
-      AppLogger.i(
-        'Queue prompt returned: template=$templateId, '
-        'promptId=${result.promptId}, '
-        'webSocketOutput=${template.usesWebSocketOutput}',
-        _tag,
-      );
-
-      // 5. 等待完成
-      state = state.copyWith(status: ComfyUITaskStatus.running);
-
-      final images = template.usesWebSocketOutput
-          ? await _waitForWebSocketResult(conn, result.promptId, outputNodeIds)
-          : await _waitForHttpResult(conn, result.promptId, outputNodeIds);
-      AppLogger.i(
-        'Workflow result collected: template=$templateId, '
-        'promptId=${result.promptId}, ${_summarizeOutputImages(images)}',
-        _tag,
-      );
-      return images;
     } on _ComfyUITaskLocalizedException catch (e, stackTrace) {
       AppLogger.e(
         'Task execution failed: template=$templateId',
@@ -340,6 +297,7 @@ class ComfyUITask extends _$ComfyUITask {
       );
       return null;
     } catch (e, stackTrace) {
+      if (cancellationGeneration != _cancellationGeneration) return null;
       AppLogger.e(
         'Task execution failed: template=$templateId',
         e,
@@ -355,6 +313,91 @@ class ComfyUITask extends _$ComfyUITask {
     }
   }
 
+  Future<List<Uint8List>?> _runConnectedWorkflow({
+    required ComfyUIConnectionManager conn,
+    required WorkflowTemplateManager manager,
+    required WorkflowTemplate template,
+    required Map<String, Uint8List> inputImages,
+    required Map<String, dynamic> paramValues,
+    required int cancellationGeneration,
+  }) async {
+    final templateId = template.id;
+    final outputNodeIds = template.outputSlots
+        .map((slot) => slot.nodeId)
+        .toSet();
+
+    // 1. 上传图像
+    state = state.copyWith(status: ComfyUITaskStatus.uploading, progress: 0);
+    AppLogger.d('Uploading inputs for template=$templateId', _tag);
+    final uploadedFiles = await manager.uploadInputImages(
+      api: conn.api!,
+      template: template,
+      imageData: inputImages,
+    );
+    if (cancellationGeneration != _cancellationGeneration) return null;
+    AppLogger.d(
+      'Inputs uploaded for template=$templateId: $uploadedFiles',
+      _tag,
+    );
+
+    // 2. 处理种子：-1 表示随机
+    final effectiveParams = Map<String, dynamic>.from(paramValues);
+    final seedSlot = template.slots.where((s) => s.id == 'seed').toList();
+    if (seedSlot.isNotEmpty) {
+      final seedValue = effectiveParams['seed'] ?? seedSlot.first.defaultValue;
+      if (seedValue is int && seedValue == -1) {
+        effectiveParams['seed'] = Random().nextInt(4294967295);
+      }
+    }
+
+    // 3. 构建可执行工作流
+    AppLogger.d('Building workflow for template=$templateId', _tag);
+    final workflow = manager.buildExecutableWorkflow(
+      template: template,
+      paramValues: effectiveParams,
+      uploadedFiles: uploadedFiles,
+    );
+    AppLogger.d(
+      'Validating workflow node types for template=$templateId',
+      _tag,
+    );
+    await manager.validateWorkflowNodeTypes(api: conn.api!, workflow: workflow);
+    if (cancellationGeneration != _cancellationGeneration) return null;
+    AppLogger.d('Workflow node validation passed: template=$templateId', _tag);
+
+    // 4. 提交工作流
+    state = state.copyWith(status: ComfyUITaskStatus.queued);
+    AppLogger.i(
+      'Queue prompt start: template=$templateId, clientId=${conn.clientId}',
+      _tag,
+    );
+    final result = await conn.api!.queuePrompt(
+      workflow: workflow,
+      clientId: conn.clientId,
+    );
+    state = state.copyWith(promptId: result.promptId);
+    conn.ws!.trackPrompt(result.promptId);
+    AppLogger.i(
+      'Queue prompt returned: template=$templateId, '
+      'promptId=${result.promptId}, '
+      'webSocketOutput=${template.usesWebSocketOutput}',
+      _tag,
+    );
+
+    // 5. 等待完成
+    state = state.copyWith(status: ComfyUITaskStatus.running);
+
+    final images = template.usesWebSocketOutput
+        ? await _waitForWebSocketResult(conn, result.promptId, outputNodeIds)
+        : await _waitForHttpResult(conn, result.promptId, outputNodeIds);
+    AppLogger.i(
+      'Workflow result collected: template=$templateId, '
+      'promptId=${result.promptId}, ${_summarizeOutputImages(images)}',
+      _tag,
+    );
+    return images;
+  }
+
   Future<List<Uint8List>> _waitForWebSocketResult(
     ComfyUIConnectionManager conn,
     String promptId,
@@ -365,7 +408,7 @@ class ComfyUITask extends _$ComfyUITask {
 
     final imageSub = conn.ws!.imageStream.listen((ComfyUIImageFrame frame) {
       if (frame.isPreview) {
-        state = state.copyWith(previewImage: frame.data);
+        _publishPreview(frame.data, promptId);
       } else {
         images.add(frame.data);
         AppLogger.d(
@@ -385,6 +428,7 @@ class ComfyUITask extends _$ComfyUITask {
       );
 
       if (progress.status == ComfyUITaskStatus.completed) {
+        _previewPublication.closeSlot(promptId);
         if (!completer.isCompleted) {
           Future.delayed(const Duration(milliseconds: 500), () {
             if (!completer.isCompleted) {
@@ -393,6 +437,7 @@ class ComfyUITask extends _$ComfyUITask {
           });
         }
       } else if (progress.status == ComfyUITaskStatus.failed) {
+        _previewPublication.closeSlot(promptId);
         if (!completer.isCompleted) {
           completer.completeError(
             _ComfyUITaskLocalizedException(
@@ -428,6 +473,7 @@ class ComfyUITask extends _$ComfyUITask {
       );
       return result;
     } finally {
+      _previewPublication.closeSlot(promptId);
       await imageSub.cancel();
       await progressSub.cancel();
     }
@@ -442,7 +488,7 @@ class ComfyUITask extends _$ComfyUITask {
 
     final imageSub = conn.ws!.imageStream.listen((ComfyUIImageFrame frame) {
       if (frame.isPreview) {
-        state = state.copyWith(previewImage: frame.data);
+        _publishPreview(frame.data, promptId);
       }
     });
 
@@ -456,8 +502,10 @@ class ComfyUITask extends _$ComfyUITask {
       );
 
       if (progress.status == ComfyUITaskStatus.completed) {
+        _previewPublication.closeSlot(promptId);
         if (!completer.isCompleted) completer.complete();
       } else if (progress.status == ComfyUITaskStatus.failed) {
+        _previewPublication.closeSlot(promptId);
         if (!completer.isCompleted) {
           completer.completeError(
             _ComfyUITaskLocalizedException(
@@ -495,12 +543,27 @@ class ComfyUITask extends _$ComfyUITask {
       );
       return images;
     } finally {
+      _previewPublication.closeSlot(promptId);
       await imageSub.cancel();
       await progressSub.cancel();
     }
   }
 
+  void _publishPreview(Uint8List bytes, String promptId) {
+    _previewPublication.add(
+      slot: promptId,
+      frame: StreamPreviewFrame(bytes: bytes),
+      isCurrent: () =>
+          ref.mounted &&
+          state.promptId == promptId &&
+          state.status == ComfyUITaskStatus.running,
+      publish: (_) => state = state.copyWith(previewImage: bytes),
+    );
+  }
+
   void cancel() {
+    _cancellationGeneration++;
+    _previewPublication.clear();
     final conn = ref.read(comfyUIConnectionProvider.notifier).manager;
     conn?.api?.interrupt();
     state = state.copyWith(status: ComfyUITaskStatus.cancelled);
@@ -538,7 +601,7 @@ class ComfyUISeedvr2Models extends _$ComfyUISeedvr2Models {
     'SaveImage',
   };
 
-  bool _isFetching = false;
+  Future<void>? _inFlightFetch;
   bool _hasFetchedFromServer = false;
   ComfySeedvr2Capabilities _capabilities = const ComfySeedvr2Capabilities();
 
@@ -550,7 +613,7 @@ class ComfyUISeedvr2Models extends _$ComfyUISeedvr2Models {
     ref.listen<ComfyUISettingsState>(comfyUISettingsProvider, (prev, next) {
       if (!next.enabled) {
         _hasFetchedFromServer = false;
-        _isFetching = false;
+        _inFlightFetch = null;
         _capabilities = const ComfySeedvr2Capabilities();
         state = _fallback;
         return;
@@ -582,16 +645,25 @@ class ComfyUISeedvr2Models extends _$ComfyUISeedvr2Models {
   }
 
   void _scheduleAutoFetch({bool force = false}) {
-    if (_isFetching) return;
+    if (_inFlightFetch != null) return;
     if (_hasFetchedFromServer && !force) return;
     Future.microtask(() => fetch(force: force));
   }
 
-  Future<void> fetch({bool force = false}) async {
-    if (_isFetching) return;
-    if (_hasFetchedFromServer && !force) return;
+  /// 拉取进行中再次调用会等同一次拉取结束，调用方随后读到的能力表才是新的。
+  Future<void> fetch({bool force = false}) {
+    final inFlight = _inFlightFetch;
+    if (inFlight != null) return inFlight;
+    if (_hasFetchedFromServer && !force) return Future.value();
+    final run = _fetchFromServer();
+    _inFlightFetch = run;
+    return run.whenComplete(() {
+      if (identical(_inFlightFetch, run)) _inFlightFetch = null;
+    });
+  }
 
-    _isFetching = true;
+  Future<void> _fetchFromServer() async {
+    if (!ref.mounted) return;
     final connNotifier = ref.read(comfyUIConnectionProvider.notifier);
     var conn = connNotifier.manager;
 
@@ -603,16 +675,15 @@ class ComfyUISeedvr2Models extends _$ComfyUISeedvr2Models {
           _tag,
         );
         final ok = await connNotifier.connect();
+        if (!ref.mounted) return;
         if (!ok) {
           AppLogger.w('Cannot fetch models: ComfyUI not connected', _tag);
-          _isFetching = false;
           return;
         }
       }
       conn = connNotifier.manager;
       if (conn?.api == null) {
         AppLogger.w('ComfyUI manager or api is null after connect', _tag);
-        _isFetching = false;
         return;
       }
     }
@@ -676,6 +747,7 @@ class ComfyUISeedvr2Models extends _$ComfyUISeedvr2Models {
         ...legacyModels,
         ...normalUpscaleModels,
       ]);
+      if (!ref.mounted) return;
       state = models;
       _hasFetchedFromServer = true;
       AppLogger.i(
@@ -694,8 +766,6 @@ class ComfyUISeedvr2Models extends _$ComfyUISeedvr2Models {
     } catch (e, st) {
       AppLogger.w('Failed to fetch ComfyUI upscale models: $e', _tag);
       AppLogger.d('Stack: $st', _tag);
-    } finally {
-      _isFetching = false;
     }
   }
 

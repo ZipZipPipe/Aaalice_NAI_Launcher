@@ -1,17 +1,21 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/constants/api_constants.dart';
 import '../../core/constants/model_capabilities.dart';
+import '../../core/enums/image_model_mode.dart';
 import '../../core/services/prompt_token_counter_service.dart';
 import '../../core/utils/novelai_auto_text.dart';
+import '../../core/utils/novelai_dataset_prefix.dart';
 import '../../core/utils/prompt_preset_resolution.dart';
 import '../../core/utils/character_prompt_block_parser.dart';
 import '../../core/utils/prompt_semantics_utils.dart';
 import '../../data/models/character/character_prompt.dart' as ui_character;
 import '../../data/models/image/image_params.dart';
 import '../../data/models/prompt/prompt_preset_mode.dart';
-import '../../data/services/alias_resolver_service.dart';
+import 'alias_resolver_service.dart';
 import 'character_prompt_provider.dart';
 import 'fixed_tags_provider.dart';
 import 'generation/generation_params_notifier.dart';
@@ -63,6 +67,7 @@ final promptTokenUsageProvider =
                 params.shouldApplyEnhancePromptAddition,
             transparentBackground: params.transparentBackground,
             qualityTier: params.qualityTier,
+            modelMode: params.modelMode,
           ),
         ),
       );
@@ -73,7 +78,30 @@ final promptTokenUsageProvider =
       final currentQualityEntry = ref.watch(currentQualityEntryProvider);
       final currentUcEntry = ref.watch(currentUcEntryProvider);
       final aliasResolver = ref.read(aliasResolverServiceProvider.notifier);
-      final service = await ref.watch(promptTokenCounterServiceProvider.future);
+      final serviceFuture = ref.watch(promptTokenCounterServiceProvider.future);
+
+      // 停止输入 400ms 后才计数。分词是纯 Dart、在 UI 线程同步执行，逐键全量
+      // 重算会在连续输入（连按删除、输入法组合串）时卡住主线程，移动端尤其
+      // 明显。期间的重建会触发 onDispose，放弃本次计算并取消计时器；token 条
+      // 使用 skipLoadingOnReload，等待期间保留旧值，不会闪烁。
+      var restarted = false;
+      final debounce = Completer<void>();
+      final debounceTimer = Timer(
+        const Duration(milliseconds: 400),
+        debounce.complete,
+      );
+      ref.onDispose(() {
+        restarted = true;
+        debounceTimer.cancel();
+        if (!debounce.isCompleted) {
+          debounce.complete();
+        }
+      });
+      await debounce.future;
+      if (restarted) {
+        return null;
+      }
+      final service = await serviceFuture;
       final qualityContent = switch (qualityPresetState.mode) {
         PromptPresetMode.naiDefault => QualityTags.getQualityTagsForTier(
           promptState.model,
@@ -105,6 +133,7 @@ final promptTokenUsageProvider =
         isEnhanceRequest: promptState.isEnhanceRequest,
         transparentBackground: promptState.transparentBackground,
         qualityTier: promptState.qualityTier,
+        modelMode: promptState.modelMode,
         characters: characterConfig.characters,
         useCoords: !characterConfig.globalAiChoice,
         resolveAliases: aliasResolver.resolveAliases,
@@ -159,6 +188,7 @@ PromptTokenCountPayload buildPromptTokenCountPayload({
   required String Function(String text) resolveAliases,
   bool transparentBackground = false,
   String qualityTier = QualityTags.standardTier,
+  ImageModelMode modelMode = ImageModelMode.anime,
   bool useCoords = false,
 }) {
   return switch (target) {
@@ -177,6 +207,7 @@ PromptTokenCountPayload buildPromptTokenCountPayload({
       isEnhanceRequest: isEnhanceRequest,
       transparentBackground: transparentBackground,
       qualityTier: qualityTier,
+      modelMode: modelMode,
       characters: characters,
       useCoords: useCoords,
       resolveAliases: resolveAliases,
@@ -216,6 +247,7 @@ PromptTokenCountPayload _buildPositiveTokenCountPayload({
   required String Function(String text) resolveAliases,
   bool transparentBackground = false,
   String qualityTier = QualityTags.standardTier,
+  ImageModelMode modelMode = ImageModelMode.anime,
   bool useCoords = false,
 }) {
   final resolvedPrompt = CharacterPromptBlockParser.parse(
@@ -289,6 +321,7 @@ PromptTokenCountPayload _buildPositiveTokenCountPayload({
     qualityTier: qualityTier,
     characters: resolvedCharacters,
     useCoords: useCoords,
+    modelMode: modelMode,
   );
   final fixedTagTexts = [
     ...fixedTagsState.enabledPrefixes
@@ -313,6 +346,10 @@ PromptTokenCountPayload _buildPositiveTokenCountPayload({
           qualityTags,
         ].where((text) => text.isNotEmpty).join(', ')
       : qualityTags;
+  // 只有自动补上的前缀单列，用户手写的数据集标签已计入提示词。
+  final appliesDatasetPrefix =
+      NovelAiDatasetPrefix.hasFurryPrefix(promptSemantics.effectivePrompt) &&
+      !NovelAiDatasetPrefix.hasFurryPrefix(presetResolution.prompt);
 
   return PromptTokenCountPayload(
     mainText: promptSemantics.effectivePrompt,
@@ -328,6 +365,11 @@ PromptTokenCountPayload _buildPositiveTokenCountPayload({
         PromptTokenCountBreakdownGroup(
           label: '文字转录',
           texts: [promptSemantics.autoTextBlock!],
+        ),
+      if (appliesDatasetPrefix)
+        const PromptTokenCountBreakdownGroup(
+          label: '数据集标签',
+          texts: [NovelAiDatasetPrefix.furryTag],
         ),
       PromptTokenCountBreakdownGroup(label: '角色', texts: extraTexts),
     ],
@@ -354,6 +396,14 @@ PromptTokenCountPayload _buildNegativeTokenCountPayload({
   final promptWithFixedTags = fixedTagsState
       .applyToPrompt(resolvedPrompt)
       .trim();
+  final fixedSettings = ModelCapabilityRegistry.of(model).fixedSettings;
+  if (fixedSettings != null) {
+    return _buildFixedNegativeTokenCountPayload(
+      prompt: promptWithFixedTags,
+      model: model,
+      ucPreset: fixedSettings.ucPreset,
+    );
+  }
   final negativePromptWithFixedTags = fixedTagsState
       .applyToNegativePrompt(resolvedNegativePrompt)
       .trim();
@@ -422,6 +472,30 @@ PromptTokenCountPayload _buildNegativeTokenCountPayload({
         texts: [resolvedUcPresetContent.trim()],
       ),
       PromptTokenCountBreakdownGroup(label: '角色负面', texts: extraTexts),
+    ],
+  );
+}
+
+/// 固定参数模型只发送固定 UC 预设，用户与角色负面词都不参与计数。
+PromptTokenCountPayload _buildFixedNegativeTokenCountPayload({
+  required String prompt,
+  required String model,
+  required int ucPreset,
+}) {
+  final effectiveNegativePrompt = buildPromptSemanticsSnapshot(
+    prompt: prompt,
+    negativePrompt: '',
+    model: model,
+    qualityToggle: false,
+    ucPreset: ucPreset,
+  ).effectiveNegativePrompt;
+  return PromptTokenCountPayload(
+    mainText: effectiveNegativePrompt,
+    breakdown: [
+      PromptTokenCountBreakdownGroup(
+        label: '负面预设',
+        texts: [effectiveNegativePrompt],
+      ),
     ],
   );
 }

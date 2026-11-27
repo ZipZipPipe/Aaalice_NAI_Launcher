@@ -4,12 +4,13 @@ import 'package:dio/dio.dart';
 
 import '../../../../core/agent/agent_types.dart';
 import '../../models/agent_protocol.dart';
-import '../../models/prompt_assistant_models.dart';
+import '../../../../data/models/prompt_assistant/prompt_assistant_models.dart';
 import 'agent_wire_helpers.dart';
 import 'assistant_prefill.dart';
 import 'prompt_assistant_adapter.dart';
 import 'prefill_tool_decoder.dart';
 import 'reasoning_payload.dart';
+import 'reasoning_rejection.dart';
 import 'thinking_prefill_messages.dart';
 
 class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
@@ -94,7 +95,7 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
       payload: payload,
       cancelToken: cancelToken,
     );
-    return _extractResponseContent(response.data);
+    return _extractResponseContent(checkedProviderResponse(response));
   }
 
   @override
@@ -170,6 +171,7 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
     final headers = _agentHeaders(request.apiKey);
     final toolBuffers = <int, _OpenAiToolBuffer>{};
     final toolOrder = <int>[];
+    final emittedToolCallIds = <String>{};
     String? finishReason;
     Usage? usage;
     var sawError = false;
@@ -186,21 +188,15 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
         if (json == null) {
           return;
         }
-        final error = extractErrorMessage(json);
-        if (error != null) {
+        if (ProviderResponseError.fromResponse(json, payload)
+            case final error?) {
           sawError = true;
-          pending.add(AgentWireError('LLM service returned an error: $error'));
+          pending.add(agentWireErrorFrom(error, request));
           return;
         }
         final usageRaw = json['usage'];
         if (usageRaw is Map<String, dynamic>) {
-          final input = (usageRaw['prompt_tokens'] as num?)?.toInt() ?? 0;
-          final output = (usageRaw['completion_tokens'] as num?)?.toInt() ?? 0;
-          usage = Usage(
-            input: input,
-            output: output,
-            totalTokens: (usageRaw['total_tokens'] as num?)?.toInt() ?? 0,
-          );
+          usage = _parseOpenAiUsage(usageRaw);
         }
         final choices = json['choices'];
         if (choices is List && choices.isNotEmpty) {
@@ -208,6 +204,14 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
           if (first is Map<String, dynamic>) {
             final delta = first['delta'];
             if (delta is Map<String, dynamic>) {
+              final reasoning = _firstNonEmptyString([
+                delta['reasoning_content'],
+                delta['reasoning'],
+                delta['reasoning_text'],
+              ]);
+              if (reasoning != null) {
+                pending.add(AgentWireThinkingDelta(reasoning));
+              }
               final content = delta['content'];
               if (content is String && content.isNotEmpty) {
                 pending.addAll(
@@ -230,11 +234,6 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
                     }
                   }
                 }
-              }
-              final reasoning =
-                  delta['reasoning_content'] ?? delta['reasoning'];
-              if (reasoning is String && reasoning.isNotEmpty) {
-                pending.add(AgentWireThinkingDelta(reasoning));
               }
               final calls = delta['tool_calls'];
               if (calls is List) {
@@ -309,7 +308,7 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
       if (pending.isNotEmpty) {
         yield* Stream.fromIterable(List.of(pending));
       }
-      yield agentWireErrorFrom(error, request.provider);
+      yield agentWireErrorFrom(error, request);
       return;
     }
 
@@ -319,7 +318,7 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
 
     if (!sawDone && finishReason == null) {
       yield const AgentWireError(
-        'OpenAI-compatible stream ended before its terminal event.',
+        'OpenAI-compatible stream ended without finish_reason.',
       );
       return;
     }
@@ -357,6 +356,10 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
       if (buffer.name.isEmpty) {
         continue;
       }
+      // A repeated provider id is a relay replay; emitting it runs the tool twice.
+      if (buffer.id.isNotEmpty && !emittedToolCallIds.add(buffer.id)) {
+        continue;
+      }
       yield AgentWireToolCallDone(
         id: buffer.id,
         name: buffer.name,
@@ -375,6 +378,7 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
     required CancelToken cancelToken,
   }) async* {
     final payload = _buildAgentPayload(request, stream: false);
+    final emittedToolCallIds = <String>{};
     try {
       final response = await dio.post<dynamic>(
         resolvePrefillEndpoint(request) ?? _resolveEndpoint(request.provider),
@@ -386,13 +390,8 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
         ),
         cancelToken: cancelToken,
       );
-      final raw = response.data;
+      final raw = checkedProviderResponse(response);
       if (raw is Map<String, dynamic>) {
-        final error = extractErrorMessage(raw);
-        if (error != null) {
-          yield AgentWireError('LLM service returned an error: $error');
-          return;
-        }
         final choices = raw['choices'];
         if (choices is List && choices.isNotEmpty) {
           final first = choices.first;
@@ -412,11 +411,14 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
                     final rawArgs = function is Map<String, dynamic>
                         ? function['arguments'] as String?
                         : null;
-                    yield AgentWireToolCallDone(
-                      id: call['id'] as String? ?? '',
-                      name: name,
-                      arguments: parseToolArguments(rawArgs),
-                    );
+                    final id = call['id'] as String? ?? '';
+                    if (id.isEmpty || emittedToolCallIds.add(id)) {
+                      yield AgentWireToolCallDone(
+                        id: id,
+                        name: name,
+                        arguments: parseToolArguments(rawArgs),
+                      );
+                    }
                   }
                 }
               }
@@ -427,11 +429,7 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
             final usageRaw = raw['usage'];
             Usage? usage;
             if (usageRaw is Map<String, dynamic>) {
-              usage = Usage(
-                input: (usageRaw['prompt_tokens'] as num?)?.toInt() ?? 0,
-                output: (usageRaw['completion_tokens'] as num?)?.toInt() ?? 0,
-                totalTokens: (usageRaw['total_tokens'] as num?)?.toInt() ?? 0,
-              );
+              usage = _parseOpenAiUsage(usageRaw);
             }
             yield AgentWireFinish(
               stopReason: stopReasonFromName(first['finish_reason'] as String?),
@@ -443,7 +441,7 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
       }
       yield const AgentWireError('LLM service returned an unexpected response');
     } on Object catch (error) {
-      yield agentWireErrorFrom(error, request.provider);
+      yield agentWireErrorFrom(error, request);
     }
   }
 
@@ -484,11 +482,10 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
   Map<String, dynamic> _reasoningPayload(AgentChatRequest request) {
     final reasoning = request.reasoningRequest;
     if (reasoning == null) {
-      if (request.provider.preset == ProviderPreset.deepseek) {
+      if (request.provider.preset == ProviderPreset.deepseek &&
+          request.reasoning != null) {
         return {
-          'thinking': {
-            'type': request.reasoning == null ? 'disabled' : 'enabled',
-          },
+          'thinking': {'type': 'enabled'},
         };
       }
       return const {};
@@ -507,17 +504,23 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
         remindContinue: remindContinue,
       );
     }
+    final requiresReasoningContent =
+        request.reasoningRequest?.preserveReasoningContent == true;
     return [
       if (request.systemPrompt.trim().isNotEmpty)
         {'role': 'system', 'content': request.systemPrompt.trim()},
       for (final message in request.messages)
         ..._mapAgentMessage(
           message,
+          requestProviderId: request.provider.id,
+          requestModel: request.model,
           allowImageInput: request.provider.allowImageInput,
           preserveReasoning:
-              request.reasoningRequest?.preserveReasoningContent == true ||
-              (request.provider.preset == ProviderPreset.deepseek &&
+              requiresReasoningContent ||
+              (request.reasoningRequest == null &&
+                  request.provider.preset == ProviderPreset.deepseek &&
                   request.reasoning != null),
+          requiresReasoningContent: requiresReasoningContent,
           useMistralContent:
               request.reasoningRequest?.api ==
                   AgentReasoningApi.mistralPromptMode ||
@@ -534,8 +537,11 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
 
   List<Map<String, dynamic>> _mapAgentMessage(
     Message message, {
+    required String requestProviderId,
+    required String requestModel,
     required bool allowImageInput,
     required bool preserveReasoning,
+    required bool requiresReasoningContent,
     required bool useMistralContent,
   }) {
     if (message is UserMessage) {
@@ -565,10 +571,16 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
       ];
     }
     if (message is AssistantMessage) {
-      final reasoning = message.content
-          .whereType<AssistantThinkingContent>()
-          .map((content) => content.thinking)
-          .join();
+      final isDifferentModel =
+          (message.provider != null || message.model != null) &&
+          (message.provider != requestProviderId ||
+              message.model != requestModel);
+      final reasoning = isDifferentModel
+          ? ''
+          : message.content
+                .whereType<AssistantThinkingContent>()
+                .map((content) => content.thinking)
+                .join();
       return [
         {
           'role': 'assistant',
@@ -580,19 +592,23 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
                     'type': 'text',
                     'text': block.text,
                   },
-                  AssistantThinkingContent() when block.thinking.isNotEmpty => {
-                    'type': 'thinking',
-                    'thinking': [
-                      {'type': 'text', 'text': block.thinking},
-                    ],
-                  },
+                  AssistantThinkingContent()
+                      when !isDifferentModel && block.thinking.isNotEmpty =>
+                    {
+                      'type': 'thinking',
+                      'thinking': [
+                        {'type': 'text', 'text': block.thinking},
+                      ],
+                    },
                   _ => null,
                 },
             ].whereType<Map<String, dynamic>>().toList()
           else if (message.text.isNotEmpty)
             'content': message.text,
           if (!useMistralContent && preserveReasoning && reasoning.isNotEmpty)
-            'reasoning_content': reasoning,
+            'reasoning_content': reasoning
+          else if (!useMistralContent && requiresReasoningContent)
+            'reasoning_content': '',
           if (message.toolCalls.isNotEmpty)
             'tool_calls': [
               for (final call in message.toolCalls)
@@ -610,11 +626,15 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
     }
     if (message is ToolResultMessage) {
       final images = allowImageInput ? toolResultImagesOf(message) : const [];
+      final hasText = message.text.trim().isNotEmpty;
+      final toolResultText = hasText
+          ? message.text
+          : (images.isNotEmpty ? '(see attached image)' : '(no tool output)');
       return [
         {
           'role': 'tool',
           'tool_call_id': message.toolCallId,
-          'content': message.text,
+          'content': toolResultText,
         },
         if (images.isNotEmpty)
           {
@@ -635,6 +655,48 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
       ];
     }
     return const [];
+  }
+
+  static String? _firstNonEmptyString(List<dynamic> candidates) {
+    for (final candidate in candidates) {
+      if (candidate is String && candidate.isNotEmpty) {
+        return candidate;
+      }
+    }
+    return null;
+  }
+
+  static Usage _parseOpenAiUsage(Map<String, dynamic> usageRaw) {
+    final promptTokens = (usageRaw['prompt_tokens'] as num?)?.toInt() ?? 0;
+    final promptDetails = usageRaw['prompt_tokens_details'];
+    final cacheRead =
+        ((promptDetails is Map<String, dynamic>
+                    ? promptDetails['cached_tokens']
+                    : null)
+                as num?)
+            ?.toInt() ??
+        (usageRaw['prompt_cache_hit_tokens'] as num?)?.toInt() ??
+        (usageRaw['cached_tokens'] as num?)?.toInt() ??
+        0;
+    final cacheWrite =
+        ((promptDetails is Map<String, dynamic>
+                    ? promptDetails['cache_write_tokens']
+                    : null)
+                as num?)
+            ?.toInt() ??
+        0;
+    final rawInput = promptTokens - cacheRead - cacheWrite;
+    final input = rawInput < 0 ? 0 : rawInput;
+    final output = (usageRaw['completion_tokens'] as num?)?.toInt() ?? 0;
+    final computedTotal = input + output + cacheRead + cacheWrite;
+    final reportedTotal = (usageRaw['total_tokens'] as num?)?.toInt() ?? 0;
+    return Usage(
+      input: input,
+      output: output,
+      cacheRead: cacheRead,
+      cacheWrite: cacheWrite,
+      totalTokens: computedTotal > 0 ? computedTotal : reportedTotal,
+    );
   }
 
   static String _mistralThinkingText(dynamic value) {
@@ -687,10 +749,15 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
       );
     } on DioException catch (e) {
       final status = e.response?.statusCode;
+      final explicit = request.reasoningRequest?.enabled != null;
       final shouldRetryDeepSeek =
           request.provider.preset == ProviderPreset.deepseek &&
+          endpoint.endsWith('/v1/chat/completions') &&
           (status == 400 || status == 404) &&
-          endpoint.endsWith('/v1/chat/completions');
+          (!explicit || _isEndpointError(e.response?.data, status));
+      if (status == 400 && explicit && rejectedReasoningField(e) != null) {
+        rethrow;
+      }
       if (shouldRetryDeepSeek) {
         return dio.post<dynamic>(
           endpoint.replaceFirst('/v1/chat/completions', '/chat/completions'),
@@ -710,6 +777,7 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
             'model': payload['model'],
             'stream': false,
             'messages': payload['messages'],
+            if (explicit) ...chatReasoningPayload(request.reasoningRequest),
           },
           options: Options(
             headers: headers,
@@ -721,6 +789,48 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
       }
       rethrow;
     }
+  }
+
+  bool _isEndpointError(Object? body, int? status) {
+    final error = body is Map ? body['error'] ?? body : body;
+    if (error is Map &&
+        const {
+          'invalid_url',
+          'invalid_path',
+          'unknown_endpoint',
+          'endpoint_not_found',
+          'route_not_found',
+        }.contains(error['code'])) {
+      return true;
+    }
+    final message = providerErrorDetail(body)?.trim() ?? '';
+    if (status == 404) {
+      if (body == null || (body is String && message.isEmpty)) return true;
+      if (body is String &&
+          RegExp(
+            r'^(?:<!doctype\s+html\b|<html\b)',
+            caseSensitive: false,
+          ).hasMatch(message)) {
+        return !RegExp(
+          r'\b(?:unknown|invalid|unsupported|unrecognized|missing)\s+(?:model|field|parameter|argument)\b'
+          r'|\b(?:model|field|parameter|argument)\b[^<\n]*\b(?:not found|does not exist|not supported|is invalid)\b',
+          caseSensitive: false,
+        ).hasMatch(message);
+      }
+    }
+    if (status == 404 &&
+        RegExp(
+          r'^(?:404 )?(?:page )?not found$',
+          caseSensitive: false,
+        ).hasMatch(message)) {
+      return true;
+    }
+    return RegExp(
+      r'\b(?:unknown|invalid|unsupported|unrecognized|incorrect)\s+(?:(?:request|api)\s+)?(?:url|path|endpoint|route)\b'
+      r'|\b(?:url|path|endpoint|route)\b[^\n]{0,80}\b(?:not found|does not exist)\b'
+      r'|cannot post /v1/chat/completions\b',
+      caseSensitive: false,
+    ).hasMatch(message);
   }
 
   List<Map<String, dynamic>> _buildMessages(PromptAssistantRequest request) {
@@ -771,6 +881,9 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
         baseUrl.contains('api.mistral.ai') ||
         id == 'deepseek' ||
         baseUrl.contains('deepseek.com') ||
+        provider.preset == ProviderPreset.kimiCoding ||
+        id == 'kimi-coding' ||
+        baseUrl.contains('api.kimi.com/coding') ||
         id == 'moonshotai' ||
         id == 'moonshotai-cn' ||
         baseUrl.contains('api.moonshot.') ||
@@ -837,10 +950,6 @@ class OpenAiChatCompletionsAdapter extends PromptAssistantProviderAdapter {
 
   String _extractResponseContent(dynamic raw) {
     if (raw is Map<String, dynamic>) {
-      final error = extractErrorMessage(raw);
-      if (error != null) {
-        throw StateError('LLM service returned an error: $error');
-      }
       final choices = raw['choices'];
       if (choices is List && choices.isNotEmpty) {
         final first = choices.first;

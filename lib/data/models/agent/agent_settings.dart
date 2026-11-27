@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import '../../../presentation/prompt_assistant/models/prompt_assistant_models.dart';
+import '../prompt_assistant/prompt_assistant_models.dart';
 
 const String legacyDefaultAgentChatPrompt =
     'You are a helpful assistant embedded in a NovelAI image-generation client. '
@@ -248,8 +248,7 @@ class AgentChatConfig {
       'assistantPrefillEnabled': assistantPrefillEnabled,
       'assistantPrefill': assistantPrefill,
       // 仅首轮才落盘；每轮是默认值，缺键即每轮，旧配置无需迁移。
-      if (assistantPrefillInjectionMode ==
-        AgentPrefillInjectionMode.firstTurn)
+      if (assistantPrefillInjectionMode == AgentPrefillInjectionMode.firstTurn)
         'assistantPrefillInjectionMode': assistantPrefillInjectionMode.name,
     },
   };

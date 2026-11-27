@@ -1,5 +1,6 @@
 import 'dart:ui';
 
+import '../../../../data/models/metadata/metadata_import_options.dart';
 import '../../../widgets/autocomplete/autocomplete_config.dart';
 
 /// 统一提示词输入配置
@@ -32,6 +33,14 @@ class UnifiedPromptConfig {
   /// 启用后，自动将 Stable Diffusion 语法转换为 NAI 语法。
   final bool enableSdSyntaxAutoConvert;
 
+  /// 以数字结尾的数值权重内容是否在闭合 :: 前补空格
+  ///
+  /// 写入权重时直接生效，失焦时规整已有文本。
+  final bool separateNumericWeightClosing;
+
+  /// 自动格式化时标签使用空格而不是下划线
+  final bool replaceUnderscores;
+
   /// 是否启用提示词正则替换
   ///
   /// 失焦时按用户配置的正则规则改写提示词，执行顺序早于
@@ -46,6 +55,9 @@ class UnifiedPromptConfig {
   /// 启用后，粘贴 ComfyUI Prompt Control 格式的多角色提示词时
   /// 会弹出导入确认框，支持转换为 NAI 多角色格式。
   final bool enableComfyuiImport;
+
+  /// 多角色导入确认框打开时预选的角色导入方式（通常是上次确认的那种）
+  final CharacterImportMode comfyuiCharacterImportMode;
 
   /// 是否显示支持原文编辑与本地汉化的标签模式入口。
   final bool enableTagMode;
@@ -95,8 +107,11 @@ class UnifiedPromptConfig {
     this.numericEmphasisEnabled = true,
     this.enableAutoFormat = true,
     this.enableSdSyntaxAutoConvert = false,
+    this.separateNumericWeightClosing = false,
+    this.replaceUnderscores = false,
     this.enableRegexReplace = true,
     this.enableComfyuiImport = false,
+    this.comfyuiCharacterImportMode = CharacterImportMode.replace,
     this.enableTagMode = false,
     this.compact = false,
     this.readOnly = false,
@@ -172,8 +187,11 @@ class UnifiedPromptConfig {
     bool? numericEmphasisEnabled,
     bool? enableAutoFormat,
     bool? enableSdSyntaxAutoConvert,
+    bool? separateNumericWeightClosing,
+    bool? replaceUnderscores,
     bool? enableRegexReplace,
     bool? enableComfyuiImport,
+    CharacterImportMode? comfyuiCharacterImportMode,
     bool? enableTagMode,
     bool? compact,
     bool? readOnly,
@@ -194,8 +212,13 @@ class UnifiedPromptConfig {
       enableAutoFormat: enableAutoFormat ?? this.enableAutoFormat,
       enableSdSyntaxAutoConvert:
           enableSdSyntaxAutoConvert ?? this.enableSdSyntaxAutoConvert,
+      separateNumericWeightClosing:
+          separateNumericWeightClosing ?? this.separateNumericWeightClosing,
+      replaceUnderscores: replaceUnderscores ?? this.replaceUnderscores,
       enableRegexReplace: enableRegexReplace ?? this.enableRegexReplace,
       enableComfyuiImport: enableComfyuiImport ?? this.enableComfyuiImport,
+      comfyuiCharacterImportMode:
+          comfyuiCharacterImportMode ?? this.comfyuiCharacterImportMode,
       enableTagMode: enableTagMode ?? this.enableTagMode,
       compact: compact ?? this.compact,
       readOnly: readOnly ?? this.readOnly,
@@ -218,8 +241,11 @@ class UnifiedPromptConfig {
         other.numericEmphasisEnabled == numericEmphasisEnabled &&
         other.enableAutoFormat == enableAutoFormat &&
         other.enableSdSyntaxAutoConvert == enableSdSyntaxAutoConvert &&
+        other.separateNumericWeightClosing == separateNumericWeightClosing &&
+        other.replaceUnderscores == replaceUnderscores &&
         other.enableRegexReplace == enableRegexReplace &&
         other.enableComfyuiImport == enableComfyuiImport &&
+        other.comfyuiCharacterImportMode == comfyuiCharacterImportMode &&
         other.enableTagMode == enableTagMode &&
         other.compact == compact &&
         other.readOnly == readOnly &&
@@ -238,8 +264,11 @@ class UnifiedPromptConfig {
       numericEmphasisEnabled,
       enableAutoFormat,
       enableSdSyntaxAutoConvert,
+      separateNumericWeightClosing,
+      replaceUnderscores,
       enableRegexReplace,
       enableComfyuiImport,
+      comfyuiCharacterImportMode,
       enableTagMode,
       compact,
       readOnly,

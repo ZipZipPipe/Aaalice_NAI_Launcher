@@ -83,6 +83,98 @@ void main() {
     }
   });
 
+  group('stored-data deletions', () {
+    const storedDataDeletions = [
+      'delete_fixed_tag',
+      'delete_tag_library_entry',
+      'delete_tag_library_category',
+      'delete_precise_reference_entry',
+      'delete_vibe_library_entry',
+      'delete_generation_queue_task',
+      'clear_failed_generation_queue_tasks',
+    ];
+    const pageStateRemovals = [
+      'remove_character',
+      'clear_characters',
+      'remove_active_vibe',
+      'remove_active_precise_reference',
+      'clear_generation_source_image',
+      'cancel_generation_preparation',
+      'cancel_manual_inpaint_draft',
+      'clear_completed_generation_queue_tasks',
+    ];
+
+    test('are told apart from page-state removals', () {
+      for (final name in storedDataDeletions) {
+        final descriptor = describeAgentToolPermission(name);
+        expect(descriptor.deletesStoredData, isTrue, reason: name);
+        expect(
+          descriptor.operation,
+          AgentPermissionOperation.delete,
+          reason: name,
+        );
+      }
+      for (final name in pageStateRemovals) {
+        final descriptor = describeAgentToolPermission(name);
+        expect(descriptor.deletesStoredData, isFalse, reason: name);
+        expect(
+          descriptor.operation,
+          AgentPermissionOperation.delete,
+          reason: name,
+        );
+      }
+      expect(
+        describeAgentToolPermission('delete_vibe_library_folder'),
+        isA<AgentToolPermissionDescriptor>().having(
+          (value) => value.deletesStoredData,
+          'deletesStoredData',
+          isTrue,
+        ),
+        reason: 'new delete_ tools must default to confirmation',
+      );
+      expect(
+        describeAgentToolPermission('update_fixed_tag').deletesStoredData,
+        isFalse,
+      );
+    });
+
+    test('still ask in full access while page-state removals run', () {
+      const toolNames = [...storedDataDeletions, ...pageStateRemovals];
+      final catalog = AgentToolPermissionCatalog(
+        toolNames: toolNames,
+        descriptors: [
+          for (final name in toolNames) describeAgentToolPermission(name),
+        ],
+      );
+
+      for (final mode in const {
+        AgentAccessMode.readOnly,
+        AgentAccessMode.askBeforeWrite,
+        AgentAccessMode.allowWrite,
+      }) {
+        final policy = AgentPermissionPolicy({
+          for (final domain in AgentPermissionDomain.values) domain: mode,
+        });
+        for (final name in toolNames) {
+          final expected = switch (mode) {
+            AgentAccessMode.readOnly ||
+            AgentAccessMode.blocked => AgentPermissionDecision.block,
+            AgentAccessMode.askBeforeWrite => AgentPermissionDecision.ask,
+            AgentAccessMode.allowWrite =>
+              storedDataDeletions.contains(name)
+                  ? AgentPermissionDecision.ask
+                  : AgentPermissionDecision.allow,
+          };
+          expect(
+            catalog.decide(toolName: name, policy: policy),
+            expected,
+            reason: '${mode.name}/$name',
+          );
+        }
+      }
+    });
+  });
+
   test('image mutations follow safe, ask, and full-access policies', () {
     const toolNames = [
       'select_generated_image',
@@ -174,13 +266,15 @@ void main() {
       );
     });
 
-    test('always confirms destructive operations in non-blocked domains', () {
-      for (final mode in const {
-        AgentAccessMode.askBeforeWrite,
-        AgentAccessMode.allowWrite,
-      }) {
+    test('destructive operations follow the domain mode like other writes', () {
+      const expected = {
+        AgentAccessMode.readOnly: AgentPermissionDecision.block,
+        AgentAccessMode.askBeforeWrite: AgentPermissionDecision.ask,
+        AgentAccessMode.allowWrite: AgentPermissionDecision.allow,
+      };
+      for (final entry in expected.entries) {
         final policy = AgentPermissionPolicy({
-          AgentPermissionDomain.generationQueue: mode,
+          AgentPermissionDomain.generationQueue: entry.key,
         });
         for (final operation in const {
           AgentPermissionOperation.delete,
@@ -189,7 +283,8 @@ void main() {
         }) {
           expect(
             policy.decide(AgentPermissionDomain.generationQueue, operation),
-            AgentPermissionDecision.ask,
+            entry.value,
+            reason: '${entry.key.name}/${operation.name}',
           );
         }
       }
@@ -279,7 +374,7 @@ void main() {
         AgentAccessMode.allowWrite: const [
           AgentPermissionDecision.allow,
           AgentPermissionDecision.allow,
-          AgentPermissionDecision.ask,
+          AgentPermissionDecision.allow,
           AgentPermissionDecision.allow,
           AgentPermissionDecision.confirmCharge,
         ],
@@ -306,6 +401,83 @@ void main() {
           reason: entry.key.name,
         );
       }
+    });
+
+    test('confirmAtThreshold only waives known charges below it', () {
+      final catalog = AgentToolPermissionCatalog(
+        toolNames: const ['generate'],
+        descriptors: const [generate],
+      );
+      AgentPermissionDecision decide(
+        int? estimate,
+        int? threshold, {
+        AgentAccessMode mode = AgentAccessMode.allowWrite,
+      }) => catalog.decide(
+        toolName: 'generate',
+        policy: AgentPermissionPolicy({
+          AgentPermissionDomain.generation: mode,
+        }, chargeApproval: AgentChargeApproval.confirmAtThreshold),
+        estimatedAnlas: estimate,
+        chargeConfirmThreshold: threshold,
+      );
+
+      expect(decide(49, 50), AgentPermissionDecision.allow);
+      expect(decide(50, 50), AgentPermissionDecision.confirmCharge);
+      expect(decide(5000, null), AgentPermissionDecision.allow);
+      expect(decide(null, null), AgentPermissionDecision.confirmCharge);
+      expect(decide(null, 50), AgentPermissionDecision.confirmCharge);
+      expect(decide(0, 50), AgentPermissionDecision.allow);
+      expect(decide(-1, null), AgentPermissionDecision.block);
+      expect(
+        decide(10, null, mode: AgentAccessMode.askBeforeWrite),
+        AgentPermissionDecision.ask,
+        reason: 'waiving the charge must not waive the write approval',
+      );
+      expect(
+        decide(10, null, mode: AgentAccessMode.readOnly),
+        AgentPermissionDecision.block,
+      );
+    });
+
+    test('confirmEach ignores the threshold', () {
+      final catalog = AgentToolPermissionCatalog(
+        toolNames: const ['generate'],
+        descriptors: const [generate],
+      );
+      expect(
+        catalog.decide(
+          toolName: 'generate',
+          policy: AgentPermissionPolicy(const {
+            AgentPermissionDomain.generation: AgentAccessMode.allowWrite,
+          }),
+          estimatedAnlas: 1,
+          chargeConfirmThreshold: 50,
+        ),
+        AgentPermissionDecision.confirmCharge,
+      );
+    });
+
+    test('agentPermissionPolicy pairs threshold charges with full access', () {
+      expect(
+        agentPermissionPolicy(
+          safeMode: false,
+          fullAccess: true,
+          chargeApproval: AgentChargeApproval.confirmAtThreshold,
+        ).chargeApproval,
+        AgentChargeApproval.confirmAtThreshold,
+      );
+      expect(
+        agentPermissionPolicy(safeMode: false, fullAccess: true).chargeApproval,
+        AgentChargeApproval.confirmEach,
+      );
+      expect(
+        () => agentPermissionPolicy(
+          safeMode: false,
+          fullAccess: false,
+          chargeApproval: AgentChargeApproval.confirmAtThreshold,
+        ),
+        throwsA(isA<AssertionError>()),
+      );
     });
 
     test('rejects missing, duplicate, and unknown descriptors', () {

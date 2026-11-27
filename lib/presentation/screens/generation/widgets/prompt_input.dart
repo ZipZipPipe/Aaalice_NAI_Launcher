@@ -3,12 +3,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/constants/api_constants.dart';
 import '../../../../core/utils/localization_extension.dart';
+import '../../../prompt_assistant/widgets/prompt_assistant_overlay.dart';
 import '../../../providers/image_generation_provider.dart';
 import '../../../providers/pending_prompt_provider.dart';
 import '../../../providers/prompt_maximize_provider.dart';
 import '../../../providers/prompt_token_counter_provider.dart';
 import '../../../providers/queue_execution_provider.dart';
 import '../../../widgets/prompt/prompt_footer_style.dart';
+import 'prompt_input_assistant.dart';
 import 'prompt_input_controller.dart';
 import 'prompt_input_coordinator.dart';
 import 'prompt_input_editor.dart';
@@ -23,6 +25,7 @@ class PromptInputWidget extends ConsumerStatefulWidget {
     this.compact = false,
     this.onToggleMaximize,
     this.isMaximized = false,
+    this.useMobileWorkbench = false,
     this.showMaximizeButton = true,
     this.autofocus = false,
     this.negativeModeNotifier,
@@ -34,6 +37,7 @@ class PromptInputWidget extends ConsumerStatefulWidget {
   final bool compact;
   final VoidCallback? onToggleMaximize;
   final bool isMaximized;
+  final bool useMobileWorkbench;
   final bool showMaximizeButton;
   final bool autofocus;
   final ValueNotifier<bool>? negativeModeNotifier;
@@ -50,6 +54,7 @@ class _PromptInputWidgetState extends ConsumerState<PromptInputWidget> {
   late final bool _ownsController;
   late final PromptInputCoordinator _coordinator;
   final _editorKey = GlobalKey(debugLabel: 'generation-prompt-editor');
+  final _assistantKey = GlobalKey(debugLabel: 'generation-prompt-assistant');
 
   @override
   void initState() {
@@ -183,17 +188,26 @@ class _PromptInputWidgetState extends ConsumerState<PromptInputWidget> {
           widget.onToggleMaximize ??
           () => ref.read(promptMaximizeNotifierProvider.notifier).toggle(),
     );
+    final assistant = buildPromptInputAssistant(
+      ref,
+      key: _assistantKey,
+      controller: _controller,
+      commands: commands,
+    );
 
     if (widget.compact) {
       return _CompactPromptInput(
         editorKey: _editorKey,
+        assistant: assistant,
         controller: _controller,
         commands: commands,
         viewData: viewData,
       );
     }
     return _FullPromptInput(
+      useMobileWorkbench: widget.useMobileWorkbench,
       editorKey: _editorKey,
+      assistant: assistant,
       controller: _controller,
       commands: commands,
       viewData: viewData,
@@ -201,21 +215,25 @@ class _PromptInputWidgetState extends ConsumerState<PromptInputWidget> {
   }
 }
 
-class _FullPromptInput extends ConsumerWidget {
+class _FullPromptInput extends StatelessWidget {
   const _FullPromptInput({
+    required this.useMobileWorkbench,
     required this.editorKey,
+    required this.assistant,
     required this.controller,
     required this.commands,
     required this.viewData,
   });
 
+  final bool useMobileWorkbench;
   final GlobalKey editorKey;
+  final PromptAssistantOverlay assistant;
   final PromptInputController controller;
   final PromptInputCommands commands;
   final PromptInputViewData viewData;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final negative = controller.isNegativeMode;
     final editor = PromptInputEditor(
       key: editorKey,
@@ -229,6 +247,7 @@ class _FullPromptInput extends ConsumerWidget {
               ? PromptTokenCountTarget.negative
               : PromptTokenCountTarget.positive,
           topPadding: 6,
+          assistant: assistant,
           leading: includeBottomActions
               ? PromptInputBottomActions(
                   controller: controller,
@@ -238,7 +257,8 @@ class _FullPromptInput extends ConsumerWidget {
         );
     return LayoutBuilder(
       builder: (context, constraints) {
-        if (viewData.isMaximized && constraints.maxWidth < 600) {
+        if (viewData.isMaximized &&
+            (useMobileWorkbench || constraints.maxWidth < 600)) {
           return PromptInputToolbar(
             controller: controller,
             commands: commands,
@@ -360,31 +380,32 @@ class _CompactPromptModeSwitch extends StatelessWidget {
   }
 }
 
-class _CompactPromptInput extends ConsumerWidget {
+class _CompactPromptInput extends StatelessWidget {
   const _CompactPromptInput({
     required this.editorKey,
+    required this.assistant,
     required this.controller,
     required this.commands,
     required this.viewData,
   });
 
   final GlobalKey editorKey;
+  final PromptAssistantOverlay assistant;
   final PromptInputController controller;
   final PromptInputCommands commands;
   final PromptInputViewData viewData;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) => LayoutBuilder(
+  Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
       final negative = controller.isNegativeMode;
 
       final showModeSwitch = constraints.maxHeight >= 180;
-      final minimumEditorHeight =
-          MediaQuery.textScalerOf(context).scale(16) * 1.5 + 24;
       final footerHeight = PromptFooterStyle.height(
         context,
       ).clamp(kMinInteractiveDimension, double.infinity);
-      final minimumHeight = minimumEditorHeight + footerHeight + 4;
+      final minimumHeight =
+          PromptInputEditor.minimumHeight(context) + footerHeight + 4;
       return SingleChildScrollView(
         key: const ValueKey('generation_prompt_compact_scroll'),
         primary: false,
@@ -423,16 +444,11 @@ class _CompactPromptInput extends ConsumerWidget {
                     ? PromptTokenCountTarget.negative
                     : PromptTokenCountTarget.positive,
                 topPadding: 4,
+                assistant: assistant,
                 leading: Row(
                   key: const ValueKey('generation_prompt_compact_actions'),
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    if (viewData.showMaximizeButton)
-                      IconButton(
-                        icon: const Icon(Icons.fullscreen),
-                        tooltip: context.l10n.tooltip_fullscreenEdit,
-                        onPressed: commands.toggleMaximize,
-                      ),
                     if ((negative
                             ? controller.negativeController
                             : controller.promptController)
@@ -447,6 +463,17 @@ class _CompactPromptInput extends ConsumerWidget {
                       ),
                   ],
                 ),
+                trailing: viewData.showMaximizeButton
+                    ? IconButton(
+                        constraints: const BoxConstraints.tightFor(
+                          width: kMinInteractiveDimension,
+                          height: kMinInteractiveDimension,
+                        ),
+                        icon: const Icon(Icons.fullscreen),
+                        tooltip: context.l10n.tooltip_fullscreenEdit,
+                        onPressed: commands.toggleMaximize,
+                      )
+                    : null,
               ),
             ],
           ),

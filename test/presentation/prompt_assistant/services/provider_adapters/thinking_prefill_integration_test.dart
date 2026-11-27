@@ -10,7 +10,7 @@ import 'package:nai_launcher/presentation/agent_chat/services/agent_api_client.d
 import 'package:nai_launcher/presentation/agent_chat/services/agent_prefill.dart';
 import 'package:nai_launcher/presentation/agent_chat/services/agent_stream_bridge.dart';
 import 'package:nai_launcher/presentation/prompt_assistant/models/agent_protocol.dart';
-import 'package:nai_launcher/presentation/prompt_assistant/models/prompt_assistant_models.dart';
+import 'package:nai_launcher/data/models/prompt_assistant/prompt_assistant_models.dart';
 import 'package:nai_launcher/presentation/prompt_assistant/services/provider_adapters/thinking_prefill_messages.dart';
 
 const prefix = '  我先检查当前状态。\n';
@@ -160,19 +160,13 @@ void main() {
     },
   );
 
-  test(
-    'persistently empty continuation surfaces an explicit error',
-    () async {
-      final run = await _run(toolRounds: 1, emptyContinuations: 99);
-      expect(run.service.requests, hasLength(3));
-      final last = run.messages.last as AssistantMessage;
-      expect(last.stopReason, StopReason.error);
-      expect(
-        last.errorMessage,
-        contains('no answer text and no tool request'),
-      );
-    },
-  );
+  test('persistently empty continuation surfaces an explicit error', () async {
+    final run = await _run(toolRounds: 1, emptyContinuations: 99);
+    expect(run.service.requests, hasLength(3));
+    final last = run.messages.last as AssistantMessage;
+    expect(last.stopReason, StopReason.error);
+    expect(last.errorMessage, contains('no answer text and no tool request'));
+  });
 
   test(
     'cancellation after tool text cannot execute the pending request',
@@ -420,8 +414,8 @@ class _StrictService implements HttpClientAdapter {
     if (seenToolResults < toolRounds) {
       content =
           '$toolPreamble<launcher_tool_calls>${jsonEncode([
-              {'name': 'read', 'arguments': arguments},
-            ])}</launcher_tool_calls>';
+            {'name': 'read', 'arguments': arguments},
+          ])}</launcher_tool_calls>';
     } else {
       // 按续跑请求序号模拟真实故障：前 N 次续跑只输出思考、正文为空
       // （含适配器带提醒的重试请求），其后恢复正常收尾。

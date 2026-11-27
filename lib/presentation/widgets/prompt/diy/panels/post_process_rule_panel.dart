@@ -1,33 +1,40 @@
 import 'package:flutter/material.dart';
 import 'package:nai_launcher/core/utils/localization_extension.dart';
-
-import '../../../../../data/models/prompt/post_process_rule.dart';
-import '../../../../widgets/common/themed_divider.dart';
-import '../../../../widgets/common/elevated_card.dart';
 import 'package:nai_launcher/presentation/widgets/common/themed_form_input.dart';
 
-/// 后处理规则面板
-///
-/// 用于配置根据已选标签移除冲突的规则
-/// 采用 Dimensional Layering 设计风格
-class PostProcessRulePanel extends StatefulWidget {
-  /// 当前规则列表
-  final List<PostProcessRule> rules;
+import '../../../../../data/models/prompt/diy_category_references.dart';
+import '../../../../../data/models/prompt/post_process_rule.dart';
+import '../../../../themes/core/layered_surface_style.dart';
+import '../../../../widgets/common/surface_ink_well.dart';
+import '../diy_badges.dart';
+import '../diy_category_field.dart';
+import '../diy_editor_card.dart';
+import '../diy_empty_state.dart';
+import '../diy_panel_header.dart';
+import '../diy_rule_list_card.dart';
+import '../diy_rule_list_editing.dart';
+import '../diy_section_card.dart';
+import '../diy_switch_card.dart';
 
-  /// 规则变更回调
+/// 后处理规则面板：按已选标签移除、替换或补充标签，或整类移除冲突的类别
+class PostProcessRulePanel extends StatefulWidget {
+  final List<PostProcessRule> rules;
   final ValueChanged<List<PostProcessRule>> onRulesChanged;
 
-  /// 可选的类别列表
-  final List<String> availableCategories;
+  /// 移除类别操作可选的目标类别
+  final List<DiyCategoryOption> categoryOptions;
 
-  /// 是否只读
+  /// 把预设规则按键名声明的目标定位到本预设的类别；为空时目标留给用户选择
+  final DiyCategoryReferenceResolver? categoryResolver;
+
   final bool readOnly;
 
   const PostProcessRulePanel({
     super.key,
     required this.rules,
     required this.onRulesChanged,
-    this.availableCategories = const [],
+    this.categoryOptions = const [],
+    this.categoryResolver,
     this.readOnly = false,
   });
 
@@ -35,748 +42,400 @@ class PostProcessRulePanel extends StatefulWidget {
   State<PostProcessRulePanel> createState() => _PostProcessRulePanelState();
 }
 
-class _PostProcessRulePanelState extends State<PostProcessRulePanel> {
-  int? _selectedIndex;
+class _PostProcessRulePanelState extends State<PostProcessRulePanel>
+    with DiyRuleListEditing<PostProcessRulePanel, PostProcessRule> {
+  @override
+  List<PostProcessRule> rulesOf(PostProcessRulePanel widget) => widget.rules;
+
+  @override
+  void onRulesEdited(List<PostProcessRule> rules) =>
+      widget.onRulesChanged(rules);
 
   void _addRule() {
-    final newRule = PostProcessRule(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
-      name: context.l10n.diy_ruleDefaultName(widget.rules.length + 1),
+    addRule(
+      PostProcessRule(
+        id: DateTime.now().millisecondsSinceEpoch.toString(),
+        name: context.l10n.diy_ruleDefaultName(rules.length + 1),
+      ),
     );
-    widget.onRulesChanged([...widget.rules, newRule]);
-    setState(() {
-      _selectedIndex = widget.rules.length;
-    });
   }
 
-  void _addPresetRule(PostProcessRule rule) {
-    widget.onRulesChanged([...widget.rules, rule]);
+  void _addPresetRule(_PresetRule preset) {
+    final targets = _categoryIdsForKeys(preset.targetCategoryKeys);
+    // 目标没能全部定位到本预设的类别时直接展开编辑，让用户补选要移除的类别
+    addRule(
+      preset.create(targets),
+      select:
+          targets.isEmpty || targets.length < preset.targetCategoryKeys.length,
+    );
   }
 
-  void _removeRule(int index) {
-    final newRules = List<PostProcessRule>.from(widget.rules)..removeAt(index);
-    widget.onRulesChanged(newRules);
-    if (_selectedIndex == index) {
-      setState(() => _selectedIndex = null);
-    }
-  }
-
-  void _updateRule(int index, PostProcessRule rule) {
-    final newRules = List<PostProcessRule>.from(widget.rules);
-    newRules[index] = rule;
-    widget.onRulesChanged(newRules);
+  List<String> _categoryIdsForKeys(List<String> keys) {
+    final resolver = widget.categoryResolver;
+    if (resolver == null) return const [];
+    return [
+      for (final key in keys)
+        if (resolver.resolve(key)?.id case final id?) id,
+    ];
   }
 
   @override
   Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final colorScheme = Theme.of(context).colorScheme;
+    final editor = buildSelectedEditor(
+      (index, rule) => _PostProcessRuleEditor(
+        rule: rule,
+        categoryOptions: widget.categoryOptions,
+        readOnly: widget.readOnly,
+        onChanged: (rule) => replaceRule(index, rule),
+        onClose: () => selectRule(null),
+      ),
+    );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _buildHeader(),
+        DiyPanelHeader(
+          description: l10n.diy_postProcessSubtitle,
+          trailing: rules.isEmpty
+              ? null
+              : DiyCountBadge(
+                  label: l10n.diy_ruleCount(rules.length),
+                  accent: colorScheme.tertiary,
+                  container: colorScheme.tertiaryContainer,
+                ),
+        ),
         const SizedBox(height: 12),
-        if (!widget.readOnly) _buildPresetSection(),
-        if (!widget.readOnly) const SizedBox(height: 12),
-        _buildRuleList(),
+        if (!widget.readOnly) ...[
+          DiySectionCard(
+            icon: Icons.auto_awesome_rounded,
+            accent: colorScheme.secondary,
+            accentContainer: colorScheme.secondaryContainer,
+            title: l10n.diy_presetRules,
+            child: _PresetRuleButtons(
+              presets: _presets(context),
+              onSelected: _addPresetRule,
+            ),
+          ),
+          const SizedBox(height: 12),
+        ],
+        DiyRuleListCard(
+          items: [for (final rule in rules) _listItem(rule)],
+          selectedIndex: selectedIndex,
+          onSelected: selectRule,
+          onDeleted: widget.readOnly ? null : removeRule,
+          deleteTooltip: l10n.diy_deleteRule,
+          emptyState: DiyEmptyState(
+            icon: Icons.auto_fix_high_rounded,
+            title: l10n.diy_noPostProcessRules,
+            hint: l10n.diy_noPostProcessRulesHint,
+          ),
+        ),
         if (!widget.readOnly) ...[
           const SizedBox(height: 12),
-          _buildAddButton(),
+          DiyAddRuleButton(label: l10n.diy_addRule, onPressed: _addRule),
         ],
-        if (_selectedIndex != null &&
-            _selectedIndex! < widget.rules.length) ...[
-          const SizedBox(height: 12),
-          _buildRuleEditor(_selectedIndex!),
-        ],
+        if (editor != null) ...[const SizedBox(height: 12), editor],
       ],
     );
   }
 
-  Widget _buildHeader() {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-
-    return Row(
-      children: [
-        // 图标容器 - 渐变背景
-        Container(
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                colorScheme.tertiary.withValues(alpha: 0.2),
-                colorScheme.tertiary.withValues(alpha: 0.1),
-              ],
+  List<_PresetRule> _presets(BuildContext context) {
+    final l10n = context.l10n;
+    return [
+      _PresetRule(
+        emoji: '😴',
+        label: l10n.diy_sleepingRule,
+        targetCategoryKeys: PostProcessRule.sleepingTargetCategoryKeys,
+        create: (targets) =>
+            PostProcessRule.sleepingRule(targetCategoryIds: targets).copyWith(
+              name: l10n.diy_sleepingRule,
+              description: l10n.diy_sleepingRuleDescription,
             ),
-            borderRadius: BorderRadius.circular(10),
-            boxShadow: [
-              BoxShadow(
-                color: colorScheme.tertiary.withValues(alpha: 0.1),
-                blurRadius: 8,
-                offset: const Offset(0, 2),
-              ),
-            ],
-          ),
-          child: Icon(
-            Icons.auto_fix_high_rounded,
-            size: 20,
-            color: colorScheme.tertiary,
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                context.l10n.diy_postProcessTitle,
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              Text(
-                context.l10n.diy_postProcessSubtitle,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: colorScheme.onSurfaceVariant,
-                ),
-              ),
-            ],
-          ),
-        ),
-        if (widget.rules.isNotEmpty)
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            decoration: BoxDecoration(
-              color: colorScheme.tertiaryContainer.withValues(alpha: 0.5),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Text(
-              context.l10n.diy_ruleCount(widget.rules.length),
-              style: theme.textTheme.labelSmall?.copyWith(
-                fontWeight: FontWeight.bold,
-                color: colorScheme.tertiary,
-              ),
-            ),
-          ),
-      ],
-    );
-  }
-
-  Widget _buildPresetSection() {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-
-    final presets = [
-      (
-        '😴',
-        context.l10n.diy_sleepingRule,
-        () => PostProcessRule.sleepingRule().copyWith(
-          name: context.l10n.diy_sleepingRule,
-          description: context.l10n.diy_sleepingRuleDescription,
-        ),
-        Colors.indigo,
       ),
-      (
-        '🧜',
-        context.l10n.diy_mermaidRule,
-        () => PostProcessRule.mermaidRule().copyWith(
-          name: context.l10n.diy_mermaidRule,
-          description: context.l10n.diy_mermaidRuleDescription,
-        ),
-        Colors.teal,
+      _PresetRule(
+        emoji: '🧜',
+        label: l10n.diy_mermaidRule,
+        targetCategoryKeys: PostProcessRule.mermaidTargetCategoryKeys,
+        create: (targets) =>
+            PostProcessRule.mermaidRule(targetCategoryIds: targets).copyWith(
+              name: l10n.diy_mermaidRule,
+              description: l10n.diy_mermaidRuleDescription,
+            ),
       ),
     ];
-
-    return ElevatedCard(
-      elevation: CardElevation.level1,
-      borderRadius: 12,
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(6),
-                decoration: BoxDecoration(
-                  color: colorScheme.secondaryContainer.withValues(alpha: 0.5),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Icon(
-                  Icons.auto_awesome_rounded,
-                  size: 14,
-                  color: colorScheme.secondary,
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  context.l10n.diy_presetRules,
-                  softWrap: true,
-                  style: theme.textTheme.titleSmall?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final stackPresets = constraints.maxWidth < 480;
-
-              Widget buildPresetButton(
-                (String, String, PostProcessRule Function(), Color) preset,
-              ) {
-                final (emoji, label, ruleFactory, color) = preset;
-                return Padding(
-                  padding: EdgeInsets.symmetric(
-                    horizontal: stackPresets ? 0 : 4,
-                    vertical: stackPresets ? 4 : 0,
-                  ),
-                  child: Material(
-                    color: Colors.transparent,
-                    child: InkWell(
-                      onTap: () => _addPresetRule(ruleFactory()),
-                      borderRadius: BorderRadius.circular(10),
-                      child: Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 12,
-                        ),
-                        decoration: BoxDecoration(
-                          color: colorScheme.surfaceContainerHighest,
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(
-                            color: color.withValues(alpha: 0.3),
-                          ),
-                        ),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Text(emoji, style: const TextStyle(fontSize: 18)),
-                            const SizedBox(width: 8),
-                            Flexible(
-                              child: Text(
-                                label,
-                                textAlign: TextAlign.center,
-                                softWrap: true,
-                                style: theme.textTheme.labelMedium?.copyWith(
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                );
-              }
-
-              if (stackPresets) {
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: presets.map(buildPresetButton).toList(),
-                );
-              }
-
-              return Row(
-                children: presets
-                    .map((preset) => Expanded(child: buildPresetButton(preset)))
-                    .toList(),
-              );
-            },
-          ),
-        ],
-      ),
-    );
   }
 
-  Widget _buildRuleList() {
+  DiyRuleListItem _listItem(PostProcessRule rule) {
     final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-
-    if (widget.rules.isEmpty) {
-      return ElevatedCard(
-        elevation: CardElevation.level1,
-        borderRadius: 12,
-        padding: const EdgeInsets.all(32),
-        child: Center(
-          child: Column(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: colorScheme.surfaceContainerHighest,
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(
-                  Icons.auto_fix_high_rounded,
-                  size: 40,
-                  color: colorScheme.outline,
-                ),
-              ),
-              const SizedBox(height: 12),
-              Text(
-                context.l10n.diy_noPostProcessRules,
-                style: theme.textTheme.titleSmall?.copyWith(
-                  color: colorScheme.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                context.l10n.diy_noPostProcessRulesHint,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: colorScheme.outline,
-                ),
-              ),
-            ],
+    final l10n = context.l10n;
+    final triggers = rule.triggerTags.isNotEmpty
+        ? rule.triggerTags.join(', ')
+        : l10n.diy_noTriggers;
+    return DiyRuleListItem(
+      leading: DiyRuleAvatar(
+        accent: _actionColor(theme.colorScheme, rule.action),
+        enabled: rule.enabled,
+        builder: (foreground) =>
+            Icon(_actionIcon(rule.action), size: 18, color: foreground),
+      ),
+      title: rule.name,
+      enabled: rule.enabled,
+      details: [
+        Text(
+          l10n.diy_actionSummary(triggers, _actionLabel(context, rule.action)),
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
           ),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
         ),
-      );
-    }
+      ],
+    );
+  }
+}
 
-    // 操作类型颜色
-    final actionColors = {
-      PostProcessAction.remove: colorScheme.error,
-      PostProcessAction.replace: colorScheme.tertiary,
-      PostProcessAction.add: colorScheme.primary,
-      PostProcessAction.removeCategory: Colors.orange,
+Color _actionColor(ColorScheme colorScheme, PostProcessAction action) =>
+    switch (action) {
+      PostProcessAction.remove => colorScheme.error,
+      PostProcessAction.replace => colorScheme.tertiary,
+      PostProcessAction.add => colorScheme.primary,
+      PostProcessAction.removeCategory => Colors.orange,
     };
 
-    return ElevatedCard(
-      elevation: CardElevation.level1,
-      borderRadius: 12,
-      padding: EdgeInsets.zero,
-      child: ListView.separated(
-        shrinkWrap: true,
-        physics: const NeverScrollableScrollPhysics(),
-        itemCount: widget.rules.length,
-        separatorBuilder: (_, __) => Divider(
-          height: 1,
-          color: colorScheme.outline.withValues(alpha: 0.1),
-        ),
-        itemBuilder: (context, index) {
-          final rule = widget.rules[index];
-          final isSelected = _selectedIndex == index;
-          final actionColor = actionColors[rule.action] ?? colorScheme.primary;
+IconData _actionIcon(PostProcessAction action) => switch (action) {
+  PostProcessAction.remove => Icons.remove_circle_outline_rounded,
+  PostProcessAction.replace => Icons.swap_horiz_rounded,
+  PostProcessAction.add => Icons.add_circle_outline_rounded,
+  PostProcessAction.removeCategory => Icons.folder_delete_outlined,
+};
 
-          return Material(
-            color: isSelected
-                ? colorScheme.primaryContainer.withValues(alpha: 0.3)
-                : Colors.transparent,
-            child: InkWell(
-              onTap: () => setState(() => _selectedIndex = index),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 12,
-                ),
-                child: Row(
-                  children: [
-                    // 操作图标
-                    Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        gradient: rule.enabled
-                            ? LinearGradient(
-                                begin: Alignment.topLeft,
-                                end: Alignment.bottomRight,
-                                colors: [
-                                  actionColor,
-                                  actionColor.withValues(alpha: 0.7),
-                                ],
-                              )
-                            : null,
-                        color: rule.enabled
-                            ? null
-                            : colorScheme.surfaceContainerHighest,
-                        borderRadius: BorderRadius.circular(10),
-                        boxShadow: rule.enabled
-                            ? [
-                                BoxShadow(
-                                  color: actionColor.withValues(alpha: 0.3),
-                                  blurRadius: 8,
-                                  offset: const Offset(0, 2),
-                                ),
-                              ]
-                            : null,
-                      ),
-                      child: Icon(
-                        _getActionIcon(rule.action),
-                        size: 18,
-                        color: rule.enabled
-                            ? Colors.white
-                            : colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                    const SizedBox(width: 14),
-                    // 规则信息
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            rule.name,
-                            style: theme.textTheme.titleSmall?.copyWith(
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            _getActionDescription(rule),
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: colorScheme.onSurfaceVariant,
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ],
-                      ),
-                    ),
-                    // 状态标签
-                    if (!rule.enabled)
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 2,
-                        ),
-                        decoration: BoxDecoration(
-                          color: colorScheme.errorContainer.withValues(
-                            alpha: 0.5,
-                          ),
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: Text(
-                          context.l10n.common_disabled,
-                          style: theme.textTheme.labelSmall?.copyWith(
-                            color: colorScheme.error,
-                          ),
-                        ),
-                      ),
-                    if (!widget.readOnly) ...[
-                      const SizedBox(width: 8),
-                      IconButton(
-                        icon: Icon(
-                          Icons.delete_outline_rounded,
-                          color: colorScheme.error.withValues(alpha: 0.7),
-                        ),
-                        onPressed: () => _removeRule(index),
-                        tooltip: context.l10n.diy_deleteRule,
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-            ),
-          );
-        },
-      ),
-    );
-  }
+String _actionLabel(BuildContext context, PostProcessAction action) {
+  final l10n = context.l10n;
+  return switch (action) {
+    PostProcessAction.remove => l10n.diy_actionRemoveTags,
+    PostProcessAction.replace => l10n.diy_actionReplaceTags,
+    PostProcessAction.add => l10n.diy_actionAddTags,
+    PostProcessAction.removeCategory => l10n.diy_actionRemoveCategories,
+  };
+}
 
-  Widget _buildAddButton() {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
+List<String> _splitTags(String value) => value
+    .split(',')
+    .map((tag) => tag.trim())
+    .where((tag) => tag.isNotEmpty)
+    .toList();
 
-    return Center(
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: _addRule,
-          borderRadius: BorderRadius.circular(10),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-            decoration: BoxDecoration(
-              border: Border.all(
-                color: colorScheme.primary.withValues(alpha: 0.5),
-                width: 1.5,
-              ),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(Icons.add_rounded, size: 18, color: colorScheme.primary),
-                const SizedBox(width: 8),
-                Flexible(
-                  child: Text(
-                    context.l10n.diy_addRule,
-                    textAlign: TextAlign.center,
-                    softWrap: true,
-                    style: theme.textTheme.labelLarge?.copyWith(
-                      color: colorScheme.primary,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
+/// 预设规则按类别键名声明目标，添加时再定位到当前预设的类别 ID
+class _PresetRule {
+  const _PresetRule({
+    required this.emoji,
+    required this.label,
+    required this.targetCategoryKeys,
+    required this.create,
+  });
 
-  Widget _buildRuleEditor(int index) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-    final rule = widget.rules[index];
+  final String emoji;
+  final String label;
+  final List<String> targetCategoryKeys;
+  final PostProcessRule Function(List<String> targetCategoryIds) create;
+}
 
-    return ElevatedCard(
-      elevation: CardElevation.level2,
-      borderRadius: 12,
-      gradientBorder: LinearGradient(
-        begin: Alignment.topLeft,
-        end: Alignment.bottomRight,
-        colors: [
-          colorScheme.tertiary.withValues(alpha: 0.5),
-          colorScheme.primary.withValues(alpha: 0.3),
-        ],
-      ),
-      gradientBorderWidth: 1.5,
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // 标题栏
-          Row(
+/// 预设规则按钮：放得下时并排，窄屏时上下排列
+class _PresetRuleButtons extends StatelessWidget {
+  const _PresetRuleButtons({required this.presets, required this.onSelected});
+
+  final List<_PresetRule> presets;
+  final ValueChanged<_PresetRule> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final stack = constraints.maxWidth < 480;
+        if (stack) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Container(
-                padding: const EdgeInsets.all(6),
-                decoration: BoxDecoration(
-                  color: colorScheme.tertiaryContainer.withValues(alpha: 0.5),
-                  borderRadius: BorderRadius.circular(6),
+              for (final preset in presets)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: _button(context, preset),
                 ),
-                child: Icon(
-                  Icons.edit_rounded,
-                  size: 14,
-                  color: colorScheme.tertiary,
+            ],
+          );
+        }
+        return Row(
+          children: [
+            for (final preset in presets)
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  child: _button(context, preset),
                 ),
               ),
-              const SizedBox(width: 10),
-              Text(
-                context.l10n.diy_editRule,
-                style: theme.textTheme.titleSmall?.copyWith(
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _button(BuildContext context, _PresetRule preset) {
+    final theme = Theme.of(context);
+    return SurfaceInkWell(
+      borderRadius: BorderRadius.circular(10),
+      color: controlSurfaceColor(theme.colorScheme),
+      onTap: () => onSelected(preset),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(preset.emoji, style: const TextStyle(fontSize: 18)),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                preset.label,
+                textAlign: TextAlign.center,
+                softWrap: true,
+                style: theme.textTheme.labelMedium?.copyWith(
                   fontWeight: FontWeight.w600,
                 ),
               ),
-              const Spacer(),
-              IconButton(
-                icon: Icon(
-                  Icons.close_rounded,
-                  color: colorScheme.onSurfaceVariant,
-                ),
-                onPressed: () => setState(() => _selectedIndex = null),
-                tooltip: context.l10n.common_close,
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          const ThemedDivider(),
-          const SizedBox(height: 12),
-          // 规则名称
-          ThemedFormInput(
-            initialValue: rule.name,
-            decoration: InputDecoration(
-              labelText: context.l10n.diy_ruleName,
-              prefixIcon: Icon(
-                Icons.label_outline_rounded,
-                color: colorScheme.onSurfaceVariant,
-              ),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(10),
-              ),
             ),
-            readOnly: widget.readOnly,
-            onChanged: (value) {
-              _updateRule(index, rule.copyWith(name: value));
-            },
-          ),
-          const SizedBox(height: 16),
-          // 操作类型
-          DropdownButtonFormField<PostProcessAction>(
-            initialValue: rule.action,
-            decoration: InputDecoration(
-              labelText: context.l10n.diy_actionType,
-              prefixIcon: Icon(
-                _getActionIcon(rule.action),
-                color: colorScheme.onSurfaceVariant,
-              ),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(10),
-              ),
-            ),
-            items: PostProcessAction.values.map((action) {
-              return DropdownMenuItem(
-                value: action,
-                child: Row(
-                  children: [
-                    Icon(_getActionIcon(action), size: 18),
-                    const SizedBox(width: 8),
-                    Text(_getActionLabel(action)),
-                  ],
-                ),
-              );
-            }).toList(),
-            onChanged: widget.readOnly
-                ? null
-                : (value) {
-                    if (value != null) {
-                      _updateRule(index, rule.copyWith(action: value));
-                    }
-                  },
-          ),
-          const SizedBox(height: 16),
-          // 触发标签
-          ThemedFormInput(
-            initialValue: rule.triggerTags.join(', '),
-            decoration: InputDecoration(
-              labelText: context.l10n.diy_triggerTags,
-              hintText: context.l10n.diy_commaSeparatedTagsHint,
-              prefixIcon: Icon(
-                Icons.play_circle_outline_rounded,
-                color: colorScheme.onSurfaceVariant,
-              ),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(10),
-              ),
-            ),
-            readOnly: widget.readOnly,
-            onChanged: (value) {
-              final tags = value
-                  .split(',')
-                  .map((s) => s.trim())
-                  .where((s) => s.isNotEmpty)
-                  .toList();
-              _updateRule(index, rule.copyWith(triggerTags: tags));
-            },
-          ),
-          const SizedBox(height: 16),
-          // 目标
-          if (rule.action == PostProcessAction.removeCategory)
-            ThemedFormInput(
-              initialValue: rule.targetCategoryIds.join(', '),
-              decoration: InputDecoration(
-                labelText: context.l10n.diy_targetCategories,
-                hintText: context.l10n.diy_commaSeparatedCategoryIdsHint,
-                prefixIcon: Icon(
-                  Icons.folder_outlined,
-                  color: colorScheme.onSurfaceVariant,
-                ),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-              ),
-              readOnly: widget.readOnly,
-              onChanged: (value) {
-                final ids = value
-                    .split(',')
-                    .map((s) => s.trim())
-                    .where((s) => s.isNotEmpty)
-                    .toList();
-                _updateRule(index, rule.copyWith(targetCategoryIds: ids));
-              },
-            )
-          else
-            ThemedFormInput(
-              initialValue: rule.targetTags.join(', '),
-              decoration: InputDecoration(
-                labelText: context.l10n.diy_targetTags,
-                hintText: context.l10n.diy_commaSeparatedTagsHint,
-                prefixIcon: Icon(
-                  Icons.label_outline_rounded,
-                  color: colorScheme.onSurfaceVariant,
-                ),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-              ),
-              readOnly: widget.readOnly,
-              onChanged: (value) {
-                final tags = value
-                    .split(',')
-                    .map((s) => s.trim())
-                    .where((s) => s.isNotEmpty)
-                    .toList();
-                _updateRule(index, rule.copyWith(targetTags: tags));
-              },
-            ),
-          const SizedBox(height: 12),
-          // 启用开关
-          ElevatedCard(
-            elevation: CardElevation.level1,
-            borderRadius: 10,
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            child: Row(
-              children: [
-                Icon(
-                  rule.enabled
-                      ? Icons.check_circle_rounded
-                      : Icons.cancel_rounded,
-                  size: 20,
-                  color: rule.enabled
-                      ? colorScheme.primary
-                      : colorScheme.outline,
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    context.l10n.diy_enableRule,
-                    style: theme.textTheme.titleSmall,
-                  ),
-                ),
-                Switch(
-                  value: rule.enabled,
-                  onChanged: widget.readOnly
-                      ? null
-                      : (value) {
-                          _updateRule(index, rule.copyWith(enabled: value));
-                        },
-                ),
-              ],
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
+}
 
-  IconData _getActionIcon(PostProcessAction action) {
-    switch (action) {
-      case PostProcessAction.remove:
-        return Icons.remove_circle_outline_rounded;
-      case PostProcessAction.replace:
-        return Icons.swap_horiz_rounded;
-      case PostProcessAction.add:
-        return Icons.add_circle_outline_rounded;
-      case PostProcessAction.removeCategory:
-        return Icons.folder_delete_outlined;
-    }
+class _PostProcessRuleEditor extends StatelessWidget {
+  const _PostProcessRuleEditor({
+    required this.rule,
+    required this.categoryOptions,
+    required this.readOnly,
+    required this.onChanged,
+    required this.onClose,
+  });
+
+  final PostProcessRule rule;
+  final List<DiyCategoryOption> categoryOptions;
+  final bool readOnly;
+  final ValueChanged<PostProcessRule> onChanged;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final colorScheme = Theme.of(context).colorScheme;
+    final fieldIconColor = colorScheme.onSurfaceVariant;
+    return DiyEditorCard(
+      title: l10n.diy_editRule,
+      accent: colorScheme.tertiary,
+      accentContainer: colorScheme.tertiaryContainer,
+      borderEnd: colorScheme.primary,
+      onClose: onClose,
+      children: [
+        ThemedFormInput(
+          initialValue: rule.name,
+          decoration: InputDecoration(
+            labelText: l10n.diy_ruleName,
+            prefixIcon: Icon(
+              Icons.label_outline_rounded,
+              color: fieldIconColor,
+            ),
+          ),
+          readOnly: readOnly,
+          onChanged: (value) => onChanged(rule.copyWith(name: value)),
+        ),
+        const SizedBox(height: 16),
+        _actionField(context, fieldIconColor),
+        const SizedBox(height: 16),
+        ThemedFormInput(
+          initialValue: rule.triggerTags.join(', '),
+          decoration: InputDecoration(
+            labelText: l10n.diy_triggerTags,
+            hintText: l10n.diy_commaSeparatedTagsHint,
+            prefixIcon: Icon(
+              Icons.play_circle_outline_rounded,
+              color: fieldIconColor,
+            ),
+          ),
+          readOnly: readOnly,
+          onChanged: (value) =>
+              onChanged(rule.copyWith(triggerTags: _splitTags(value))),
+        ),
+        const SizedBox(height: 16),
+        _targetField(context, fieldIconColor),
+        const SizedBox(height: 12),
+        DiySwitchCard(
+          title: l10n.diy_enableRule,
+          value: rule.enabled,
+          onChanged: readOnly
+              ? null
+              : (value) => onChanged(rule.copyWith(enabled: value)),
+        ),
+      ],
+    );
   }
 
-  String _getActionLabel(PostProcessAction action) {
-    switch (action) {
-      case PostProcessAction.remove:
-        return context.l10n.diy_actionRemoveTags;
-      case PostProcessAction.replace:
-        return context.l10n.diy_actionReplaceTags;
-      case PostProcessAction.add:
-        return context.l10n.diy_actionAddTags;
-      case PostProcessAction.removeCategory:
-        return context.l10n.diy_actionRemoveCategories;
-    }
+  Widget _actionField(BuildContext context, Color iconColor) {
+    return DropdownButtonFormField<PostProcessAction>(
+      initialValue: rule.action,
+      isExpanded: true,
+      itemHeight: null,
+      decoration: InputDecoration(
+        labelText: context.l10n.diy_actionType,
+        prefixIcon: Icon(_actionIcon(rule.action), color: iconColor),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+      ),
+      items: [
+        for (final action in PostProcessAction.values)
+          DropdownMenuItem(
+            value: action,
+            child: Row(
+              children: [
+                Icon(_actionIcon(action), size: 18),
+                const SizedBox(width: 8),
+                Flexible(child: Text(_actionLabel(context, action))),
+              ],
+            ),
+          ),
+      ],
+      onChanged: readOnly
+          ? null
+          : (value) {
+              if (value != null) onChanged(rule.copyWith(action: value));
+            },
+    );
   }
 
-  String _getActionDescription(PostProcessRule rule) {
-    final triggers = rule.triggerTags.isNotEmpty
-        ? rule.triggerTags.join(', ')
-        : context.l10n.diy_noTriggers;
-    return context.l10n.diy_actionSummary(
-      triggers,
-      _getActionLabel(rule.action),
+  Widget _targetField(BuildContext context, Color iconColor) {
+    final l10n = context.l10n;
+    if (rule.action == PostProcessAction.removeCategory) {
+      return DiyCategoryMultiSelect(
+        values: rule.targetCategoryIds,
+        options: categoryOptions,
+        readOnly: readOnly,
+        decoration: InputDecoration(
+          labelText: l10n.diy_targetCategories,
+          prefixIcon: Icon(Icons.folder_outlined, color: iconColor),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+        ),
+        onChanged: (ids) => onChanged(rule.copyWith(targetCategoryIds: ids)),
+      );
+    }
+    return ThemedFormInput(
+      initialValue: rule.targetTags.join(', '),
+      decoration: InputDecoration(
+        labelText: l10n.diy_targetTags,
+        hintText: l10n.diy_commaSeparatedTagsHint,
+        prefixIcon: Icon(Icons.label_outline_rounded, color: iconColor),
+      ),
+      readOnly: readOnly,
+      onChanged: (value) =>
+          onChanged(rule.copyWith(targetTags: _splitTags(value))),
     );
   }
 }

@@ -4,7 +4,9 @@ import 'dart:typed_data';
 
 import 'package:image/image.dart' as img;
 
+import '../../../core/utils/exif_container.dart';
 import '../../../core/utils/portable_logger.dart';
+import 'exif_orientation_metadata.dart';
 
 /// Encodes and decodes metadata carried by image containers.
 class ImageMetadataContainerCodec {
@@ -29,6 +31,46 @@ class ImageMetadataContainerCodec {
       if (bytes[i] != _pngSignature[i]) return false;
     }
     return true;
+  }
+
+  /// 按文件顺序给出每个 eXIf 块的 TIFF 载荷；块越过数据末尾即停止，[reachedEnd] 表示读到了 IEND。
+  static ({List<Uint8List> payloads, bool reachedEnd}) scanPngExif(
+    Uint8List bytes,
+  ) {
+    if (!isPngHeader(bytes)) return (payloads: const [], reachedEnd: false);
+    final chunks = _parsePngChunks(bytes);
+    return (
+      payloads: [
+        for (final chunk in chunks)
+          if (chunk.type == 'eXIf') chunk.data,
+      ],
+      reachedEnd: chunks.any((chunk) => chunk.type == 'IEND'),
+    );
+  }
+
+  /// 前缀里是否已经出现 IDAT 块头，即它之前的块都已完整读到。
+  static bool pngReachesImageData(Uint8List bytes) =>
+      _firstPngChunkOffset(bytes, 'IDAT') != null;
+
+  /// 数据是否完整包含 IEND 块。
+  static bool pngReachesEnd(Uint8List bytes) {
+    final offset = _firstPngChunkOffset(bytes, 'IEND');
+    return offset != null && offset + 12 <= bytes.length;
+  }
+
+  // 只读块头逐块跳过，块数据越过末尾也能继续判断
+  static int? _firstPngChunkOffset(Uint8List bytes, String type) {
+    if (!isPngHeader(bytes)) return null;
+    final view = ByteData.sublistView(bytes);
+    var offset = 8;
+    while (offset + 8 <= bytes.length) {
+      final chunkType = latin1.decode(
+        Uint8List.sublistView(bytes, offset + 4, offset + 8),
+      );
+      if (chunkType == type) return offset;
+      offset += 12 + view.getUint32(offset);
+    }
+    return null;
   }
 
   /// 读取 PNG 文本元数据，同时支持 Latin-1 `tEXt` 和 UTF-8 `iTXt`。
@@ -78,6 +120,10 @@ class ImageMetadataContainerCodec {
       return embedTextChunkOnly(imageBytes, 'Comment', metadataJson);
     }
 
+    // Re-encoding can discard bad ancillary CRCs or trailing bytes, so validate
+    // the original container before the decoder can normalize it.
+    _scanValidatedPngChunks(imageBytes);
+
     // 完整路径：stealth + tEXt（保持最大兼容性）
     final stealthBytes = await _embedStealthData(imageBytes, metadataJson);
     return _updateTextChunk(stealthBytes, metadataJson);
@@ -88,6 +134,8 @@ class ImageMetadataContainerCodec {
   /// 像素经过编辑后不能继续沿用原容器的颜色配置或尺寸声明；这里只迁移
   /// 文本与标准 EXIF chunk，并在目标中去重。NovelAI stealth 元数据属于
   /// 像素载荷，调用方需要根据隐私策略显式重建，不能在这里复制。
+  /// 目标像素按显示方向解码而来：JPEG 与 WebP 的 EXIF 方向已转进像素，复制的方向改为 1；
+  /// PNG 的 eXIf 不会被任何解码器应用，始终原样保留。
   static Uint8List copySupportedMetadata({
     required Uint8List source,
     required Uint8List targetPng,
@@ -97,6 +145,8 @@ class ImageMetadataContainerCodec {
     }
     final sourceChunks = _supportedMetadataChunks(source);
     if (sourceChunks.isEmpty) return targetPng;
+    final orientationBaked =
+        ExifContainer.isJpeg(source) || ExifContainer.isWebp(source);
     const supportedTypes = {'tEXt', 'iTXt', 'zTXt', 'eXIf'};
     final targetChunks = _parsePngChunks(targetPng);
     final output = BytesBuilder()..add(targetPng.sublist(0, 8));
@@ -105,7 +155,15 @@ class ImageMetadataContainerCodec {
       if (supportedTypes.contains(chunk.type)) continue;
       if (!inserted && chunk.type == 'IDAT') {
         for (final metadataChunk in sourceChunks) {
-          _writeChunk(output, metadataChunk.type, metadataChunk.data);
+          _writeChunk(
+            output,
+            metadataChunk.type,
+            orientationBaked && metadataChunk.type == 'eXIf'
+                ? ExifOrientationMetadata.withUprightOrientation(
+                    metadataChunk.data,
+                  )
+                : metadataChunk.data,
+          );
         }
         inserted = true;
       }
@@ -128,89 +186,26 @@ class ImageMetadataContainerCodec {
       }
       return chunks;
     }
-    if (_isJpeg(source)) return _extractJpegExif(source);
-    if (_isWebP(source)) return _extractWebPExif(source);
+    if (ExifContainer.isJpeg(source)) {
+      return _validatedExifChunks(ExifContainer.jpegExifPayloads(source));
+    }
+    if (ExifContainer.isWebp(source)) {
+      return _validatedExifChunks(
+        ExifContainer.webpExifChunks(
+          source,
+        ).map(ExifContainer.withoutExifHeader),
+      );
+    }
     return const [];
   }
 
-  static bool _isJpeg(Uint8List bytes) =>
-      bytes.length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xD8;
-
-  static bool _isWebP(Uint8List bytes) =>
-      bytes.length >= 12 &&
-      ascii.decode(bytes.sublist(0, 4), allowInvalid: true) == 'RIFF' &&
-      ascii.decode(bytes.sublist(8, 12), allowInvalid: true) == 'WEBP';
-
-  static List<_PngChunk> _extractJpegExif(Uint8List bytes) {
-    final result = <_PngChunk>[];
-    var offset = 2;
-    while (offset + 4 <= bytes.length) {
-      if (bytes[offset] != 0xFF) {
-        throw const FormatException('Malformed JPEG metadata markers');
-      }
-      while (offset < bytes.length && bytes[offset] == 0xFF) {
-        offset++;
-      }
-      if (offset >= bytes.length) break;
-      final marker = bytes[offset++];
-      if (marker == 0xD9 || marker == 0xDA) break;
-      if (marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7)) continue;
-      if (offset + 2 > bytes.length) {
-        throw const FormatException('Truncated JPEG metadata segment');
-      }
-      final segmentLength = (bytes[offset] << 8) | bytes[offset + 1];
-      if (segmentLength < 2 || offset + segmentLength > bytes.length) {
-        throw const FormatException('Invalid JPEG metadata segment length');
-      }
-      final payloadStart = offset + 2;
-      final payloadEnd = offset + segmentLength;
-      if (marker == 0xE1 &&
-          payloadEnd - payloadStart >= 6 &&
-          ascii.decode(
-                bytes.sublist(payloadStart, payloadStart + 6),
-                allowInvalid: true,
-              ) ==
-              'Exif\u0000\u0000') {
-        final tiff = Uint8List.fromList(
-          bytes.sublist(payloadStart + 6, payloadEnd),
-        );
-        _validateTiffMetadata(tiff);
-        result.add(_PngChunk('eXIf', tiff));
-      }
-      offset += segmentLength;
+  static List<_PngChunk> _validatedExifChunks(Iterable<Uint8List> payloads) {
+    final chunks = <_PngChunk>[];
+    for (final tiff in payloads) {
+      _validateTiffMetadata(tiff);
+      chunks.add(_PngChunk('eXIf', tiff));
     }
-    return result;
-  }
-
-  static List<_PngChunk> _extractWebPExif(Uint8List bytes) {
-    final result = <_PngChunk>[];
-    var offset = 12;
-    while (offset + 8 <= bytes.length) {
-      final type = ascii.decode(
-        bytes.sublist(offset, offset + 4),
-        allowInvalid: true,
-      );
-      final length = ByteData.sublistView(
-        bytes,
-      ).getUint32(offset + 4, Endian.little);
-      final dataStart = offset + 8;
-      final dataEnd = dataStart + length;
-      if (dataEnd > bytes.length) {
-        throw const FormatException('Truncated WebP metadata chunk');
-      }
-      if (type == 'EXIF') {
-        var tiff = Uint8List.fromList(bytes.sublist(dataStart, dataEnd));
-        if (tiff.length >= 6 &&
-            ascii.decode(tiff.sublist(0, 6), allowInvalid: true) ==
-                'Exif\u0000\u0000') {
-          tiff = Uint8List.fromList(tiff.sublist(6));
-        }
-        _validateTiffMetadata(tiff);
-        result.add(_PngChunk('eXIf', tiff));
-      }
-      offset = dataEnd + (length.isOdd ? 1 : 0);
-    }
-    return result;
+    return chunks;
   }
 
   static void _validateTiffMetadata(Uint8List bytes) {
@@ -312,6 +307,97 @@ class ImageMetadataContainerCodec {
     }
   }
 
+  /// Replaces multiple text fields in one container pass; a null value removes
+  /// the field. Unchanged chunks, including their CRCs, are copied verbatim
+  /// after validation.
+  static Uint8List embedTextChunks(
+    Uint8List originalPng,
+    Map<String, String?> replacements,
+  ) {
+    if (!isPngHeader(originalPng)) {
+      throw const FormatException('Metadata target must be PNG');
+    }
+    if (replacements.isEmpty) return originalPng;
+    for (final keyword in replacements.keys) {
+      if (keyword.isEmpty ||
+          keyword.length > 79 ||
+          keyword.codeUnits.any((value) => value == 0 || value > 255)) {
+        throw ArgumentError.value(keyword, 'keyword', 'Invalid PNG keyword');
+      }
+    }
+    final output = BytesBuilder(copy: false)
+      ..add(Uint8List.sublistView(originalPng, 0, 8));
+    var inserted = false;
+    _scanValidatedPngChunks(
+      originalPng,
+      onChunk: (type, offset, end) {
+        if (type == 'IDAT' && !inserted) {
+          for (final MapEntry(:key, :value) in replacements.entries) {
+            if (value != null) _writeTextMetadataChunk(output, key, value);
+          }
+          inserted = true;
+        }
+        final keyword = const {'tEXt', 'iTXt', 'zTXt'}.contains(type)
+            ? _textChunkKeyword(
+                _PngChunk(
+                  type,
+                  Uint8List.sublistView(originalPng, offset + 8, end - 4),
+                ),
+              )
+            : null;
+        if (keyword == null || !replacements.containsKey(keyword)) {
+          output.add(Uint8List.sublistView(originalPng, offset, end));
+        }
+      },
+    );
+    return output.takeBytes();
+  }
+
+  static void _scanValidatedPngChunks(
+    Uint8List originalPng, {
+    void Function(String type, int offset, int end)? onChunk,
+  }) {
+    if (!isPngHeader(originalPng)) {
+      throw const FormatException('Metadata target must be PNG');
+    }
+    final view = ByteData.sublistView(originalPng);
+    var offset = 8;
+    var hasImageData = false;
+    var ended = false;
+    while (offset < originalPng.length) {
+      if (offset + 12 > originalPng.length) {
+        throw const FormatException('Truncated PNG chunk');
+      }
+      final length = view.getUint32(offset);
+      final end = offset + length + 12;
+      if (end > originalPng.length) {
+        throw const FormatException('Truncated PNG payload');
+      }
+      final type = latin1.decode(
+        Uint8List.sublistView(originalPng, offset + 4, offset + 8),
+      );
+      if (offset == 8 && (type != 'IHDR' || length != 13) ||
+          offset != 8 && type == 'IHDR') {
+        throw const FormatException('Invalid PNG header chunk');
+      }
+      final expectedCrc = view.getUint32(end - 4);
+      if (_crc32(Uint8List.sublistView(originalPng, offset + 4, end - 4)) !=
+          expectedCrc) {
+        throw FormatException('Invalid PNG CRC: $type');
+      }
+      if (type == 'IEND') {
+        if (!hasImageData || length != 0 || end != originalPng.length) {
+          throw const FormatException('Invalid PNG end or missing image data');
+        }
+        ended = true;
+      }
+      if (type == 'IDAT') hasImageData = true;
+      onChunk?.call(type, offset, end);
+      offset = end;
+    }
+    if (!ended) throw const FormatException('Missing PNG end chunk');
+  }
+
   /// 手动解析 PNG chunks
   static List<_PngChunk> _parsePngChunks(Uint8List bytes) {
     final chunks = <_PngChunk>[];
@@ -328,13 +414,19 @@ class ImageMetadataContainerCodec {
       ).getUint32(0);
 
       // 读取 chunk 类型（4字节）
-      final type = latin1.decode(bytes.sublist(offset + 4, offset + 8));
+      final type = latin1.decode(
+        Uint8List.sublistView(bytes, offset + 4, offset + 8),
+      );
 
       // 检查数据边界
       if (offset + 12 + length > bytes.length) break;
 
-      // 读取 chunk 数据
-      final data = bytes.sublist(offset + 8, offset + 8 + length);
+      // 视图而非拷贝：IDAT 占满整个文件，所有调用方都只读
+      final data = Uint8List.sublistView(
+        bytes,
+        offset + 8,
+        offset + 8 + length,
+      );
 
       chunks.add(_PngChunk(type, data));
 
@@ -798,14 +890,25 @@ class ImageMetadataContainerCodec {
     return img.encodePng(image);
   }
 
+  /// 编码头像素数超出 stealth 解码上限时返回 null，不必整图解码再丢弃。
+  /// 返回的解码器已 startDecode，只能用 decodeFrame 取图：decode 会重复登记 PNG 的 IDAT。
+  static img.Decoder? stealthDecoderFor(Uint8List imageBytes) {
+    final decoder = img.findDecoderForData(imageBytes);
+    final info = decoder?.startDecode(imageBytes);
+    if (info == null ||
+        info.width <= 0 ||
+        info.height <= 0 ||
+        info.width * info.height > _maxStealthDecodePixels) {
+      return null;
+    }
+    return decoder;
+  }
+
   /// 从 NovelAI stealth_pngcomp alpha LSB 数据中读取元数据。
   static String? extractStealthMetadataText(Uint8List imageBytes) {
     try {
-      final image = img.decodeImage(imageBytes);
-      if (image == null ||
-          image.width * image.height > _maxStealthDecodePixels) {
-        return null;
-      }
+      final image = stealthDecoderFor(imageBytes)?.decodeFrame(0);
+      if (image == null) return null;
 
       final magicBytes = utf8.encode(_magic);
       final headerBytes = _readAlphaLsbBytes(image, magicBytes.length + 4);

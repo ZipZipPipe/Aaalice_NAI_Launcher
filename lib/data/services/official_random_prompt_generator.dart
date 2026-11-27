@@ -4,11 +4,14 @@ import '../../core/constants/model_capabilities.dart';
 import '../models/character/character_prompt.dart';
 import '../models/prompt/official_wordlist.dart';
 import '../models/prompt/random_prompt_result.dart';
+import 'official_wordlist_errata.dart';
 import 'wordlist_service.dart';
 
 /// Executes the three random-prompt recipes from the source-locked NovelAI
-/// frontend. Known upstream selection defects are intentionally preserved so
-/// this path remains behavior-compatible rather than silently "corrected".
+/// frontend. Where upstream discards a filter result or records the wrong
+/// entry field, the asset's declared intent is applied instead, so flags such
+/// as `nolegs`, `legs` and `feet` actually gate the picks. Records listed in
+/// [officialWordlistErrata] are corrected when the wordlist is loaded.
 class OfficialRandomPromptGenerator {
   const OfficialRandomPromptGenerator(this._wordlistService);
 
@@ -24,7 +27,9 @@ class OfficialRandomPromptGenerator {
       RandomPromptProfile.furryV3 => WordlistType.furry,
       RandomPromptProfile.characterPrompts => WordlistType.v4,
     };
-    final library = await _wordlistService.getOfficialWordlist(type);
+    final library = correctedOfficialWordlist(
+      await _wordlistService.getOfficialWordlist(type),
+    );
     final engine = _OfficialRecipeEngine(library, Random(seed));
     final prompts = switch (profile) {
       RandomPromptProfile.legacyAnime => [
@@ -66,15 +71,33 @@ class OfficialRandomPromptGenerator {
     required List<OfficialWordlistEntry> entries,
     required List<String> selectedTags,
     required double randomValue,
-  }) => _selectLegacyRecord(entries, selectedTags, randomValue);
+    Set<String> blockedTags = const {},
+  }) => _selectLegacyRecord(
+    entries,
+    selectedTags,
+    randomValue,
+    blockedTags: blockedTags,
+  );
 
-  /// Exposes the exact Character Prompts require/exclude rule, including the
-  /// upstream behavior of ignoring field 2 and re-adding field 3.
+  /// Exposes the Character Prompts require/exclude rule: fields 3 and 4 gate
+  /// eligibility and a pick adds its declared field 2 flags to [state].
   static String selectCharacterRecordForTest({
     required List<OfficialWordlistEntry> entries,
     required Set<String> state,
     required double randomValue,
-  }) => _selectCharacterRecord(entries, state, randomValue);
+    Set<String> blockedTags = const {},
+  }) => _selectCharacterRecord(
+    entries,
+    state,
+    randomValue,
+    blockedTags: blockedTags,
+  );
+
+  /// Exposes the state a Character Prompts role starts from.
+  static Set<String> characterStateForTest({
+    required Set<String> globalState,
+    required String gender,
+  }) => _initialCharacterState(globalState, gender);
 }
 
 class _OfficialRecipeEngine {
@@ -83,23 +106,35 @@ class _OfficialRecipeEngine {
   final OfficialWordlist library;
   final Random random;
 
+  // A record joining several tags is blocked when any of them is leg clothing.
+  late final Set<String> legClothingTags = {
+    for (final group in _legClothingGroups[library.id]!)
+      for (final entry in library.group(group).entries)
+        ...entry.text.split(', '),
+  };
+
   bool chance(double probability) => random.nextDouble() < probability;
 
   int randomInt(int max, [int min = 0]) =>
       (random.nextDouble() * (max - min)).floor() + min;
 
-  String legacyChoice(String group, List<String> selectedTags) =>
-      _selectLegacyRecord(
-        library.group(group).entries,
-        selectedTags,
-        random.nextDouble(),
-      );
+  String legacyChoice(
+    String group,
+    List<String> selectedTags, {
+    bool legless = false,
+  }) => _selectLegacyRecord(
+    library.group(group).entries,
+    selectedTags,
+    random.nextDouble(),
+    blockedTags: legless ? legClothingTags : const {},
+  );
 
   String characterChoice(String group, Set<String> state) =>
       _selectCharacterRecord(
         library.group(group).entries,
         state,
         random.nextDouble(),
+        blockedTags: state.contains('nolegs') ? legClothingTags : const {},
       );
 
   T literalChoice<T>(List<(T, int)> entries) {
@@ -226,34 +261,39 @@ class _OfficialRecipeEngine {
   ) {
     final tags = <String>[];
     if (chance(0.1)) tags.add(legacyChoice('lH', tags));
-    final specialBody = tags.any(
-      const {'mermaid', 'centaur', 'lamia'}.contains,
-    );
-    if (chance(0.4)) tags.add(legacyChoice('lG', tags));
-    if (chance(0.8)) tags.add(legacyChoice('ch', tags));
-    if (chance(0.1)) tags.add(legacyChoice('lX', tags));
-    if (chance(0.2)) tags.add(legacyChoice('lY', tags));
-    if (chance(0.8)) tags.add(legacyChoice('lQ', tags));
-    if (chance(0.5)) tags.add(legacyChoice('lK', tags));
-    if (chance(0.7)) tags.add(legacyChoice('cu', tags));
+    // Species records such as "mermaid, scales" join several tags in one value.
+    final specialBody = tags
+        .expand((tag) => tag.split(', '))
+        .any(const {'mermaid', 'centaur', 'lamia'}.contains);
+    String pick(String group) =>
+        legacyChoice(group, tags, legless: specialBody);
+    String pickColored(String group) =>
+        _coloredLegacyChoice(group, tags, legless: specialBody);
+    if (chance(0.4)) tags.add(pick('lG'));
+    if (chance(0.8)) tags.add(pick('ch'));
+    if (chance(0.1)) tags.add(pick('lX'));
+    if (chance(0.2)) tags.add(pick('lY'));
+    if (chance(0.8)) tags.add(pick('lQ'));
+    if (chance(0.5)) tags.add(pick('lK'));
+    if (chance(0.7)) tags.add(pick('cu'));
     if (chance(0.1)) {
-      tags.add(legacyChoice('cp', tags));
-      tags.add(legacyChoice('cu', tags));
+      tags.add(pick('cp'));
+      tags.add(pick('cu'));
     }
-    if (chance(0.1)) tags.add(legacyChoice('lZ', tags));
-    if (chance(0.2)) tags.add(legacyChoice('lJ', tags));
+    if (chance(0.1)) tags.add(pick('lZ'));
+    if (chance(0.2)) tags.add(pick('lJ'));
     if (gender.startsWith('f') && chance(0.5)) {
-      tags.add(legacyChoice('l0', tags));
+      tags.add(pick('l0'));
     }
     final featureCount = _legacyCharacterCount(totalCharacterCount, tags);
     for (var index = 0; index < featureCount; index++) {
-      tags.add(legacyChoice('l3', tags));
+      tags.add(pick('l3'));
     }
     if (chance(0.2)) {
-      tags.add(legacyChoice('l2', tags));
-      if (chance(0.2)) tags.add(legacyChoice('l5', tags));
+      tags.add(pick('l2'));
+      if (chance(0.2)) tags.add(pick('l5'));
     } else if (chance(0.3)) {
-      tags.add(legacyChoice('l1', tags));
+      tags.add(pick('l1'));
     }
 
     final clothingType = literalChoice(const [
@@ -264,47 +304,62 @@ class _OfficialRecipeEngine {
     ]);
     switch (clothingType) {
       case 'uniform':
-        tags.add(legacyChoice('ct', tags));
+        tags.add(pick('ct'));
         break;
       case 'swimsuit':
-        tags.add(legacyChoice('ci', tags));
+        tags.add(pick('ci'));
         break;
       case 'bodysuit':
-        tags.add(legacyChoice('cr', tags));
+        tags.add(pick('cr'));
         break;
       case 'normal clothes':
-        if (gender.startsWith('f') && chance(0.5)) {
-          tags.add(legacyChoice('l4', tags));
-          if (chance(0.2)) tags.add(legacyChoice('l8', tags));
+        // Upstream only strips "legwear" modifiers afterwards, which misses
+        // values such as thighhighs, so legwear is gated like bottoms.
+        if (!specialBody && gender.startsWith('f') && chance(0.5)) {
+          tags.add(pick('l4'));
+          if (chance(0.2)) tags.add(pick('l8'));
         }
         final useDress = gender.startsWith('f') && chance(0.2);
         if (useDress) {
-          tags.add(_coloredLegacyChoice('l6', tags));
+          tags.add(pickColored('l6'));
         } else {
-          if (chance(0.85)) tags.add(_coloredLegacyChoice('l7', tags));
+          if (chance(0.85)) tags.add(pickColored('l7'));
           if (!specialBody) {
             final lowerRoll = chance(0.85);
             if (lowerRoll && framing != 'portrait') {
-              tags.add(_coloredLegacyChoice('l9', tags));
+              tags.add(pickColored('l9'));
             }
             final footwearRoll = chance(0.6);
             if (footwearRoll && (framing == 'full body' || framing == null)) {
-              tags.add(_coloredLegacyChoice('ce', tags));
+              tags.add(pickColored('ce'));
             }
           }
         }
         break;
     }
-    if (chance(0.6)) tags.add(legacyChoice('cn', tags));
+    if (chance(0.6)) tags.add(pick('cn'));
     final actionProbability = specialMode && totalCharacterCount == 1
         ? 1.0
         : 0.4;
-    if (chance(actionProbability)) tags.add(legacyChoice('cc', tags));
+    if (chance(actionProbability)) tags.add(pick('cc'));
+    if (_containsAnyFragment(tags, const ['sleeping', 'zzz', 'closed eyes'])) {
+      _removeGroupValues(tags, const ['ch']);
+    }
     final miscCount = _legacyCharacterCount(totalCharacterCount, tags);
     for (var index = 0; index < miscCount; index++) {
-      tags.add(legacyChoice('ca', tags));
+      tags.add(pick('ca'));
     }
+    if (specialBody) tags.removeWhere((tag) => tag.contains('legwear'));
     return tags;
+  }
+
+  // Upstream builds these filtered lists and then discards them.
+  void _removeGroupValues(List<String> tags, List<String> groups) {
+    final values = {
+      for (final group in groups)
+        for (final entry in library.group(group).entries) entry.text,
+    };
+    tags.removeWhere(values.contains);
   }
 
   int _legacyCharacterCount(int totalCharacterCount, List<String> tags) {
@@ -317,10 +372,14 @@ class _OfficialRecipeEngine {
     return literalChoice(const [(0, 30), (1, 30)]);
   }
 
-  String _coloredLegacyChoice(String group, List<String> tags) {
+  String _coloredLegacyChoice(
+    String group,
+    List<String> tags, {
+    required bool legless,
+  }) {
     final useColor = chance(0.5);
-    final color = legacyChoice('cg', tags);
-    final value = legacyChoice(group, tags);
+    final color = legacyChoice('cg', tags, legless: legless);
+    final value = legacyChoice(group, tags, legless: legless);
     return useColor ? '$color $value' : value;
   }
 
@@ -466,7 +525,22 @@ class _OfficialRecipeEngine {
         tags.add(legacyChoice('cT', tags));
         break;
     }
-    if (chance(0.7)) tags.add(legacyChoice('cR', tags));
+    final noLegsSpecies = tags.any(
+      const {
+        'taur',
+        'serpentine',
+        'naga',
+        'centaur',
+        'feral',
+        'merfolk',
+        'lamia',
+      }.contains,
+    );
+    String pick(String group) =>
+        legacyChoice(group, tags, legless: noLegsSpecies);
+    String pickColored(String group) =>
+        _coloredFurryChoice(group, tags, legless: noLegsSpecies);
+    if (chance(0.7)) tags.add(pick('cR'));
     if (chance(0.7)) {
       final multicolorType = literalChoice(const [
         ('multicolored body', 50),
@@ -476,46 +550,46 @@ class _OfficialRecipeEngine {
       final addSecondColor =
           multicolorType == 'multicolored body' ||
           (multicolorType == 'two tone body' && chance(0.5));
-      if (addSecondColor) tags.add(legacyChoice('cR', tags));
+      if (addSecondColor) tags.add(pick('cR'));
       tags.add(multicolorType);
     }
-    if (chance(0.7)) tags.add(legacyChoice('cP', tags));
-    if (chance(0.05)) tags.add(legacyChoice('cz', tags));
-    if (chance(0.1)) tags.add(legacyChoice('cq', tags));
+    if (chance(0.7)) tags.add(pick('cP'));
+    if (chance(0.05)) tags.add(pick('cz'));
+    if (chance(0.1)) tags.add(pick('cq'));
 
     final notFurry = flags.contains('not_furry');
-    if (chance(notFurry ? 0.7 : 0.2)) tags.add(legacyChoice('cN', tags));
-    if (chance(notFurry ? 0.5 : 0.1)) tags.add(legacyChoice('cL', tags));
+    if (chance(notFurry ? 0.7 : 0.2)) tags.add(pick('cN'));
+    if (chance(notFurry ? 0.5 : 0.1)) tags.add(pick('cL'));
     if (chance(notFurry ? 0.7 : 0.1)) {
-      tags.add(legacyChoice('cE', tags));
+      tags.add(pick('cE'));
       if (chance(0.1)) {
-        if (chance(0.5)) tags.add(legacyChoice('cE', tags));
-        tags.add(legacyChoice('cB', tags));
+        if (chance(0.5)) tags.add(pick('cE'));
+        tags.add(pick('cB'));
       }
     }
-    if (chance(notFurry ? 0.1 : 0.05)) tags.add(legacyChoice('cF', tags));
-    if (chance(notFurry ? 0.1 : 0.05)) tags.add(legacyChoice('cO', tags));
+    if (chance(notFurry ? 0.1 : 0.05)) tags.add(pick('cF'));
+    if (chance(notFurry ? 0.1 : 0.05)) tags.add(pick('cO'));
 
     var breastAdded = false;
     if (gender == 'f') {
       final firstRoll = chance(0.5);
       if (firstRoll && !tags.contains('feral')) {
-        tags.add(legacyChoice('cV', tags));
+        tags.add(pick('cV'));
         breastAdded = true;
       }
     }
     if (!breastAdded && gender == 'f' && chance(0.1)) {
-      tags.add(legacyChoice('cV', tags));
+      tags.add(pick('cV'));
     }
 
     final featureCount = _furryCharacterCount(totalCharacterCount);
     for (var index = 0; index < featureCount; index++) {
-      tags.add(legacyChoice('cU', tags));
+      tags.add(pick('cU'));
     }
     if (chance(0.15)) {
-      tags.add(legacyChoice('cW', tags));
+      tags.add(pick('cW'));
     } else if (chance(0.2)) {
-      tags.add(legacyChoice(r'c$', tags));
+      tags.add(pick(r'c$'));
     }
     String? clothingType = literalChoice(const [
       ('uniform', 10),
@@ -528,61 +602,61 @@ class _OfficialRecipeEngine {
     } else if (chance(0.2)) {
       clothingType = null;
     }
-    final noLegsSpecies = tags.any(
-      const {
-        'taur',
-        'serpentine',
-        'naga',
-        'centaur',
-        'feral',
-        'merfolk',
-        'lamia',
-      }.contains,
-    );
     if (clothingType != null && chance(0.3)) tags.add('furgonomics');
     switch (clothingType) {
       case 'uniform':
-        tags.add(legacyChoice('cK', tags));
+        tags.add(pick('cK'));
         break;
       case 'swimsuit':
-        tags.add(legacyChoice('cJ', tags));
+        tags.add(pick('cJ'));
         break;
       case 'bodysuit':
-        tags.add(legacyChoice('cZ', tags));
+        tags.add(pick('cZ'));
         break;
       case 'normal clothes':
         final useDress = gender == 'f' && chance(0.2);
         if (useDress) {
-          tags.add(_coloredFurryChoice('cH', tags));
+          tags.add(pickColored('cH'));
           break;
         }
-        if (chance(0.9)) tags.add(_coloredFurryChoice('cX', tags));
+        if (chance(0.9)) tags.add(pickColored('cX'));
+        // Upstream gates only bottoms here; its trailing substring filter
+        // misses legwear and footwear values, so all three are gated alike.
         if (!noLegsSpecies) {
           final lowerRoll = chance(0.7);
           if (lowerRoll &&
               framing != null &&
               _furryLegFramings.contains(framing)) {
-            tags.add(_coloredFurryChoice('cY', tags));
+            tags.add(pickColored('cY'));
           }
-        }
-        final legwearRoll = chance(0.5);
-        if (legwearRoll &&
-            framing != null &&
-            _furryLegFramings.contains(framing)) {
-          tags.add(_coloredFurryChoice('cG', tags));
-        }
-        final footwearRoll = chance(0.3);
-        if (footwearRoll && framing == 'full-length portrait') {
-          tags.add(_coloredFurryChoice('cQ', tags));
+          final legwearRoll = chance(0.5);
+          if (legwearRoll &&
+              framing != null &&
+              _furryLegFramings.contains(framing)) {
+            tags.add(pickColored('cG'));
+          }
+          final footwearRoll = chance(0.3);
+          if (footwearRoll && framing == 'full-length portrait') {
+            tags.add(pickColored('cQ'));
+          }
         }
       case null:
         break;
     }
-    if (chance(0.6)) tags.add(legacyChoice('c3', tags));
-    if (chance(0.4)) tags.add(legacyChoice('c6', tags));
+    if (chance(0.6)) tags.add(pick('c3'));
+    if (chance(0.4)) tags.add(pick('c6'));
+    if (_containsAnyFragment(tags, const ['sleeping', 'zzz', 'eyes closed'])) {
+      _removeGroupValues(tags, const ['cP', 'cz', 'cq']);
+    }
     final miscCount = _furryCharacterCount(totalCharacterCount, misc: true);
     for (var index = 0; index < miscCount; index++) {
-      tags.add(legacyChoice('c0', tags));
+      tags.add(pick('c0'));
+    }
+    if (noLegsSpecies ||
+        (framing != null && !_furryLegFramings.contains(framing))) {
+      tags.removeWhere(
+        (tag) => tag.contains('legwear') || tag.contains('legs'),
+      );
     }
     return _FurryCharacter(tags, flags);
   }
@@ -606,10 +680,14 @@ class _OfficialRecipeEngine {
     return literalChoice(const [(0, 30), (1, 30)]);
   }
 
-  String _coloredFurryChoice(String group, List<String> tags) {
+  String _coloredFurryChoice(
+    String group,
+    List<String> tags, {
+    required bool legless,
+  }) {
     final useColor = chance(0.5);
-    final color = legacyChoice('c8', tags);
-    final value = legacyChoice(group, tags);
+    final color = legacyChoice('c8', tags, legless: legless);
+    final value = legacyChoice(group, tags, legless: legless);
     return useColor ? '$color $value' : value;
   }
 
@@ -737,11 +815,13 @@ class _OfficialRecipeEngine {
     int totalCharacterCount,
   ) {
     final tags = <String>[];
-    final state = Set<String>.of(globalState);
+    final state = _initialCharacterState(globalState, gender);
     if (chance(0.1)) tags.add(characterChoice('dc', state));
+    _dropLegFlagsForLeglessBody(state);
     if (chance(0.4)) tags.add(characterChoice('dd', state));
     if (chance(0.05)) tags.add(characterChoice('dh', state));
-    if (!state.contains('no eyes')) {
+    // "no eyes" declares the noeyes flag; upstream checks the tag text instead.
+    if (!state.contains('noeyes')) {
       if (chance(0.2)) tags.add(characterChoice('du', state));
       final eyeColorRoll = chance(0.8);
       if (eyeColorRoll && !state.contains('nocoloreyes')) {
@@ -776,6 +856,7 @@ class _OfficialRecipeEngine {
       ('bodysuit', 5),
       ('normal clothes', 40),
     ], state);
+    var feetCovered = false;
     switch (clothingType) {
       case 'uniform':
         tags.add(characterChoice('dM', state));
@@ -787,32 +868,10 @@ class _OfficialRecipeEngine {
         tags.add(characterChoice('dS', state));
         break;
       case 'normal clothes':
-        if (gender.startsWith('f') && chance(0.5)) {
-          tags.add(characterChoice('dk', state));
-          if (chance(0.2)) tags.add(characterChoice('dC', state));
-        }
-        final useDress = gender.startsWith('f') && chance(0.2);
-        if (useDress) {
-          final value = _coloredCharacterChoice('dv', state);
-          if (value.isNotEmpty) tags.add(value);
-        } else {
-          if (chance(0.85)) {
-            final value = _coloredCharacterChoice('dj', state);
-            if (value.isNotEmpty) tags.add(value);
-          }
-          if (state.contains('legs')) {
-            if (chance(0.85)) {
-              final value = _coloredCharacterChoice('dA', state);
-              if (value.isNotEmpty) tags.add(value);
-            }
-            if (state.contains('feet') && chance(0.6)) {
-              final value = _coloredCharacterChoice('dI', state);
-              if (value.isNotEmpty) tags.add(value);
-            }
-          }
-        }
+        feetCovered = _dressInSeparates(tags, state, gender);
         break;
     }
+    _markBarefoot(state, feetCovered: feetCovered);
     if (chance(0.6)) tags.add(characterChoice('dR', state));
     if (chance(0.4)) tags.add(characterChoice('dE', state));
     final miscCount = _characterPromptCount(totalCharacterCount, state);
@@ -820,6 +879,39 @@ class _OfficialRecipeEngine {
       tags.add(characterChoice('dT', state));
     }
     return tags.where((tag) => tag.isNotEmpty).toList(growable: false);
+  }
+
+  /// Returns whether footwear or legwear covering the feet was drawn.
+  bool _dressInSeparates(List<String> tags, Set<String> state, String gender) {
+    var legwear = '';
+    if (gender.startsWith('f') && chance(0.5)) {
+      legwear = characterChoice('dk', state);
+      tags.add(legwear);
+      if (chance(0.2)) tags.add(characterChoice('dC', state));
+    }
+    var wearsFootwear = false;
+    final useDress = gender.startsWith('f') && chance(0.2);
+    if (useDress) {
+      final value = _coloredCharacterChoice('dv', state);
+      if (value.isNotEmpty) tags.add(value);
+    } else {
+      if (chance(0.85)) {
+        final value = _coloredCharacterChoice('dj', state);
+        if (value.isNotEmpty) tags.add(value);
+      }
+      if (state.contains('legs')) {
+        if (chance(0.85)) {
+          final value = _coloredCharacterChoice('dA', state);
+          if (value.isNotEmpty) tags.add(value);
+        }
+        if (state.contains('feet') && chance(0.6)) {
+          final value = _coloredCharacterChoice('dI', state);
+          if (value.isNotEmpty) tags.add(value);
+          wearsFootwear = value.isNotEmpty;
+        }
+      }
+    }
+    return wearsFootwear || _legwearCoversFeet(legwear);
   }
 
   int _characterPromptCount(int count, Set<String> state) {
@@ -863,10 +955,12 @@ class _OfficialRecipeEngine {
 String _selectLegacyRecord(
   List<OfficialWordlistEntry> entries,
   List<String> selectedTags,
-  double randomValue,
-) {
+  double randomValue, {
+  Set<String> blockedTags = const {},
+}) {
   final eligible = entries
       .where((entry) {
+        if (_joinsBlockedTag(entry, blockedTags)) return false;
         final dependencies = entry.stringFieldValues(2);
         return dependencies.isEmpty || dependencies.any(selectedTags.contains);
       })
@@ -887,10 +981,12 @@ String _selectLegacyRecord(
 String _selectCharacterRecord(
   List<OfficialWordlistEntry> entries,
   Set<String> state,
-  double randomValue,
-) {
+  double randomValue, {
+  Set<String> blockedTags = const {},
+}) {
   final eligible = entries
       .where((entry) {
+        if (_joinsBlockedTag(entry, blockedTags)) return false;
         final excluded = entry.stringFieldValues(4);
         if (excluded.any(state.contains)) return false;
         final required = entry.stringFieldValues(3);
@@ -906,12 +1002,45 @@ String _selectCharacterRecord(
   for (final entry in eligible) {
     cumulative += entry.weight;
     if (ticket <= cumulative) {
-      state.addAll(entry.stringFieldValues(3));
+      // Upstream re-adds field 3 here, so no declared flag ever reaches state.
+      state.addAll(entry.stringFieldValues(2));
       return entry.text;
     }
   }
   return '';
 }
+
+// The asset declares no provider for gender flags and upstream checks gender
+// only in code, so each role's own state is seeded from its gender here.
+const _characterGenderFlags = {'f': 'female', 'm': 'male'};
+
+Set<String> _initialCharacterState(Set<String> globalState, String gender) {
+  final genderFlag = _characterGenderFlags[gender];
+  return {...globalState, if (genderFlag != null) genderFlag};
+}
+
+// The asset never declares that nolegs cancels the legs/feet flags that
+// framing adds to the shared state, so a legless body drops its own copy.
+void _dropLegFlagsForLeglessBody(Set<String> state) {
+  if (state.contains('nolegs')) state.removeAll(const {'legs', 'feet'});
+}
+
+// The asset requires barefoot for toenail polish, yet nothing provides it.
+void _markBarefoot(Set<String> state, {required bool feetCovered}) {
+  if (state.contains('feet') && !feetCovered) state.add('barefoot');
+}
+
+// The asset never declares foot coverage; only these legwear leave feet bare.
+bool _legwearCoversFeet(String legwear) =>
+    legwear.isNotEmpty && !_footlessLegwear.contains(legwear);
+
+const _footlessLegwear = {'leggings', 'leg warmers'};
+
+bool _joinsBlockedTag(OfficialWordlistEntry entry, Set<String> blockedTags) =>
+    blockedTags.isNotEmpty && entry.text.split(', ').any(blockedTags.contains);
+
+bool _containsAnyFragment(List<String> tags, List<String> fragments) =>
+    tags.any((tag) => fragments.any(tag.contains));
 
 void _prependCharacterCount(
   List<String> tags,
@@ -934,6 +1063,12 @@ List<String> _commaStableDeduplicate(List<String> tags) {
   }
   return result;
 }
+
+const _legClothingGroups = {
+  'legacyAnime': ['l9', 'ce', 'l4'],
+  'furryV3': ['cY', 'cQ', 'cG'],
+  'characterPrompts': ['dA', 'dI', 'dk'],
+};
 
 const _furryLegFramings = {
   'half-length portrait',
